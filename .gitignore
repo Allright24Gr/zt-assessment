@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vercel/
+
+*.log
+vite-preview.out.log
+vite-preview.err.log
+localtunnel.out.log
+localtunnel.err.log
+
+.env
+.env.*
+!.env.example
+.claude/
