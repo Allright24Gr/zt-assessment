@@ -29,7 +29,7 @@ import { PILLARS } from "../data/constants";
 type SortKey = "org" | "date" | "manager";
 type SortDir = "asc" | "desc";
 
-const PILLAR_OFFSETS = [0.2, 0.5, -0.3, 0.3, -0.8, -0.3];
+const PILLAR_OFFSETS = [0.2, 0.5, -0.3, -0.3, 0.3, -0.8];
 const COMPARE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
 
 function getPillarScores(score: number | null): number[] {
@@ -42,6 +42,14 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
   return dir === "asc"
     ? <ArrowUp size={13} className="text-blue-500" />
     : <ArrowDown size={13} className="text-blue-500" />;
+}
+
+function getLevelBadgeClass(level: string) {
+  if (level === "기존") return "bg-red-100 text-red-700";
+  if (level === "초기") return "bg-yellow-100 text-yellow-700";
+  if (level === "향상") return "bg-blue-100 text-blue-700";
+  if (level === "최적화") return "bg-green-100 text-green-700";
+  return "bg-blue-100 text-blue-700";
 }
 
 export function History() {
@@ -193,9 +201,7 @@ export function History() {
                       <td className="py-3 px-4 text-gray-600">{session.date}</td>
                       <td className="py-3 px-4 text-gray-600">{session.manager}</td>
                       <td className="py-3 px-4">
-                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
-                          isInProgress ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"
-                        }`}>
+                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getLevelBadgeClass(session.level)}`}>
                           {session.level}
                         </span>
                       </td>

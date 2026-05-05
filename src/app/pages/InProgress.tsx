@@ -26,11 +26,12 @@ import {
   Shield,
 } from "lucide-react";
 import { PILLARS } from "../data/constants";
+import { CHECKLIST_ITEMS } from "../data/checklistItems";
 import { sessions } from "../data/mockData";
 
 const TOOL_TOTALS = [892, 234, 156, 310];
 const TOOL_NAMES = ["Wazuh", "Keycloak", "Trivy", "Nmap"];
-const PILLAR_COLORS = ["#2563eb", "#059669", "#f59e0b", "#7c3aed", "#dc2626", "#0891b2"];
+const PILLAR_COLORS = ["#2563eb", "#059669", "#f59e0b", "#0891b2", "#7c3aed", "#dc2626"];
 const TOOL_COLORS: Record<string, string> = {
   Wazuh: PILLAR_COLORS[0],
   Keycloak: PILLAR_COLORS[1],
@@ -45,46 +46,14 @@ const PILLAR_TO_TOOL: Record<string, string> = {
   Data: "Wazuh",
   System: "Wazuh",
 };
+const PILLAR_PROGRESS_STEPS = [9, 8, 7, 6, 7, 6];
 const DEMO_SESSION_ID = 7;
 
-const CHECKLISTS = [
-  [
-    "IAM 계정 동기화 상태 확인",
-    "MFA 적용률 분석",
-    "관리자 권한 변경 이력 점검",
-    "휴면 계정 자동 잠금 정책 검증",
-  ],
-  [
-    "단말 에이전트 연결 상태 수집",
-    "고위험 CVE 패치 여부 확인",
-    "디스크 암호화 정책 점검",
-    "분실 단말 원격 차단 정책 검증",
-  ],
-  [
-    "오픈 포트 및 서비스 식별",
-    "망 분리 정책 적용 범위 확인",
-    "관리 포트 외부 노출 점검",
-    "마이크로 세그먼테이션 후보 산출",
-  ],
-  [
-    "API 인증 정책 확인",
-    "권한 없는 호출 실패 로그 점검",
-    "관리자 API 감사 로그 수집",
-    "취약 라이브러리 스캔 결과 분석",
-  ],
-  [
-    "민감 데이터 분류 정책 확인",
-    "저장 데이터 암호화 상태 점검",
-    "전송 구간 TLS 적용 검증",
-    "백업 저장소 접근 권한 분석",
-  ],
-  [
-    "SIEM 로그 수집 상태 확인",
-    "탐지 룰 활성화 여부 점검",
-    "알림 채널 연동 테스트",
-    "대응 플레이북 매핑 상태 검증",
-  ],
-];
+const CHECKLISTS = PILLARS.map((pillar) =>
+  CHECKLIST_ITEMS
+    .filter((item) => item.pillar === pillar.label || item.category === pillar.label)
+    .map((item) => `${item.item} · ${item.question}`)
+);
 
 const PIPELINE_STEPS = [
   { label: "자산 발견", sublabel: "Asset Discovery" },
@@ -123,6 +92,15 @@ function formatTime() {
   });
 }
 
+function nextLogVolume(previous: number | undefined, progress: number) {
+  const baseline = 24 + Math.sin(progress / 12) * 8;
+  const target = baseline + (progress < 35 ? 18 : progress < 75 ? 28 : 14);
+  const current = previous ?? target;
+  const drift = (target - current) * 0.28;
+  const jitter = (Math.random() - 0.5) * 8;
+  return Math.max(8, Math.min(92, Math.round(current + drift + jitter)));
+}
+
 function getLogTool(message: string) {
   return TOOL_NAMES.find((tool) => message.includes(tool));
 }
@@ -148,18 +126,31 @@ function CircularProgress({
   label,
   color,
   active,
+  completedCount,
+  totalCount,
 }: {
   value: number;
   label: string;
   color: string;
   active: boolean;
+  completedCount: number;
+  totalCount: number;
 }) {
   const radius = 36;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (Math.min(value, 100) / 100) * circumference;
+  const completed = value >= 100;
 
   return (
-    <div className={`rounded-2xl border p-4 transition-all ${active ? "border-blue-300 bg-blue-50 shadow-sm" : "border-gray-200 bg-white"}`}>
+    <div
+      className={`rounded-2xl border p-4 transition-all ${
+        completed
+          ? "border-gray-200 bg-gray-100 text-gray-500"
+          : active
+          ? "border-blue-300 bg-blue-50 shadow-sm"
+          : "border-gray-200 bg-white"
+      }`}
+    >
       <div className="mx-auto mb-3 h-24 w-24 relative">
         <svg viewBox="0 0 96 96" className="h-24 w-24 -rotate-90">
           <circle cx="48" cy="48" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="9" />
@@ -178,12 +169,40 @@ function CircularProgress({
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="text-xl font-bold text-gray-900">{Math.round(value)}%</span>
-          <span className="text-[11px] text-gray-400">{active ? "진행 중" : value >= 100 ? "완료" : "대기"}</span>
+          <span className="text-[11px] text-gray-400">{active ? "진행 중" : completed ? "완료" : "대기"}</span>
         </div>
       </div>
       <p className="text-center text-sm font-semibold text-gray-700">{label}</p>
+      <div className="mt-3 rounded-xl bg-white/70 p-3 text-left">
+        <div className="mb-2 flex items-center justify-between text-xs">
+          <span className="text-gray-500">체크리스트</span>
+          <span className="font-semibold text-gray-800">
+            {completedCount} / {totalCount}개
+          </span>
+        </div>
+        <div className="h-1.5 rounded-full bg-gray-200">
+          <div
+            className="h-1.5 rounded-full transition-all duration-500"
+            style={{ width: `${totalCount ? (completedCount / totalCount) * 100 : 0}%`, backgroundColor: color }}
+          />
+        </div>
+      </div>
     </div>
   );
+}
+
+function formatRemainingTime(progress: number) {
+  if (progress >= 100) return "완료";
+  const totalSeconds = 90;
+  const remainingSeconds = Math.max(1, Math.ceil(totalSeconds * (1 - progress / 100)));
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  return minutes > 0 ? `약 ${minutes}분 ${seconds}초 남음` : `약 ${seconds}초 남음`;
+}
+
+function getOverallProgress(nextPillars: { progress: number }[]) {
+  const total = nextPillars.reduce((sum, pillar) => sum + pillar.progress, 0);
+  return Math.min(100, Math.round(total / nextPillars.length));
 }
 
 export function InProgress() {
@@ -207,18 +226,21 @@ export function InProgress() {
     if (isPaused || progress >= 100) return;
 
     const timer = window.setInterval(() => {
-      setProgress((prev) => {
-        const next = Math.min(prev + 2, 100);
-        if (next >= 100) setShowComplete(true);
+      let activeIndexForTick = 0;
+
+      setPillars((prev) => {
+        activeIndexForTick = prev.findIndex((pillar) => pillar.progress < 100);
+        const next = prev.map((pillar, index) => {
+          if (index !== activeIndexForTick) return pillar;
+
+          return {
+            ...pillar,
+            progress: Math.min(pillar.progress + PILLAR_PROGRESS_STEPS[index], 100),
+          };
+        });
+
         return next;
       });
-
-      setPillars((prev) =>
-        prev.map((p, i) => ({
-          ...p,
-          progress: Math.min(p.progress + [3, 2.5, 1.8, 1.5, 1.2, 1][i], 100),
-        }))
-      );
 
       setMetrics((prev) => ({
         totalItems: prev.totalItems + Math.floor(Math.random() * 18) + 5,
@@ -227,15 +249,21 @@ export function InProgress() {
         analyzedAssets: prev.analyzedAssets + Math.floor(Math.random() * 6) + 2,
       }));
 
-      setAreaData((prev) => [
-        ...prev.slice(-19),
-        { time: formatTime(), volume: Math.floor(Math.random() * 70) + 10 },
-      ]);
+      setAreaData((prev) => {
+        const previousVolume = prev.at(-1)?.volume;
+        return [
+          ...prev.slice(-19),
+          { time: formatTime(), volume: nextLogVolume(previousVolume, progress) },
+        ];
+      });
 
       setToolProgress((prev) =>
         prev.map((tool, i) => ({
           ...tool,
-          collected: Math.min(tool.collected + Math.floor(TOOL_TOTALS[i] * 0.025), tool.total),
+          collected:
+            TOOL_NAMES[i] === PILLAR_TO_TOOL[PILLARS[activeIndexForTick]?.key]
+              ? Math.min(tool.collected + Math.floor(TOOL_TOTALS[i] * 0.04), tool.total)
+              : tool.collected,
         }))
       );
     }, 600);
@@ -244,13 +272,23 @@ export function InProgress() {
   }, [isPaused, progress]);
 
   useEffect(() => {
+    const nextProgress = getOverallProgress(pillars);
+    setProgress(nextProgress);
+    if (nextProgress >= 100) setShowComplete(true);
+  }, [pillars]);
+
+  useEffect(() => {
     const activePillar = pillars.find((p) => p.progress > 0 && p.progress < 100) ?? pillars.find((p) => p.progress < 100);
     if (!activePillar || isPaused) return;
 
-    const checklistIndex = Math.min(Math.floor((activePillar.progress / 100) * CHECKLISTS[0].length), CHECKLISTS[0].length - 1);
     const pillarIndex = PILLARS.findIndex((p) => p.key === activePillar.key);
+    const activeChecklist = CHECKLISTS[pillarIndex] ?? [];
+    const checklistIndex = Math.min(
+      Math.floor((activePillar.progress / 100) * activeChecklist.length),
+      Math.max(activeChecklist.length - 1, 0)
+    );
     const toolName = PILLAR_TO_TOOL[activePillar.key] ?? "Wazuh";
-    const message = `${toolName} ${activePillar.shortLabel} 필러 - ${CHECKLISTS[pillarIndex][checklistIndex]} 실행 중`;
+    const message = `${toolName} ${activePillar.shortLabel} 필러 - ${activeChecklist[checklistIndex] ?? "체크리스트 항목"} 실행 중`;
 
     setLogs((prev) => {
       if (prev.at(-1)?.message === message) return prev;
@@ -282,16 +320,18 @@ export function InProgress() {
 
   const activePillarIndex = pillars.findIndex((p) => p.progress > 0 && p.progress < 100);
   const safeActivePillarIndex = activePillarIndex >= 0 ? activePillarIndex : pillars.findIndex((p) => p.progress < 100);
-  const activeChecklistIndex = safeActivePillarIndex >= 0
-    ? Math.min(Math.floor((pillars[safeActivePillarIndex].progress / 100) * CHECKLISTS[0].length), CHECKLISTS[0].length - 1)
-    : CHECKLISTS[0].length - 1;
-
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
     score: Number(((pillars[i]?.progress / 100) * 4).toFixed(1)),
   }));
 
   const activeStepIndex = Math.min(Math.floor((progress / 100) * PIPELINE_STEPS.length), PIPELINE_STEPS.length - 1);
+  const estimatedRemainingTime = formatRemainingTime(progress);
+  const totalQuestionCount = CHECKLISTS.reduce((sum, checklist) => sum + checklist.length, 0);
+  const completedQuestionCount = pillars.reduce((sum, pillar, index) => {
+    const total = CHECKLISTS[index]?.length ?? 0;
+    return sum + Math.min(Math.floor((pillar.progress / 100) * total), total);
+  }, 0);
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
@@ -345,6 +385,12 @@ export function InProgress() {
         <div className="w-full bg-gray-200 rounded-full h-3">
           <div className="bg-blue-600 h-3 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
         </div>
+        <div className="mt-3 flex items-center justify-between text-sm">
+          <span className="text-gray-500">예상 소요 시간</span>
+          <span className={progress >= 100 ? "font-semibold text-green-600" : "font-semibold text-gray-700"}>
+            {estimatedRemainingTime}
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -364,56 +410,35 @@ export function InProgress() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.25fr_0.75fr] gap-5">
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <div className="flex items-center justify-between mb-5">
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div>
             <h2>필러별 진행률</h2>
-            <span className="text-xs text-gray-400">원형 진행률</span>
+            <p className="mt-1 text-sm text-gray-500">각 필러의 진행률과 질문 처리 개수를 함께 표시합니다.</p>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            {pillars.map((pillar, index) => (
+          <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-700">
+            {completedQuestionCount} / {totalQuestionCount}개 질문
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {pillars.map((pillar, index) => {
+            const checklist = CHECKLISTS[index] ?? [];
+            const completedCount = Math.min(
+              Math.floor((pillar.progress / 100) * checklist.length),
+              checklist.length
+            );
+            return (
               <CircularProgress
                 key={pillar.key}
                 value={pillar.progress}
                 label={pillar.label}
                 color={PILLAR_COLORS[index]}
                 active={safeActivePillarIndex === index && !isPaused && progress < 100}
+                completedCount={completedCount}
+                totalCount={checklist.length}
               />
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="mb-2">현재 실행 중 체크리스트</h2>
-          <p className="text-sm text-gray-500 mb-5">
-            {safeActivePillarIndex >= 0 ? PILLARS[safeActivePillarIndex].label : "모든 필러"} 기준으로 진행 중입니다.
-          </p>
-          <div className="space-y-3">
-            {(safeActivePillarIndex >= 0 ? CHECKLISTS[safeActivePillarIndex] : CHECKLISTS[0]).map((item, index) => {
-              const done = safeActivePillarIndex < 0 || index < activeChecklistIndex;
-              const active = safeActivePillarIndex >= 0 && index === activeChecklistIndex && progress < 100;
-              return (
-                <div
-                  key={item}
-                  className={`rounded-xl border p-3 ${
-                    done ? "border-green-200 bg-green-50" : active ? "border-blue-300 bg-blue-50" : "border-gray-200 bg-gray-50"
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <div className={`mt-0.5 h-6 w-6 rounded-full flex items-center justify-center ${
-                      done ? "bg-green-500 text-white" : active ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-500"
-                    }`}>
-                      {done ? <CheckCircle size={14} /> : active ? <Loader2 size={14} className="animate-spin" /> : <Clock size={14} />}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-800">{item}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">{done ? "완료" : active ? isPaused ? "일시 정지됨" : "실행 중" : "대기"}</p>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+            );
+          })}
         </div>
       </div>
 

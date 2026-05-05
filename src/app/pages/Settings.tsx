@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { Settings as SettingsIcon, Bell, User, Save } from "lucide-react";
+import { Settings as SettingsIcon, Bell, Target, User, Save } from "lucide-react";
 import { toast } from "sonner";
+import { PILLARS } from "../data/constants";
 
 export function Settings() {
+  const [targetScores, setTargetScores] = useState(PILLARS.map(() => 3.5));
   const [settings, setSettings] = useState({
     wazuhThreshold: 75,
     trivyCritical: true,
@@ -18,6 +20,10 @@ export function Settings() {
 
   const handleSave = () => {
     toast.success("설정이 저장되었습니다.");
+  };
+
+  const updateTarget = (index: number, value: number) => {
+    setTargetScores((prev) => prev.map((score, i) => (i === index ? value : score)));
   };
 
   return (
@@ -117,6 +123,38 @@ export function Settings() {
               전체 항목 중 이 비율 이상 확인되어야 진단이 유효합니다
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Target Maturity Settings */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex items-center gap-2 mb-6">
+          <Target className="text-emerald-600" size={20} />
+          <h2>목표 성숙도 설정</h2>
+        </div>
+
+        <div className="space-y-4">
+          {PILLARS.map((pillar, index) => (
+            <div key={pillar.key}>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-medium text-gray-700">{pillar.label}</span>
+                <span className="text-sm font-semibold text-emerald-600">{targetScores[index].toFixed(1)} / 4.0</span>
+              </div>
+              <input
+                type="range"
+                min="0.5"
+                max="4"
+                step="0.1"
+                value={targetScores[index]}
+                onChange={(event) => updateTarget(index, Number(event.target.value))}
+                className="w-full accent-emerald-600"
+              />
+              <div className="flex justify-between text-[11px] text-gray-400">
+                <span>0.5</span>
+                <span>4.0</span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 

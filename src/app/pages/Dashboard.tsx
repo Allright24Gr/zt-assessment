@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Link } from "react-router";
 import {
   AlertTriangle,
@@ -32,7 +31,8 @@ import { improvements, sessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
 import { MATURITY_STEPS, getMaturityLevel, getScoreColor } from "../lib/maturity";
 
-const PILLAR_SCORES = [2.5, 3.0, 2.0, 2.8, 1.5, 2.2];
+const PILLAR_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
+const TARGET_SCORES = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
 const AVG_SCORE = Number((PILLAR_SCORES.reduce((a, b) => a + b, 0) / PILLAR_SCORES.length).toFixed(2));
 const PREV_SCORE = 2.1;
 const TREND = AVG_SCORE - PREV_SCORE;
@@ -45,15 +45,14 @@ const topTasks = improvements.slice(0, 3);
 
 export function Dashboard() {
   const { user } = useAuth();
-  const [targetScores, setTargetScores] = useState(PILLARS.map(() => 3.2));
 
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
     current: PILLAR_SCORES[i],
-    target: targetScores[i],
+    target: TARGET_SCORES[i],
   }));
 
-  const targetAvg = Number((targetScores.reduce((a, b) => a + b, 0) / targetScores.length).toFixed(2));
+  const targetAvg = Number((TARGET_SCORES.reduce((a, b) => a + b, 0) / TARGET_SCORES.length).toFixed(2));
   const trendData = [
     { date: "2026-01", level: 1.5 },
     { date: "2026-02", level: 1.8 },
@@ -64,10 +63,6 @@ export function Dashboard() {
   const recentSessions = user?.role === "admin"
     ? sessions.slice(0, 5)
     : sessions.filter((s) => s.userId === user?.id).slice(0, 3);
-
-  const updateTarget = (index: number, value: number) => {
-    setTargetScores((prev) => prev.map((score, i) => (i === index ? value : score)));
-  };
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -232,31 +227,34 @@ export function Dashboard() {
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <div className="flex items-center gap-2 mb-2">
             <Target className="text-emerald-600" size={20} />
-            <h2>목표 성숙도 설정</h2>
+            <h2>필러별 목표 대비 현황</h2>
           </div>
-          <p className="text-sm text-gray-500 mb-5">필러별 목표치를 수동으로 조정하면 레이더 차트에 즉시 반영됩니다.</p>
-          <div className="space-y-4">
-            {PILLARS.map((pillar, index) => (
-              <div key={pillar.key}>
-                <div className="flex items-center justify-between mb-1">
+          <p className="text-sm text-gray-500 mb-5">현재 점수와 목표 점수의 차이를 필러별로 확인합니다. 목표값 변경은 설정에서 관리합니다.</p>
+          <div className="space-y-3">
+            {PILLARS.map((pillar, index) => {
+              const current = PILLAR_SCORES[index];
+              const target = TARGET_SCORES[index];
+              const gap = Number((current - target).toFixed(1));
+              const colors = getScoreColor(current);
+
+              return (
+              <div key={pillar.key} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+                <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-gray-700">{pillar.label}</span>
-                  <span className="text-sm font-semibold text-emerald-600">{targetScores[index].toFixed(1)}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${gap < 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                    GAP {gap > 0 ? `+${gap.toFixed(1)}` : gap.toFixed(1)}
+                  </span>
                 </div>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="4"
-                  step="0.1"
-                  value={targetScores[index]}
-                  onChange={(event) => updateTarget(index, Number(event.target.value))}
-                  className="w-full accent-emerald-600"
-                />
-                <div className="flex justify-between text-[11px] text-gray-400">
-                  <span>현재 {PILLAR_SCORES[index].toFixed(1)}</span>
-                  <span>목표 {targetScores[index].toFixed(1)}</span>
+                <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+                  <div className={`${colors.bar} h-2 rounded-full transition-all`} style={{ width: `${(current / 4) * 100}%` }} />
+                </div>
+                <div className="flex justify-between text-[11px] text-gray-500">
+                  <span>현재 {current.toFixed(1)}</span>
+                  <span className="font-semibold text-emerald-600">목표 {target.toFixed(1)}</span>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
