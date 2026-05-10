@@ -1,5 +1,121 @@
 services:
   zt-web:
-    build: .
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       - "8080:80"
+    networks:
+      - zt-network
+    depends_on:
+      - zt-backend
+
+  zt-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    networks:
+      - zt-network
+    depends_on:
+      mysql:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_started
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - zt-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev --http-port=8443
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    ports:
+      - "8443:8443"
+    networks:
+      - zt-network
+
+  wazuh:
+    image: wazuh/wazuh-manager:4.7.0
+    environment:
+      WAZUH_API_USER: ${WAZUH_USER}
+      WAZUH_API_PASSWORD: ${WAZUH_PASSWORD}
+    ports:
+      - "55000:55000"
+    volumes:
+      - wazuh-data:/var/ossec/data
+    networks:
+      - zt-network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - zt-network
+
+  shuffle:
+    image: ghcr.io/shuffle/shuffle:latest
+    environment:
+      SHUFFLE_DEFAULT_USERNAME: ${SHUFFLE_ADMIN_USER:-admin}
+      SHUFFLE_DEFAULT_PASSWORD: ${SHUFFLE_ADMIN_PASSWORD:-shuffleadmin}
+      SHUFFLE_DEFAULT_APIKEY: ${SHUFFLE_API_KEY}
+      SHUFFLE_APP_HOTLOAD_FOLDER: /shuffle-apps
+      SHUFFLE_FILE_LOCATION: /shuffle-files
+    ports:
+      - "3000:3000"
+    networks:
+      - zt-network
+
+  nmap-wrapper:
+    build:
+      context: ./nmap-wrapper
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    networks:
+      - zt-network
+
+  trivy-wrapper:
+    build:
+      context: ./trivy-wrapper
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    networks:
+      - zt-network
+
+networks:
+  zt-network:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  wazuh-data:
+  elasticsearch-data:
