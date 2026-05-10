@@ -6,8 +6,8 @@ from database import get_db
 router = APIRouter()
 
 
-@router.get("/summary/{session_id}")
-def get_score_summary(session_id: int, db: Session = Depends(get_db)):
+@router.get("/summary")
+def get_score_summary(session_id: Optional[int] = None, db: Session = Depends(get_db)):
     """세션별 필라(Pillar)별 성숙도 점수 요약을 반환한다."""
     # TODO: MaturityScore 조회
     # TODO: 전체 평균, 필라별 점수, 성숙도 레벨 계산

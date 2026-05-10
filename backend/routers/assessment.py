@@ -20,8 +20,8 @@ def run_assessment(
     raise NotImplementedError
 
 
-@router.get("/result/{session_id}")
-def get_result(session_id: int, db: Session = Depends(get_db)):
+@router.get("/result")
+def get_result(session_id: Optional[int] = None, db: Session = Depends(get_db)):
     """session_id에 해당하는 진단 결과(DiagnosisResult + MaturityScore)를 반환한다."""
     # TODO: DiagnosisResult, MaturityScore, Evidence 조인 조회
     # TODO: ChecklistDetail 형식으로 직렬화하여 반환

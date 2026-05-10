@@ -90,6 +90,9 @@ services:
       SHUFFLE_FILE_LOCATION: /shuffle-files
     ports:
       - "3000:3000"
+    volumes:
+      - shuffle-apps:/shuffle-apps
+      - shuffle-files:/shuffle-files
     networks:
       - zt-network
 
@@ -119,3 +122,5 @@ volumes:
   mysql-data:
   wazuh-data:
   elasticsearch-data:
+  shuffle-apps:
+  shuffle-files:

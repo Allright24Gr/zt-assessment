@@ -11,6 +11,9 @@ USE zt_assessment;
 CREATE TABLE IF NOT EXISTS Organization (
   org_id     INT          NOT NULL AUTO_INCREMENT,
   name       VARCHAR(200) NOT NULL,
+  industry   VARCHAR(50)  NULL,
+  size       VARCHAR(20)  NULL,
+  cloud_type VARCHAR(30)  NULL,
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (org_id)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -22,6 +25,7 @@ CREATE TABLE IF NOT EXISTS User (
   name       VARCHAR(100) NOT NULL,
   email      VARCHAR(200) NOT NULL,
   role       VARCHAR(50)  NOT NULL DEFAULT 'analyst',
+  mfa_enabled TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (user_id),
   UNIQUE KEY uq_user_email (email),
@@ -118,6 +122,10 @@ CREATE TABLE IF NOT EXISTS MaturityScore (
   session_id INT          NOT NULL,
   pillar     VARCHAR(100) NOT NULL,
   score      FLOAT        NOT NULL,
+  level      VARCHAR(10)  NOT NULL DEFAULT '기존',
+  pass_cnt   INT(11)      NOT NULL DEFAULT 0,
+  fail_cnt   INT(11)      NOT NULL DEFAULT 0,
+  na_cnt     INT(11)      NOT NULL DEFAULT 0,
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (score_id),
   CONSTRAINT fk_maturity_session FOREIGN KEY (session_id) REFERENCES DiagnosisSession (session_id)
@@ -127,6 +135,9 @@ CREATE TABLE IF NOT EXISTS MaturityScore (
 CREATE TABLE IF NOT EXISTS ImprovementGuide (
   guide_id        INT          NOT NULL AUTO_INCREMENT,
   check_id        INT          NULL,
+  current_level    VARCHAR(10)  NULL,
+  next_level       VARCHAR(10)  NULL,
+  recommended_tool VARCHAR(100) NULL,
   pillar          VARCHAR(100) NOT NULL,
   task            TEXT         NOT NULL,
   priority        ENUM('Critical','High','Medium','Low') NOT NULL,

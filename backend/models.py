@@ -12,6 +12,9 @@ class Organization(Base):
 
     org_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False)
+    industry   = Column(String(50),  nullable=True)
+    size       = Column(String(20),  nullable=True)
+    cloud_type = Column(String(30),  nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
     users = relationship("User", back_populates="org")
@@ -27,6 +30,7 @@ class User(Base):
     name = Column(String(100), nullable=False)
     email = Column(String(200), unique=True, nullable=False)
     role = Column(String(50), nullable=False, default="analyst")
+    mfa_enabled = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
 
     org = relationship("Organization", back_populates="users")
@@ -147,6 +151,10 @@ class MaturityScore(Base):
     session_id = Column(Integer, ForeignKey("DiagnosisSession.session_id"), nullable=False)
     pillar = Column(String(100), nullable=False)
     score = Column(Float, nullable=False)
+    level    = Column(String(10), nullable=False, default="기존")
+    pass_cnt = Column(Integer,    nullable=False, default=0)
+    fail_cnt = Column(Integer,    nullable=False, default=0)
+    na_cnt   = Column(Integer,    nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
 
     session = relationship("DiagnosisSession", back_populates="maturity_scores")
@@ -157,6 +165,9 @@ class ImprovementGuide(Base):
 
     guide_id = Column(Integer, primary_key=True, autoincrement=True)
     check_id = Column(Integer, ForeignKey("Checklist.check_id"), nullable=True)
+    current_level    = Column(String(10),  nullable=True)
+    next_level       = Column(String(10),  nullable=True)
+    recommended_tool = Column(String(100), nullable=True)
     pillar = Column(String(100), nullable=False)
     task = Column(Text, nullable=False)
     priority = Column(

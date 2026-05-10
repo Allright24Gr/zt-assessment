@@ -33,10 +33,8 @@ export interface ChecklistItemResult {
   category: string;
   item: string;
   maturity: MaturityLevel | string;
-  maturityScore?: number;
   maturity_score?: number;
   question: string;
-  diagnosisType?: string;
   diagnosis_type?: string;
   tool: string;
   result: AssessmentResult;
@@ -47,9 +45,7 @@ export interface ChecklistItemResult {
   logic: string;
   exceptions: string;
   recommendation: string;
-  evidenceSummary?: EvidenceSummary;
   evidence_summary?: EvidenceSummary;
-  relatedImprovementIds?: string[];
   related_improvement_ids?: string[];
 }
 
@@ -58,32 +54,26 @@ export interface AssessmentSession {
   org: string;
   date: string;
   manager: string;
-  userId?: string;
   user_id?: string;
   level: MaturityLevel | string;
   status: AssessmentStatus;
   score: number | null;
   errors: AssessmentError[];
-  checklistDetails?: ChecklistItemResult[];
   checklist_details?: ChecklistItemResult[];
 }
 
 export interface AssessmentRunRequest {
-  orgName?: string;
   org_name?: string;
   manager?: string;
   department?: string;
   email?: string;
   contact?: string;
-  orgType?: string;
   org_type?: string;
-  infraType?: string;
   infra_type?: string;
   employees?: number | string;
   servers?: number | string;
   applications?: number | string;
   note?: string;
-  pillarScope?: Record<string, boolean>;
   pillar_scope?: Record<string, boolean>;
 }
 
@@ -160,12 +150,9 @@ export interface ImprovementItem {
   duration?: string;
   difficulty?: string;
   owner?: string;
-  expectedGain?: string;
   expected_gain?: string;
-  relatedItem?: string;
   related_item?: string;
   steps?: string[];
-  expectedEffect?: string;
   expected_effect?: string;
 }
 
