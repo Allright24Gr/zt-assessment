@@ -1,119 +1,101 @@
 # Readyz-T - Zero Trust 성숙도 진단 시스템
 
-## Windows 로컬에서 실행
+제로트러스트 가이드라인 2.0 기반 성숙도 진단 자동화 플랫폼.
 
-PowerShell 또는 VS Code 터미널에서 실행합니다.
+## 프로젝트 구조
 
-```powershell
+zt-assessment/
+├── frontend/        React + Vite 프론트엔드
+├── backend/         FastAPI 백엔드
+├── nmap-wrapper/    Nmap CLI 래퍼 서버 (Flask)
+├── trivy-wrapper/   Trivy CLI 래퍼 서버 (Flask)
+└── docker-compose.yml
+
+## 기술 스택
+
+| 구분 | 기술 |
+|---|---|
+| 프론트엔드 | React, TypeScript, Vite, shadcn/ui, recharts |
+| 백엔드 | Python, FastAPI, SQLAlchemy |
+| 오케스트레이션 | Shuffle (SOAR) |
+| 인증 진단 | Keycloak |
+| 로그/엔드포인트 진단 | Wazuh |
+| 네트워크 진단 | Nmap |
+| 컨테이너 취약점 진단 | Trivy |
+| 데이터 저장 | MySQL, Elasticsearch |
+| 인프라 | Docker, Docker Compose, AWS EC2 |
+
+## 로컬 개발 환경 세팅
+
+### 사전 준비
+
+- Docker, Docker Compose 설치
+- Git 설치
+
+### 실행 방법
+
 git clone https://github.com/Allright24Gr/zt-assessment
 cd zt-assessment
-npm install
-npm run dev
-```
+git checkout dev
 
-브라우저에서 접속:
+# 환경변수 설정
+cp .env.example .env
+# .env 파일 열어서 값 채우기
 
-```text
-http://localhost:5173
-```
+# 전체 실행
+docker compose up -d
 
-## WSL Linux에서 실행
+### 서비스 접속 주소 (로컬)
 
-Ubuntu 같은 WSL 터미널에서 실행합니다.
+프론트엔드:    http://localhost:8080
+백엔드 API:    http://localhost:8000/docs
+Shuffle:       http://localhost:3000
+Keycloak:      http://localhost:8443
+Elasticsearch: http://localhost:9200
+Wazuh API:     https://localhost:55000
+Nmap 래퍼:    http://localhost:5000
+Trivy 래퍼:   http://localhost:5001
 
-```bash
-git clone https://github.com/Allright24Gr/zt-assessment
-cd zt-assessment
-npm install
-npm run dev
-```
+### 단계별 실행 (메모리 절약)
 
-Windows 브라우저에서 접속:
+한 번에 전부 띄우면 메모리가 부족할 수 있다. 아래 순서로 단계별로 띄운다.
 
-```text
-http://localhost:5173
-```
+# 1단계 - DB + 백엔드
+docker compose up -d mysql zt-backend
 
-WSL에서 실행했는데 Windows 브라우저 접속이 안 되면 아래처럼 host 옵션을 붙입니다.
+# 2단계 - Keycloak
+docker compose up -d keycloak
 
-```bash
-npm run dev -- --host 0.0.0.0
-```
+# 3단계 - Wazuh + Elasticsearch
+docker compose up -d elasticsearch wazuh
 
-그 다음 다시 접속:
+# 4단계 - 나머지
+docker compose up -d shuffle nmap-wrapper trivy-wrapper zt-web
 
-```text
-http://localhost:5173
-```
+### 종료
 
-## Docker로 실행
-
-Docker Desktop이 설치되어 있으면 아래 명령어로 실행할 수 있습니다.
-
-```powershell
-docker compose up --build
-```
-
-브라우저에서 접속:
-
-```text
-http://localhost:8080
-```
-
-종료:
-
-```powershell
 docker compose down
-```
 
-## 같은 네트워크에서 다른 사람에게 보여주기
+## 브랜치 전략
 
-개발 서버를 외부 접속 가능하게 실행합니다.
+main    최종 배포본 (직접 push 금지)
+dev     통합 테스트 브랜치
 
-Windows PowerShell:
+feature/backend-skeleton
+feature/keycloak-collector
+feature/wazuh-collector
+feature/nmap-trivy-wrapper
+feature/frontend-api-connect
+feature/shuffle-workflow
+feature/scoring-engine
 
-```powershell
-npm run dev -- --host 0.0.0.0
-```
+작업 흐름: feature 브랜치 → PR → dev 머지 → 테스트 완료 후 main 머지
 
-WSL Linux:
+## 환경변수
 
-```bash
-npm run dev -- --host 0.0.0.0
-```
+.env.example 파일을 복사해서 .env 파일을 만들고 값을 채운다.
 
-터미널에 표시되는 `Network` 주소를 같은 Wi-Fi에 있는 사람에게 공유합니다.
+cp .env.example .env
 
-```text
-예: http://192.168.0.15:5173
-```
+.env 파일은 절대 GitHub에 올리지 않는다.
 
-학교/공용 Wi-Fi에서는 기기 간 접속이 막힐 수 있습니다. 이 경우 Vercel, localtunnel, ngrok 같은 공개 링크 방식이 필요합니다.
-
-## 빌드 확인
-
-```powershell
-npm run build
-```
-
-WSL에서는 같은 명령을 bash에서 실행하면 됩니다.
-
-```bash
-npm run build
-```
-
-## PowerShell 실행 정책 오류
-
-Windows PowerShell에서 아래 오류가 나면:
-
-```text
-스크립트를 실행할 수 없으므로 npm.ps1 파일을 로드할 수 없습니다
-```
-
-PowerShell에서 한 번만 실행합니다.
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-```
-
-`Y`를 입력한 뒤 터미널을 다시 열고 실행합니다.
