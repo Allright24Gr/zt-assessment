@@ -1,45 +1,329 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import Optional
+from datetime import datetime, timezone
+import httpx
+import os
+
 from database import get_db
+from models import (
+    DiagnosisSession, Checklist, CollectedData,
+    DiagnosisResult, MaturityScore, ScoreHistory, Organization, User,
+)
+from scoring.engine import score_session, determine_maturity_level
 
 router = APIRouter()
+
+SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "http://shuffle:3001")
+SHUFFLE_API_KEY = os.environ.get("SHUFFLE_API_KEY", "")
+SHUFFLE_WORKFLOW_ID = os.environ.get("SHUFFLE_WORKFLOW_ID", "")
 
 
 @router.post("/run")
 def run_assessment(
     org_id: int,
     user_id: int,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """진단 세션을 시작하고 백그라운드에서 데이터 수집·채점을 실행한다."""
-    # TODO: DiagnosisSession 레코드 생성
-    # TODO: background_tasks.add_task(run_collection_pipeline, session_id, db)
-    # TODO: 생성된 session_id 반환
-    raise NotImplementedError
+    org = db.query(Organization).filter(Organization.org_id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="조직을 찾을 수 없습니다.")
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
 
+    session = DiagnosisSession(
+        org_id=org_id,
+        user_id=user_id,
+        status="진행 중",
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
 
-@router.get("/result/{session_id}")
-def get_result(session_id: int, db: Session = Depends(get_db)):
-    """session_id에 해당하는 진단 결과(DiagnosisResult + MaturityScore)를 반환한다."""
-    # TODO: DiagnosisResult, MaturityScore, Evidence 조인 조회
-    # TODO: ChecklistDetail 형식으로 직렬화하여 반환
-    raise NotImplementedError
+    if SHUFFLE_WORKFLOW_ID and SHUFFLE_API_KEY:
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                client.post(
+                    f"{SHUFFLE_URL}/api/v1/workflows/{SHUFFLE_WORKFLOW_ID}/execute",
+                    headers={"Authorization": f"Bearer {SHUFFLE_API_KEY}"},
+                    json={"session_id": session.session_id, "org_id": org_id},
+                )
+        except Exception:
+            pass  # Shuffle 호출 실패해도 세션은 유지
 
-
-@router.get("/history")
-def get_history(org_id: Optional[int] = None, db: Session = Depends(get_db)):
-    """조직별 또는 전체 진단 세션 이력을 반환한다."""
-    # TODO: DiagnosisSession 목록 조회 (org_id 필터 선택)
-    # TODO: Session 형식으로 직렬화하여 반환
-    raise NotImplementedError
+    return {
+        "session_id": session.session_id,
+        "status": session.status,
+        "message": "진단이 시작되었습니다.",
+        "started_at": session.started_at.isoformat() if session.started_at else None,
+    }
 
 
 @router.post("/webhook")
 def assessment_webhook(payload: dict, db: Session = Depends(get_db)):
-    """Shuffle SOAR 또는 외부 도구에서 수집 결과를 수신하는 웹훅 엔드포인트."""
-    # TODO: payload 검증
-    # TODO: CollectedData 저장
-    # TODO: 해당 세션의 채점 트리거
-    raise NotImplementedError
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id가 필요합니다.")
+
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    items = payload.get("items", [])
+    for item in items:
+        item_id_str = item.get("item_id")
+        checklist = None
+        if item_id_str:
+            checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
+        check_id = item.get("check_id") or (checklist.check_id if checklist else None)
+        if not check_id:
+            continue
+
+        existing = db.query(CollectedData).filter(
+            CollectedData.session_id == session_id,
+            CollectedData.check_id == check_id,
+        ).first()
+
+        raw_error = item.get("error")
+        if existing:
+            existing.tool = item.get("tool", existing.tool)
+            existing.metric_key = item.get("metric_key", existing.metric_key)
+            existing.metric_value = item.get("metric_value")
+            existing.threshold = item.get("threshold")
+            existing.raw_json = item.get("raw_json")
+            existing.error = raw_error
+            existing.collected_at = datetime.now(timezone.utc)
+        else:
+            record = CollectedData(
+                session_id=session_id,
+                check_id=check_id,
+                tool=item.get("tool", "unknown"),
+                metric_key=item.get("metric_key", ""),
+                metric_value=item.get("metric_value"),
+                threshold=item.get("threshold"),
+                raw_json=item.get("raw_json"),
+                error=raw_error,
+            )
+            db.add(record)
+
+    db.commit()
+
+    auto_total = db.query(func.count(Checklist.check_id)).filter(
+        Checklist.diagnosis_type == "자동"
+    ).scalar() or 0
+
+    collected_count = db.query(func.count(CollectedData.data_id)).filter(
+        CollectedData.session_id == session_id
+    ).scalar() or 0
+
+    if auto_total > 0 and collected_count >= auto_total:
+        _finalize_session(session, db)
+
+    return {"status": "ok", "collected": collected_count}
+
+
+def _finalize_session(session: DiagnosisSession, db: Session):
+    session_id = session.session_id
+
+    collected_rows = db.query(CollectedData).filter(
+        CollectedData.session_id == session_id
+    ).all()
+
+    check_ids = [r.check_id for r in collected_rows]
+    meta_rows = db.query(Checklist).filter(Checklist.check_id.in_(check_ids)).all()
+
+    checklist_meta = [
+        {
+            "check_id": m.check_id,
+            "item_id": m.item_id,
+            "pillar": m.pillar,
+            "maturity_score": m.maturity_score,
+            "category": m.category,
+            "item_name": m.item_name,
+        }
+        for m in meta_rows
+    ]
+
+    collected_results = [
+        {
+            "check_id": r.check_id,
+            "tool": r.tool,
+            "metric_key": r.metric_key,
+            "metric_value": r.metric_value,
+            "threshold": r.threshold,
+            "raw_json": r.raw_json,
+            "error": r.error,
+        }
+        for r in collected_rows
+    ]
+
+    output = score_session(session_id, collected_results, checklist_meta)
+
+    for cr in output["checklist_results"]:
+        check_id = cr.get("check_id")
+        if not check_id:
+            continue
+        existing = db.query(DiagnosisResult).filter(
+            DiagnosisResult.session_id == session_id,
+            DiagnosisResult.check_id == check_id,
+        ).first()
+        if existing:
+            existing.result = cr["result"]
+            existing.score = cr["score"]
+            existing.recommendation = cr.get("recommendation", "")
+        else:
+            db.add(DiagnosisResult(
+                session_id=session_id,
+                check_id=check_id,
+                result=cr["result"],
+                score=cr["score"],
+                recommendation=cr.get("recommendation", ""),
+            ))
+
+    db.query(MaturityScore).filter(MaturityScore.session_id == session_id).delete()
+    for pillar, score in output["pillar_scores"].items():
+        db.add(MaturityScore(session_id=session_id, pillar=pillar, score=score))
+
+    db.add(ScoreHistory(
+        session_id=session_id,
+        org_id=session.org_id,
+        pillar_scores=output["pillar_scores"],
+        total_score=output["total_score"],
+        maturity_level=output["maturity_level"],
+    ))
+
+    session.status = "완료"
+    session.level = output["maturity_level"]
+    session.total_score = output["total_score"]
+    session.completed_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+@router.get("/result")
+def get_result(session_id: int, db: Session = Depends(get_db)):
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
+    user = db.query(User).filter(User.user_id == session.user_id).first()
+
+    results = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+
+    pillar_map: dict = {}
+    checklist_results = []
+    for dr, cl in results:
+        checklist_results.append({
+            "id": cl.item_id,
+            "pillar": cl.pillar,
+            "category": cl.category,
+            "item": cl.item_name,
+            "maturity": cl.maturity,
+            "maturity_score": cl.maturity_score,
+            "question": cl.question,
+            "diagnosis_type": cl.diagnosis_type,
+            "tool": cl.tool,
+            "result": dr.result,
+            "score": dr.score or 0.0,
+            "evidence": cl.evidence or "",
+            "criteria": cl.criteria or "",
+            "fields": cl.fields or "",
+            "logic": cl.logic or "",
+            "exceptions": cl.exceptions or "",
+            "recommendation": dr.recommendation or "",
+        })
+        pillar = cl.pillar
+        if pillar not in pillar_map:
+            pillar_map[pillar] = {"scores": [], "pass": 0, "fail": 0, "na": 0}
+        pillar_map[pillar]["scores"].append(dr.score or 0.0)
+        if dr.result == "충족":
+            pillar_map[pillar]["pass"] += 1
+        elif dr.result in ("미충족", "부분충족"):
+            pillar_map[pillar]["fail"] += 1
+        else:
+            pillar_map[pillar]["na"] += 1
+
+    maturity_rows = db.query(MaturityScore).filter(
+        MaturityScore.session_id == session_id
+    ).all()
+    maturity_by_pillar = {m.pillar: m.score for m in maturity_rows}
+
+    pillar_scores = []
+    for pillar, data in pillar_map.items():
+        avg = maturity_by_pillar.get(pillar) or (
+            sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0.0
+        )
+        pillar_scores.append({
+            "pillar": pillar,
+            "score": round(avg, 4),
+            "level": determine_maturity_level(avg),
+            "pass_cnt": data["pass"],
+            "fail_cnt": data["fail"],
+            "na_cnt": data["na"],
+        })
+
+    overall = session.total_score or 0.0
+
+    return {
+        "session": {
+            "id": session.session_id,
+            "org": org.name if org else "",
+            "date": session.started_at.isoformat() if session.started_at else "",
+            "manager": user.name if user else "",
+            "user_id": session.user_id,
+            "level": session.level or "",
+            "status": session.status,
+            "score": session.total_score,
+            "errors": [],
+        },
+        "pillar_scores": pillar_scores,
+        "overall_score": overall,
+        "overall_level": session.level or determine_maturity_level(overall),
+        "checklist_results": checklist_results,
+    }
+
+
+@router.get("/history")
+def get_history(
+    org_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(DiagnosisSession)
+    if org_id is not None:
+        query = query.filter(DiagnosisSession.org_id == org_id)
+    sessions = query.order_by(DiagnosisSession.started_at.desc()).all()
+
+    org_ids = list({s.org_id for s in sessions})
+    user_ids = list({s.user_id for s in sessions})
+    orgs = {o.org_id: o for o in db.query(Organization).filter(Organization.org_id.in_(org_ids)).all()}
+    users = {u.user_id: u for u in db.query(User).filter(User.user_id.in_(user_ids)).all()}
+
+    items = []
+    for s in sessions:
+        org = orgs.get(s.org_id)
+        user = users.get(s.user_id)
+        items.append({
+            "id": s.session_id,
+            "org": org.name if org else "",
+            "date": s.started_at.isoformat() if s.started_at else "",
+            "manager": user.name if user else "",
+            "user_id": s.user_id,
+            "level": s.level or "",
+            "status": s.status,
+            "score": s.total_score,
+            "errors": [],
+        })
+
+    completed = sum(1 for s in sessions if s.status == "완료")
+    return {"sessions": items, "total": len(items), "completed_count": completed}

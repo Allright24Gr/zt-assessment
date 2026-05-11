@@ -1,41 +1,45 @@
-from typing import List, Dict, Optional
-from datetime import datetime
+from typing import List, Dict
+from datetime import datetime, timezone
 
 
 CollectedResult = dict
 ScoringOutput = dict
-# {
-#   "session_id": int,
-#   "pillar_scores": Dict[str, float],   # pillar → 평균 성숙도 점수
-#   "total_score": float,
-#   "maturity_level": str,               # 기존 / 초기 / 향상 / 최적화
-#   "checklist_results": List[dict],     # 항목별 result + score
-#   "assessed_at": str
-# }
-
-MATURITY_LEVELS = {
-    (0.0, 1.5): "기존",
-    (1.5, 2.5): "초기",
-    (2.5, 3.5): "향상",
-    (3.5, 4.0): "최적화",
-}
 
 
 def score_single_item(collected: CollectedResult) -> dict:
-    """
-    수집 결과 단건을 받아 result(충족/부분충족/미충족/평가불가)와 score를 반환한다.
+    if collected.get("error"):
+        return {"result": "평가불가", "score": 0.0, "recommendation": "수집 오류로 인해 평가할 수 없습니다."}
 
-    Args:
-        collected: CollectedResult 형식 dict
+    metric_value = collected.get("metric_value")
+    threshold = collected.get("threshold")
+    maturity_score = collected.get("maturity_score", 1)
 
-    Returns:
-        {"result": str, "score": float, "recommendation": str}
-    """
-    # TODO: collected["error"] 있으면 result="평가불가", score=0.0 반환
-    # TODO: metric_value vs threshold 비교
-    # TODO: 비율에 따라 충족(1.0) / 부분충족(0.5) / 미충족(0.0) 판정
-    # TODO: maturity_score × 판정 가중치로 score 산출
-    raise NotImplementedError
+    if metric_value is None or threshold is None or threshold == 0:
+        return {"result": "평가불가", "score": 0.0, "recommendation": "임계값 또는 측정값 누락"}
+
+    if metric_value >= threshold:
+        result = "충족"
+        weight = 1.0
+    elif metric_value >= threshold * 0.7:
+        result = "부분충족"
+        weight = 0.5
+    else:
+        result = "미충족"
+        weight = 0.0
+
+    score = maturity_score * weight
+    return {"result": result, "score": score, "recommendation": ""}
+
+
+def determine_maturity_level(total_score: float) -> str:
+    if total_score >= 3.5:
+        return "최적화"
+    elif total_score >= 2.5:
+        return "향상"
+    elif total_score >= 1.5:
+        return "초기"
+    else:
+        return "기존"
 
 
 def score_session(
@@ -43,54 +47,76 @@ def score_session(
     collected_results: List[CollectedResult],
     checklist_meta: List[dict],
 ) -> ScoringOutput:
-    """
-    세션 전체 수집 결과를 받아 필라별·전체 성숙도 점수를 계산한다.
+    meta_by_check_id: Dict[int, dict] = {}
+    meta_by_item_id: Dict[str, dict] = {}
+    for m in checklist_meta:
+        if m.get("check_id"):
+            meta_by_check_id[m["check_id"]] = m
+        if m.get("item_id"):
+            meta_by_item_id[m["item_id"]] = m
 
-    Args:
-        session_id: 진단 세션 ID
-        collected_results: 해당 세션의 CollectedResult 목록
-        checklist_meta: Checklist 메타 목록 (pillar, maturity_score 포함)
+    checklist_results = []
+    pillar_score_lists: Dict[str, List[float]] = {}
 
-    Returns:
-        ScoringOutput 형식 dict
-    """
-    # TODO: item_id로 collected_results와 checklist_meta 매핑
-    # TODO: 항목별 score_single_item 호출
-    # TODO: pillar별 평균 점수 계산
-    # TODO: 전체 평균 계산 → maturity_level 결정
-    # TODO: ScoringOutput 조립 후 반환
-    raise NotImplementedError
+    for collected in collected_results:
+        check_id = collected.get("check_id")
+        item_id = collected.get("item_id")
+        meta = (
+            meta_by_check_id.get(check_id)
+            or meta_by_item_id.get(str(item_id) if item_id else "")
+            or {}
+        )
 
+        merged = {**collected, "maturity_score": meta.get("maturity_score", 1)}
+        item_result = score_single_item(merged)
 
-def determine_maturity_level(total_score: float) -> str:
-    """
-    전체 평균 점수(0.0~4.0)를 성숙도 레벨 문자열로 변환한다.
+        pillar = meta.get("pillar", "미분류")
+        pillar_score_lists.setdefault(pillar, []).append(item_result["score"])
 
-    Args:
-        total_score: 0.0 ~ 4.0 범위의 점수
+        checklist_results.append({
+            "item_id": item_id or meta.get("item_id"),
+            "check_id": check_id or meta.get("check_id"),
+            "pillar": pillar,
+            "result": item_result["result"],
+            "score": item_result["score"],
+            "recommendation": item_result.get("recommendation", ""),
+        })
 
-    Returns:
-        "기존" | "초기" | "향상" | "최적화"
-    """
-    # TODO: MATURITY_LEVELS 범위 테이블로 레벨 결정
-    raise NotImplementedError
+    pillar_scores: Dict[str, float] = {
+        pillar: sum(scores) / len(scores)
+        for pillar, scores in pillar_score_lists.items()
+        if scores
+    }
+
+    all_values = list(pillar_scores.values())
+    total_score = sum(all_values) / len(all_values) if all_values else 0.0
+
+    return {
+        "session_id": session_id,
+        "pillar_scores": pillar_scores,
+        "total_score": round(total_score, 4),
+        "maturity_level": determine_maturity_level(total_score),
+        "checklist_results": checklist_results,
+        "assessed_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def generate_recommendations(
     checklist_results: List[dict],
     improvement_guides: List[dict],
 ) -> List[dict]:
-    """
-    미충족·부분충족 항목에 대응하는 개선 가이드를 우선순위 순으로 정렬하여 반환한다.
+    PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+    TERM_ORDER = {"단기": 0, "중기": 1, "장기": 2}
 
-    Args:
-        checklist_results: score_session 반환값의 checklist_results
-        improvement_guides: ImprovementGuide 목록
+    failed_check_ids = {
+        r["check_id"]
+        for r in checklist_results
+        if r.get("result") in ("미충족", "부분충족")
+    }
 
-    Returns:
-        우선순위 정렬된 개선 가이드 목록
-    """
-    # TODO: result in ("미충족", "부분충족") 필터링
-    # TODO: check_id로 improvement_guides 매핑
-    # TODO: priority(Critical>High>Medium>Low), term(단기>중기>장기) 정렬
-    raise NotImplementedError
+    matched = [g for g in improvement_guides if g.get("check_id") in failed_check_ids]
+    matched.sort(key=lambda g: (
+        PRIORITY_ORDER.get(g.get("priority", "Low"), 3),
+        TERM_ORDER.get(g.get("term", "장기"), 2),
+    ))
+    return matched
