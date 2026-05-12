@@ -9,29 +9,36 @@ CollectedResult = dict
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080")
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "master")
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "admin-cli")
-KEYCLOAK_ADMIN = os.environ.get("KEYCLOAK_ADMIN", "")
-KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "")
+KEYCLOAK_ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USER", "")
+KEYCLOAK_ADMIN_PASS = os.environ.get("KEYCLOAK_ADMIN_PASS", "")
 
 _SYSTEM_ROLES = frozenset({"offline_access", "uma_authorization"})
+_token_cache: dict = {"token": None, "expires_at": 0.0}
 
 
 # ─────────────────────────── internal helpers ───────────────────────────
 
 def _get_admin_token() -> str:
-    """POST to master realm token endpoint, return access_token."""
+    """Return cached token; re-issue when within 30s of expiry."""
+    now = time.time()
+    if _token_cache["token"] and now < _token_cache["expires_at"] - 30:
+        return _token_cache["token"]
     url = f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token"
     resp = requests.post(
         url,
         data={
             "grant_type": "password",
             "client_id": KEYCLOAK_CLIENT_ID,
-            "username": KEYCLOAK_ADMIN,
-            "password": KEYCLOAK_ADMIN_PASSWORD,
+            "username": KEYCLOAK_ADMIN_USER,
+            "password": KEYCLOAK_ADMIN_PASS,
         },
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    data = resp.json()
+    _token_cache["token"] = data["access_token"]
+    _token_cache["expires_at"] = now + data.get("expires_in", 300)
+    return _token_cache["token"]
 
 
 def _now_iso() -> str:
@@ -92,6 +99,8 @@ def _api_get(path: str, params: dict = None, token: str = None) -> Any:
             raise ConnectionError(f"Connection failed: {url}: {exc}")
 
         if resp.status_code == 401 and not token_refreshed:
+            _token_cache["token"] = None
+            _token_cache["expires_at"] = 0.0
             current_token = _get_admin_token()
             token_refreshed = True
             continue
@@ -735,23 +744,27 @@ def collect_role_change_events(item_id: str, maturity: str) -> CollectedResult:
     try:
         token = _get_admin_token()
         realm = KEYCLOAK_REALM
-        realm_info = _api_get(f"/admin/realms/{realm}", token=token)
-        if not realm_info.get("eventsEnabled"):
+        try:
+            config = _api_get(f"/admin/realms/{realm}/events/config", token=token)
+        except Exception as exc:
+            return _unavailable(item_id, maturity, MK, TH, f"events/config 조회 실패: {exc}")
+        if not config.get("adminEventsEnabled"):
             return _make_result(item_id, maturity, MK, 0.0, TH, "미충족",
-                                {"eventsEnabled": False})
-        thirty_days_ms = int(
-            (datetime.now(timezone.utc) - timedelta(days=30)).timestamp() * 1000
-        )
+                                {"adminEventsEnabled": False}, "admin_events_storage_disabled")
         events = _api_get(
-            f"/admin/realms/{realm}/events",
-            params={"type": ["GRANT_CONSENT", "REVOKE_GRANT"], "dateFrom": thirty_days_ms, "max": 100},
+            f"/admin/realms/{realm}/admin-events",
+            params={
+                "operationTypes": ["CREATE", "DELETE"],
+                "resourceTypes": ["REALM_ROLE_MAPPING", "CLIENT_ROLE_MAPPING"],
+                "max": 100,
+            },
             token=token,
         )
         count = len(events) if events else 0
         verdict = "충족" if count >= 1 else "부분충족"
         return _make_result(item_id, maturity, MK, float(count), TH, verdict, {
             "event_count": count,
-            "eventsEnabled": True,
+            "adminEventsEnabled": True,
         })
     except (TimeoutError, ConnectionError, RuntimeError) as exc:
         return _unavailable(item_id, maturity, MK, TH, str(exc))
@@ -1174,21 +1187,39 @@ if __name__ == "__main__":
     class TestRoleChangeEvents(unittest.TestCase):
         @patch(f"{_M}._api_get")
         @patch(f"{_M}._get_admin_token", return_value="tok")
-        def test_미충족_events_disabled(self, _, mock_api):
-            mock_api.return_value = {"eventsEnabled": False}
+        def test_미충족_admin_events_disabled(self, _, mock_api):
+            mock_api.return_value = {"adminEventsEnabled": False}
             r = collect_role_change_events("1.4.2", "초기")
             self.assertEqual(r["result"], "미충족")
+            self.assertEqual(r["error"], "admin_events_storage_disabled")
 
         @patch(f"{_M}._api_get")
         @patch(f"{_M}._get_admin_token", return_value="tok")
         def test_충족_with_events(self, _, mock_api):
             def side(path, params=None, token=None):
-                if path.endswith(f"/{KEYCLOAK_REALM}"):
-                    return {"eventsEnabled": True}
-                return [{"type": "GRANT_CONSENT", "userId": "u1", "time": 1234567890}]
+                if "events/config" in path:
+                    return {"adminEventsEnabled": True}
+                return [{"operationType": "CREATE", "resourceType": "REALM_ROLE_MAPPING"}]
             mock_api.side_effect = side
             r = collect_role_change_events("1.4.2", "초기")
             self.assertEqual(r["result"], "충족")
+
+        @patch(f"{_M}._api_get")
+        @patch(f"{_M}._get_admin_token", return_value="tok")
+        def test_부분충족_no_events(self, _, mock_api):
+            def side(path, params=None, token=None):
+                if "events/config" in path:
+                    return {"adminEventsEnabled": True}
+                return []
+            mock_api.side_effect = side
+            r = collect_role_change_events("1.4.2", "초기")
+            self.assertEqual(r["result"], "부분충족")
+
+        @patch(f"{_M}._api_get", side_effect=RuntimeError("config 조회 실패"))
+        @patch(f"{_M}._get_admin_token", return_value="tok")
+        def test_평가불가_config_error(self, *_):
+            r = collect_role_change_events("1.4.2", "초기")
+            self.assertEqual(r["result"], "평가불가")
 
     class TestSsoClients(unittest.TestCase):
         @patch(f"{_M}._api_get", return_value=[
@@ -1208,6 +1239,37 @@ if __name__ == "__main__":
         def test_미충족_disabled(self, *_):
             r = collect_sso_clients("4.3.1", "향상")
             self.assertEqual(r["result"], "미충족")
+
+    class TestTokenCache(unittest.TestCase):
+        def setUp(self):
+            _token_cache["token"] = None
+            _token_cache["expires_at"] = 0.0
+
+        @patch("requests.post")
+        def test_issues_new_token_when_cache_empty(self, mock_post):
+            mock_post.return_value.json.return_value = {"access_token": "tok1", "expires_in": 300}
+            mock_post.return_value.raise_for_status = lambda: None
+            tok = _get_admin_token()
+            self.assertEqual(tok, "tok1")
+            self.assertEqual(mock_post.call_count, 1)
+
+        @patch("requests.post")
+        def test_returns_cached_token_before_expiry(self, mock_post):
+            _token_cache["token"] = "cached"
+            _token_cache["expires_at"] = time.time() + 200
+            tok = _get_admin_token()
+            self.assertEqual(tok, "cached")
+            mock_post.assert_not_called()
+
+        @patch("requests.post")
+        def test_reissues_token_within_30s_of_expiry(self, mock_post):
+            _token_cache["token"] = "old"
+            _token_cache["expires_at"] = time.time() + 20  # < 30s margin
+            mock_post.return_value.json.return_value = {"access_token": "new", "expires_in": 300}
+            mock_post.return_value.raise_for_status = lambda: None
+            tok = _get_admin_token()
+            self.assertEqual(tok, "new")
+            self.assertEqual(mock_post.call_count, 1)
 
     class TestApiGetRetry(unittest.TestCase):
         @patch("requests.get")
