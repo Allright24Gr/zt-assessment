@@ -15,7 +15,7 @@ from scoring.engine import score_session, determine_maturity_level
 
 router = APIRouter()
 
-SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "http://shuffle:3001")
+SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "http://shuffle:3000")
 SHUFFLE_API_KEY = os.environ.get("SHUFFLE_API_KEY", "")
 SHUFFLE_WORKFLOW_ID = os.environ.get("SHUFFLE_WORKFLOW_ID", "")
 
@@ -37,27 +37,28 @@ def run_assessment(
         org_id=org_id,
         user_id=user_id,
         status="진행 중",
+        started_at=datetime.now(timezone.utc),
     )
     db.add(session)
     db.commit()
     db.refresh(session)
 
-    if SHUFFLE_WORKFLOW_ID and SHUFFLE_API_KEY:
+    if SHUFFLE_WORKFLOW_ID:
         try:
             with httpx.Client(timeout=10.0) as client:
                 client.post(
                     f"{SHUFFLE_URL}/api/v1/workflows/{SHUFFLE_WORKFLOW_ID}/execute",
                     headers={"Authorization": f"Bearer {SHUFFLE_API_KEY}"},
-                    json={"session_id": session.session_id, "org_id": org_id},
+                    json={"execution_argument": {"session_id": session.session_id}},
                 )
         except Exception:
-            pass  # Shuffle 호출 실패해도 세션은 유지
+            pass
 
     return {
         "session_id": session.session_id,
-        "status": session.status,
+        "status": "진행 중",
         "message": "진단이 시작되었습니다.",
-        "started_at": session.started_at.isoformat() if session.started_at else None,
+        "started_at": session.started_at.isoformat(),
     }
 
 
@@ -73,13 +74,13 @@ def assessment_webhook(payload: dict, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
-    items = payload.get("items", [])
-    for item in items:
+    results = payload.get("results", [])
+    for item in results:
         item_id_str = item.get("item_id")
         checklist = None
         if item_id_str:
             checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
-        check_id = item.get("check_id") or (checklist.check_id if checklist else None)
+        check_id = checklist.check_id if checklist else None
         if not check_id:
             continue
 
@@ -88,17 +89,16 @@ def assessment_webhook(payload: dict, db: Session = Depends(get_db)):
             CollectedData.check_id == check_id,
         ).first()
 
-        raw_error = item.get("error")
         if existing:
             existing.tool = item.get("tool", existing.tool)
             existing.metric_key = item.get("metric_key", existing.metric_key)
             existing.metric_value = item.get("metric_value")
             existing.threshold = item.get("threshold")
             existing.raw_json = item.get("raw_json")
-            existing.error = raw_error
+            existing.error = item.get("error")
             existing.collected_at = datetime.now(timezone.utc)
         else:
-            record = CollectedData(
+            db.add(CollectedData(
                 session_id=session_id,
                 check_id=check_id,
                 tool=item.get("tool", "unknown"),
@@ -106,9 +106,8 @@ def assessment_webhook(payload: dict, db: Session = Depends(get_db)):
                 metric_value=item.get("metric_value"),
                 threshold=item.get("threshold"),
                 raw_json=item.get("raw_json"),
-                error=raw_error,
-            )
-            db.add(record)
+                error=item.get("error"),
+            ))
 
     db.commit()
 
@@ -121,13 +120,17 @@ def assessment_webhook(payload: dict, db: Session = Depends(get_db)):
     ).scalar() or 0
 
     if auto_total > 0 and collected_count >= auto_total:
-        _finalize_session(session, db)
+        _trigger_scoring(session_id, db)
 
-    return {"status": "ok", "collected": collected_count}
+    return {"status": "ok", "saved": len(results)}
 
 
-def _finalize_session(session: DiagnosisSession, db: Session):
-    session_id = session.session_id
+def _trigger_scoring(session_id: int, db: Session):
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        return
 
     collected_rows = db.query(CollectedData).filter(
         CollectedData.session_id == session_id
@@ -214,6 +217,18 @@ def get_result(session_id: int, db: Session = Depends(get_db)):
     org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
     user = db.query(User).filter(User.user_id == session.user_id).first()
 
+    maturity_rows = db.query(MaturityScore).filter(
+        MaturityScore.session_id == session_id
+    ).all()
+    pillar_scores = [
+        {
+            "pillar": m.pillar,
+            "score": round(m.score, 4),
+            "level": determine_maturity_level(m.score),
+        }
+        for m in maturity_rows
+    ]
+
     results = (
         db.query(DiagnosisResult, Checklist)
         .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
@@ -221,7 +236,6 @@ def get_result(session_id: int, db: Session = Depends(get_db)):
         .all()
     )
 
-    pillar_map: dict = {}
     checklist_results = []
     for dr, cl in results:
         checklist_results.append({
@@ -242,35 +256,6 @@ def get_result(session_id: int, db: Session = Depends(get_db)):
             "logic": cl.logic or "",
             "exceptions": cl.exceptions or "",
             "recommendation": dr.recommendation or "",
-        })
-        pillar = cl.pillar
-        if pillar not in pillar_map:
-            pillar_map[pillar] = {"scores": [], "pass": 0, "fail": 0, "na": 0}
-        pillar_map[pillar]["scores"].append(dr.score or 0.0)
-        if dr.result == "충족":
-            pillar_map[pillar]["pass"] += 1
-        elif dr.result in ("미충족", "부분충족"):
-            pillar_map[pillar]["fail"] += 1
-        else:
-            pillar_map[pillar]["na"] += 1
-
-    maturity_rows = db.query(MaturityScore).filter(
-        MaturityScore.session_id == session_id
-    ).all()
-    maturity_by_pillar = {m.pillar: m.score for m in maturity_rows}
-
-    pillar_scores = []
-    for pillar, data in pillar_map.items():
-        avg = maturity_by_pillar.get(pillar) or (
-            sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0.0
-        )
-        pillar_scores.append({
-            "pillar": pillar,
-            "score": round(avg, 4),
-            "level": determine_maturity_level(avg),
-            "pass_cnt": data["pass"],
-            "fail_cnt": data["fail"],
-            "na_cnt": data["na"],
         })
 
     overall = session.total_score or 0.0
@@ -325,5 +310,4 @@ def get_history(
             "errors": [],
         })
 
-    completed = sum(1 for s in sessions if s.status == "완료")
-    return {"sessions": items, "total": len(items), "completed_count": completed}
+    return {"sessions": items, "total": len(items)}
