@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { Building2, Upload, CheckCircle2, FileText, X } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
+import { runAssessment } from "../../config/api";
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
 const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"];
@@ -65,7 +66,22 @@ export function NewAssessment() {
   };
 
   const handleSubmit = () => {
-    navigate("/in-progress/new-session");
+    runAssessment({
+      org_name: formData.orgName,
+      manager: formData.manager,
+      department: formData.department,
+      email: formData.email,
+      contact: formData.contact,
+      org_type: formData.orgType,
+      infra_type: formData.infraType,
+      employees: Number(formData.employees) || 0,
+      servers: Number(formData.servers) || 0,
+      applications: Number(formData.applications) || 0,
+      note: formData.note,
+      pillar_scope: pillarScope,
+    })
+      .then((res) => navigate(`/in-progress/${res.session_id}`))
+      .catch(() => navigate("/in-progress/new-session"));
   };
 
   return (

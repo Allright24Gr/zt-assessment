@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import {
   ArrowDown,
@@ -23,8 +23,10 @@ import {
   YAxis,
 } from "recharts";
 import { useAuth } from "../context/AuthContext";
-import { sessions as allSessions } from "../data/mockData";
+import { sessions as mockSessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
+import { getAssessmentHistory } from "../../config/api";
+import type { AssessmentSession } from "../../types/api";
 
 type SortKey = "org" | "date" | "manager";
 type SortDir = "asc" | "desc";
@@ -52,21 +54,44 @@ function getLevelBadgeClass(level: string) {
   return "bg-blue-100 text-blue-700";
 }
 
+function toApiSession(s: typeof mockSessions[0]): AssessmentSession {
+  return {
+    id: s.id,
+    org: s.org,
+    date: s.date,
+    manager: s.manager,
+    user_id: s.userId,
+    level: s.level,
+    status: s.status,
+    score: s.score,
+    errors: s.errors,
+  };
+}
+
 export function History() {
   const { user } = useAuth();
   const [selectedSessions, setSelectedSessions] = useState<number[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [allSessions, setAllSessions] = useState<AssessmentSession[]>(
+    mockSessions.map(toApiSession)
+  );
+
+  useEffect(() => {
+    getAssessmentHistory()
+      .then((data) => setAllSessions(data.sessions))
+      .catch(() => {});
+  }, []);
 
   const baseSessions = user?.role === "admin"
     ? allSessions
-    : allSessions.filter((s) => s.userId === user?.id);
+    : allSessions.filter((s) => String(s.user_id) === String(user?.id));
 
   const sessions = useMemo(() => {
     return [...baseSessions].sort((a, b) => {
-      const va = a[sortKey];
-      const vb = b[sortKey];
-      return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      const va = a[sortKey] ?? "";
+      const vb = b[sortKey] ?? "";
+      return sortDir === "asc" ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
     });
   }, [baseSessions, sortKey, sortDir]);
 
@@ -81,7 +106,7 @@ export function History() {
   };
 
   const toggleSession = (id: number) => {
-    const session = sessions.find((item) => item.id === id);
+    const session = sessions.find((item) => Number(item.id) === id);
     if (session?.status === "진행 중") return;
     setSelectedSessions((prev) => (
       prev.includes(id) ? prev.filter((sessionId) => sessionId !== id) : [...prev, id]
@@ -89,8 +114,8 @@ export function History() {
   };
 
   const selectedData = selectedSessions
-    .map((id) => sessions.find((session) => session.id === id))
-    .filter(Boolean) as typeof sessions;
+    .map((id) => sessions.find((session) => Number(session.id) === id))
+    .filter(Boolean) as AssessmentSession[];
 
   const radarData = PILLARS.map((p, i) => {
     const entry: Record<string, string | number> = { pillar: p.shortLabel };
@@ -167,9 +192,10 @@ export function History() {
             </thead>
             <tbody>
               {sessions.map((session) => {
+                const numId = Number(session.id);
                 const isInProgress = session.status === "진행 중";
-                const isSelected = selectedSessions.includes(session.id);
-                const selIdx = selectedSessions.indexOf(session.id);
+                const isSelected = selectedSessions.includes(numId);
+                const selIdx = selectedSessions.indexOf(numId);
 
                 return (
                   <tr
@@ -183,7 +209,7 @@ export function History() {
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            onChange={() => toggleSession(session.id)}
+                            onChange={() => toggleSession(numId)}
                             disabled={isInProgress}
                             className="w-4 h-4 accent-blue-600 disabled:opacity-30 disabled:cursor-not-allowed"
                           />
@@ -227,9 +253,9 @@ export function History() {
                       </td>
                       {user?.role === "admin" && (
                         <td className="py-3 px-4">
-                          {session.errors.length > 0 ? (
+                          {(session.errors?.length ?? 0) > 0 ? (
                             <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-sm">
-                              {session.errors.length}개
+                              {session.errors!.length}개
                             </span>
                           ) : (
                             <span className="text-green-600 text-sm">정상</span>

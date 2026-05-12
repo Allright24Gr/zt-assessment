@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import {
   AlertTriangle,
@@ -30,25 +31,96 @@ import { useAuth } from "../context/AuthContext";
 import { improvements, sessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
 import { MATURITY_STEPS, getMaturityLevel, getScoreColor } from "../lib/maturity";
+import {
+  getAssessmentHistory,
+  getImprovement,
+  getScoreSummary,
+} from "../../config/api";
+import type { AssessmentSession, ImprovementItem } from "../../types/api";
 
-const PILLAR_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
+const DEFAULT_PILLAR_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
 const TARGET_SCORES = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
-const AVG_SCORE = Number((PILLAR_SCORES.reduce((a, b) => a + b, 0) / PILLAR_SCORES.length).toFixed(2));
 const PREV_SCORE = 2.1;
-const TREND = AVG_SCORE - PREV_SCORE;
 
-const weakestPillar = PILLARS
-  .map((p, i) => ({ ...p, score: PILLAR_SCORES[i] }))
-  .sort((a, b) => a.score - b.score)[0];
-
-const topTasks = improvements.slice(0, 3);
+function pillarMatchesKey(apiPillar: string, key: string): boolean {
+  const MAP: Record<string, string[]> = {
+    Identify: ["식별", "신원"],
+    Device: ["기기", "디바이스"],
+    Network: ["네트워크"],
+    System: ["시스템"],
+    Application: ["애플리케이션"],
+    Data: ["데이터"],
+  };
+  return (MAP[key] ?? []).some((kw) => apiPillar.includes(kw));
+}
 
 export function Dashboard() {
   const { user } = useAuth();
 
+  const [pillarScores, setPillarScores] = useState(DEFAULT_PILLAR_SCORES);
+  const [avgScore, setAvgScore] = useState(
+    Number((DEFAULT_PILLAR_SCORES.reduce((a, b) => a + b, 0) / DEFAULT_PILLAR_SCORES.length).toFixed(2))
+  );
+  const [apiSessions, setApiSessions] = useState<AssessmentSession[] | null>(null);
+  const [apiTopTasks, setApiTopTasks] = useState<ImprovementItem[] | null>(null);
+
+  useEffect(() => {
+    getAssessmentHistory()
+      .then((data) => {
+        setApiSessions(data.sessions);
+        const latestCompleted = data.sessions.find((s) => s.status === "완료");
+        if (latestCompleted) {
+          getScoreSummary(latestCompleted.id)
+            .then((summary) => {
+              const scores = PILLARS.map((p, i) => {
+                const match = summary.pillar_scores.find((ps) =>
+                  pillarMatchesKey(ps.pillar, p.key)
+                );
+                return match ? match.score : DEFAULT_PILLAR_SCORES[i];
+              });
+              setPillarScores(scores);
+              setAvgScore(summary.overall_score);
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+
+    getImprovement()
+      .then((data) => setApiTopTasks(data.items))
+      .catch(() => {});
+  }, []);
+
+  const TREND = avgScore - PREV_SCORE;
+
+  const weakestPillar = PILLARS
+    .map((p, i) => ({ ...p, score: pillarScores[i] }))
+    .sort((a, b) => a.score - b.score)[0];
+
+  const topTasks = apiTopTasks ? apiTopTasks.slice(0, 3) : improvements.slice(0, 3);
+
+  const recentSessions: AssessmentSession[] = apiSessions
+    ? (user?.role === "admin"
+      ? apiSessions.slice(0, 5)
+      : apiSessions.filter((s) => String(s.user_id) === String(user?.id)).slice(0, 3))
+    : (user?.role === "admin"
+      ? sessions.slice(0, 5)
+      : sessions.filter((s) => s.userId === user?.id).slice(0, 3)
+    ).map((s) => ({
+      id: s.id,
+      org: s.org,
+      date: s.date,
+      manager: s.manager,
+      user_id: s.userId,
+      level: s.level,
+      status: s.status,
+      score: s.score,
+      errors: s.errors,
+    }));
+
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
-    current: PILLAR_SCORES[i],
+    current: pillarScores[i],
     target: TARGET_SCORES[i],
   }));
 
@@ -57,12 +129,8 @@ export function Dashboard() {
     { date: "2026-01", level: 1.5 },
     { date: "2026-02", level: 1.8 },
     { date: "2026-03", level: 2.1 },
-    { date: "2026-04", level: AVG_SCORE },
+    { date: "2026-04", level: avgScore },
   ];
-
-  const recentSessions = user?.role === "admin"
-    ? sessions.slice(0, 5)
-    : sessions.filter((s) => s.userId === user?.id).slice(0, 3);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -77,7 +145,7 @@ export function Dashboard() {
         <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-xl p-5 flex flex-col justify-between">
           <p className="text-blue-200 text-sm">종합 성숙도 점수</p>
           <div>
-            <p className="text-5xl font-bold mt-2">{AVG_SCORE}</p>
+            <p className="text-5xl font-bold mt-2">{avgScore}</p>
             <p className="text-blue-200 text-sm mt-1">/ 4.0</p>
           </div>
           <div className="flex items-center gap-1 mt-3">
@@ -102,10 +170,10 @@ export function Dashboard() {
 
         <div className="bg-white border border-gray-200 rounded-xl p-5">
           <p className="text-gray-500 text-sm mb-3">성숙도 단계</p>
-          <p className="text-2xl font-bold text-gray-900 mb-4">{getMaturityLevel(AVG_SCORE)}</p>
+          <p className="text-2xl font-bold text-gray-900 mb-4">{getMaturityLevel(avgScore)}</p>
           <div className="space-y-1.5">
             {MATURITY_STEPS.map((step) => {
-              const current = getMaturityLevel(AVG_SCORE) === step;
+              const current = getMaturityLevel(avgScore) === step;
               return (
                 <div key={step} className={`flex items-center gap-2 px-2 py-1 rounded ${current ? "bg-blue-50" : ""}`}>
                   <div className={`w-2 h-2 rounded-full ${current ? "bg-blue-500" : "bg-gray-200"}`} />
@@ -179,7 +247,7 @@ export function Dashboard() {
         <h2 className="mb-4">필러별 성숙도 현황</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-4">
           {PILLARS.map((p, i) => {
-            const score = PILLAR_SCORES[i];
+            const score = pillarScores[i];
             const colors = getScoreColor(score);
             const pct = (score / 4) * 100;
             return (
@@ -232,7 +300,7 @@ export function Dashboard() {
           <p className="text-sm text-gray-500 mb-5">현재 점수와 목표 점수의 차이를 필러별로 확인합니다. 목표값 변경은 설정에서 관리합니다.</p>
           <div className="space-y-3">
             {PILLARS.map((pillar, index) => {
-              const current = PILLAR_SCORES[index];
+              const current = pillarScores[index];
               const target = TARGET_SCORES[index];
               const gap = Number((current - target).toFixed(1));
               const colors = getScoreColor(current);
@@ -305,8 +373,8 @@ export function Dashboard() {
                     <td className="py-3 px-4 text-gray-600">{session.date}</td>
                     <td className="py-3 px-4">
                       {session.score !== null ? (
-                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getScoreColor(session.score).badge}`}>
-                          {getMaturityLevel(session.score)}
+                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getScoreColor(session.score ?? 0).badge}`}>
+                          {getMaturityLevel(session.score ?? 0)}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-sm text-blue-600">
