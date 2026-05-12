@@ -98,7 +98,7 @@ services:
       context: ./nmap-wrapper
       dockerfile: Dockerfile
     ports:
-      - "5000:5000"
+      - "8001:5000"
     networks:
       - zt-network
 
@@ -107,7 +107,7 @@ services:
       context: ./trivy-wrapper
       dockerfile: Dockerfile
     ports:
-      - "5001:5001"
+      - "8002:5001"
     networks:
       - zt-network
 
