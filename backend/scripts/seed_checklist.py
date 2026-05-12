@@ -562,12 +562,16 @@ CHECKLIST_DATA = [
 ]
 
 
+MATURITY_WEIGHT = {"기존": 0.1, "초기": 0.2, "향상": 0.3, "최적화": 0.4}
+
+
 def seed():
     db = SessionLocal()
     try:
         inserted = 0
         updated = 0
         for row in CHECKLIST_DATA:
+            row = {**row, "weight": MATURITY_WEIGHT.get(row.get("maturity", "기존"), 0.1)}
             existing = db.query(Checklist).filter(
                 Checklist.item_id == row["item_id"]
             ).first()

@@ -76,6 +76,7 @@ class Checklist(Base):
     fields = Column(Text, nullable=True)
     logic = Column(Text, nullable=True)
     exceptions = Column(Text, nullable=True)
+    weight = Column(Float, nullable=False, default=0.1)
 
     collected_data = relationship("CollectedData", back_populates="checklist")
     evidences = relationship("Evidence", back_populates="checklist")
