@@ -53,6 +53,7 @@ COL = {
 
 def _find_xlsx() -> Path:
     candidates = [
+        Path("/app/신뢰많이된다_체크리스트_매핑_v7.xlsx"),
         Path("/root/projects/신뢰많이된다_체크리스트_매핑_v7.xlsx"),
         Path(__file__).parent.parent.parent / "신뢰많이된다_체크리스트_매핑_v7.xlsx",
     ]
