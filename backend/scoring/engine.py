@@ -14,10 +14,18 @@ def score_single_item(collected: CollectedResult) -> dict:
     threshold = collected.get("threshold")
     maturity_score = collected.get("maturity_score", 1)
 
-    if metric_value is None or threshold is None or threshold == 0:
+    if metric_value is None or threshold is None:
         return {"result": "평가불가", "score": 0.0, "recommendation": "임계값 또는 측정값 누락"}
 
-    if metric_value >= threshold:
+    if threshold == 0:
+        # "낮을수록 좋음" 역방향 판정 (미패치 취약점 수, 평문 알림 수 등)
+        if metric_value == 0:
+            result, weight = "충족", 1.0
+        elif metric_value <= 5:
+            result, weight = "부분충족", 0.5
+        else:
+            result, weight = "미충족", 0.0
+    elif metric_value >= threshold:
         result = "충족"
         weight = 1.0
     elif metric_value >= threshold * 0.7:
