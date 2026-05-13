@@ -1,6 +1,6 @@
 # Readyz-T ZT Assessment — 전체 구현 현황 및 기능 명세
 
-> 작성일: 2026-05-12  
+> 작성일: 2026-05-13 (최초: 2026-05-12)  
 > 현재 체크아웃: `dev`  
 > 서버: EC2 `3.35.200.145` (Ubuntu 24.04, t3a.xlarge 4vCPU/16GB)
 
@@ -8,13 +8,16 @@
 
 ## 1. 브랜치 현황
 
-| 브랜치 | 원격 동기화 | 마지막 커밋 | 담당 |
-|--------|------------|-------------|------|
-| `master` | ✅ | — | 최종 배포본 (직접 push 금지) |
-| `dev` | ✅ | `eb94be5` Merge feature/backend-skeleton | 통합 기준 |
-| `feature/keycloak-collector` | ✅ `e0fa919` | feat: wire assessment pipeline and API endpoints | 공나영 |
-| `feature/wazuh-collector` | ✅ `02879ea` | feat: implement wazuh_collector with 42 functions | 공나영 (대리) |
-| `feature/backend-skeleton` | ✅ | — | 서진우 |
+| 브랜치 | 로컬 | 원격 | 마지막 커밋 | 담당 |
+|--------|------|------|-------------|------|
+| `master` | ✅ | ✅ | — | 최종 배포본 (직접 push 금지) |
+| `dev` | ✅ | ✅ | `6239a4c` merge: resolve conflict - implement assessment router | 통합 기준 |
+| `feature/keycloak-collector` | ❌ | ✅ `e0fa919` | feat: wire assessment pipeline and API endpoints | 공나영 |
+| `feature/wazuh-collector` | ❌ | ✅ `02879ea` | feat: implement wazuh_collector with 42 functions | 공나영 (대리) |
+| `feature/backend-skeleton` | ✅ | ✅ | — | 서진우 |
+| `feature/nmap-trivy-wrapper` | ✅ | ✅ | — | 송민희 |
+
+> **참고**: `feature/keycloak-collector`, `feature/wazuh-collector`는 원격에만 존재하며 로컬에 체크아웃되어 있지 않음.
 
 ---
 
@@ -30,8 +33,8 @@ zt-assessment/
 │   ├── Dockerfile
 │   ├── init.sql
 │   ├── collectors/
-│   │   ├── keycloak_collector.py      # ✅ 구현 완료 — 33개 함수
-│   │   ├── wazuh_collector.py         # ✅ 구현 완료 — 42개 함수
+│   │   ├── keycloak_collector.py      # ⚠️ dev에는 스켈레톤 — feature/keycloak-collector에 구현 완료 (33개 함수, 1,302줄)
+│   │   ├── wazuh_collector.py         # ⚠️ dev에는 스켈레톤 — feature/wazuh-collector에 구현 완료 (42개 함수, 1,821줄)
 │   │   ├── nmap_collector.py          # ⬜ 스켈레톤 (미구현)
 │   │   └── trivy_collector.py         # ⬜ 스켈레톤 (미구현)
 │   ├── routers/
@@ -307,7 +310,9 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 8. Keycloak Collector (feature/keycloak-collector)
+## 8. Keycloak Collector (feature/keycloak-collector 브랜치 기준)
+
+> **주의**: 아래 내용은 `feature/keycloak-collector` 브랜치 기준. `dev` 브랜치의 해당 파일은 스켈레톤(65줄)이며 아직 머지되지 않음.
 
 **파일**: `backend/collectors/keycloak_collector.py` (1,302줄)  
 **API**: Keycloak Admin REST API (`KEYCLOAK_URL/admin/realms/...`)  
@@ -373,7 +378,9 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 9. Wazuh Collector (feature/wazuh-collector)
+## 9. Wazuh Collector (feature/wazuh-collector 브랜치 기준)
+
+> **주의**: 아래 내용은 `feature/wazuh-collector` 브랜치 기준. `dev` 브랜치의 해당 파일은 스켈레톤(60줄)이며 아직 머지되지 않음.
 
 **파일**: `backend/collectors/wazuh_collector.py` (1,821줄)  
 **API A (Manager API)**: `WAZUH_API_URL` (포트 55000) — JWT 인증  
