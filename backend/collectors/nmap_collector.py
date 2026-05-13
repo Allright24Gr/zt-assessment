@@ -1,4 +1,3 @@
-from typing import Optional
 from datetime import datetime, timezone
 import os
 import httpx
@@ -9,20 +8,60 @@ CollectedResult = dict
 NMAP_WRAPPER_URL = os.environ.get("NMAP_WRAPPER_URL", "http://nmap-wrapper:5000")
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ok(item_id: str, maturity: str, result: str, metric_key: str,
+        metric_value: float, threshold: float, raw: dict) -> CollectedResult:
+    return {
+        "item_id": item_id, "maturity": maturity, "tool": "nmap",
+        "result": result, "metric_key": metric_key, "metric_value": metric_value,
+        "threshold": threshold, "raw_json": raw, "collected_at": _now_iso(),
+        "error": None,
+    }
+
+
+def _err(item_id: str, maturity: str, metric_key: str, threshold: float,
+         error: str, raw: dict = None) -> CollectedResult:
+    return {
+        "item_id": item_id, "maturity": maturity, "tool": "nmap",
+        "result": "평가불가", "metric_key": metric_key, "metric_value": 0.0,
+        "threshold": threshold, "raw_json": raw or {}, "collected_at": _now_iso(),
+        "error": error,
+    }
+
+
 def collect_open_ports(
     item_id: str,
     maturity: str,
     target_ip: str,
     ports: str = "1-1024",
 ) -> CollectedResult:
-    """
-    외부 노출 포트 스캔
-    POST {NMAP_WRAPPER_URL}/scan/ports
-    """
-    # TODO: nmap-wrapper /scan/ports 호출
-    # TODO: 불필요하게 열린 포트 수 집계
-    # TODO: threshold와 비교하여 결과 판정
-    raise NotImplementedError
+    mk, thr = "open_port_count", 5.0
+    try:
+        resp = httpx.post(
+            f"{NMAP_WRAPPER_URL}/scan/ports",
+            json={"item_id": item_id, "target_ip": target_ip, "ports": ports},
+            timeout=90,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+
+    if data.get("error"):
+        return _err(item_id, maturity, mk, thr, data["error"], data.get("raw_json", {}))
+
+    count = float(data.get("metric_value", 0))
+    if count == 0:
+        result = "충족"
+    elif count <= thr:
+        result = "부분충족"
+    else:
+        result = "미충족"
+
+    return _ok(item_id, maturity, result, mk, count, thr, data.get("raw_json", {}))
 
 
 def collect_tls_status(
@@ -30,14 +69,30 @@ def collect_tls_status(
     maturity: str,
     target_ip: str,
 ) -> CollectedResult:
-    """
-    TLS 적용 여부 스캔
-    POST {NMAP_WRAPPER_URL}/scan/tls
-    """
-    # TODO: nmap-wrapper /scan/tls 호출
-    # TODO: TLS 미적용 포트 비율 계산
-    # TODO: 결과 판정 후 CollectedResult 반환
-    raise NotImplementedError
+    mk, thr = "tls_covered_ratio", 1.0
+    try:
+        resp = httpx.post(
+            f"{NMAP_WRAPPER_URL}/scan/tls",
+            json={"item_id": item_id, "target_ip": target_ip},
+            timeout=90,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+
+    if data.get("error"):
+        return _err(item_id, maturity, mk, thr, data["error"], data.get("raw_json", {}))
+
+    ratio = float(data.get("metric_value", 0))
+    if ratio >= 1.0:
+        result = "충족"
+    elif ratio >= 0.5:
+        result = "부분충족"
+    else:
+        result = "미충족"
+
+    return _ok(item_id, maturity, result, mk, ratio, thr, data.get("raw_json", {}))
 
 
 def collect_subnet_topology(
@@ -45,11 +100,27 @@ def collect_subnet_topology(
     maturity: str,
     network_range: str,
 ) -> CollectedResult:
-    """
-    서브넷 탐지 및 마이크로 세그멘테이션 현황
-    POST {NMAP_WRAPPER_URL}/scan/subnets
-    """
-    # TODO: nmap-wrapper /scan/subnets 호출
-    # TODO: 발견된 서브넷·호스트 수 집계
-    # TODO: 세그멘테이션 기준과 비교하여 결과 판정
-    raise NotImplementedError
+    mk, thr = "subnet_count", 2.0
+    try:
+        resp = httpx.post(
+            f"{NMAP_WRAPPER_URL}/scan/subnets",
+            json={"item_id": item_id, "network_range": network_range},
+            timeout=90,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+
+    if data.get("error"):
+        return _err(item_id, maturity, mk, thr, data["error"], data.get("raw_json", {}))
+
+    count = float(data.get("metric_value", 0))
+    if count >= thr:
+        result = "충족"
+    elif count == 1:
+        result = "부분충족"
+    else:
+        result = "미충족"
+
+    return _ok(item_id, maturity, result, mk, count, thr, data.get("raw_json", {}))
