@@ -11,13 +11,14 @@
 | 브랜치 | 로컬 | 원격 | 마지막 커밋 | 담당 |
 |--------|------|------|-------------|------|
 | `master` | ✅ | ✅ | — | 최종 배포본 (직접 push 금지) |
-| `dev` | ✅ | ✅ | `6239a4c` merge: resolve conflict - implement assessment router | 통합 기준 |
+| `dev` | ✅ | ✅ | `f95a1bb` Merge feature/nmap-trivy-wrapper | 통합 기준 |
 | `feature/keycloak-collector` | ❌ | ✅ `e0fa919` | feat: wire assessment pipeline and API endpoints | 공나영 |
-| `feature/wazuh-collector` | ❌ | ✅ `02879ea` | feat: implement wazuh_collector with 42 functions | 공나영 (대리) |
+| `feature/wazuh-collector` | ❌ | ✅ `02879ea` | feat: implement wazuh_collector with 42 diagnostic functions | 공나영 (대리) |
 | `feature/backend-skeleton` | ✅ | ✅ | — | 서진우 |
 | `feature/nmap-trivy-wrapper` | ✅ | ✅ | — | 송민희 |
 
-> **참고**: `feature/keycloak-collector`, `feature/wazuh-collector`는 원격에만 존재하며 로컬에 체크아웃되어 있지 않음.
+> **참고**: `feature/keycloak-collector`, `feature/wazuh-collector`는 원격에만 존재하며 로컬에 체크아웃되어 있지 않음.  
+> **머지 완료**: 위 4개 feature 브랜치 모두 `dev`에 머지됨 (2026-05-13).
 
 ---
 
@@ -33,28 +34,34 @@ zt-assessment/
 │   ├── Dockerfile
 │   ├── init.sql
 │   ├── collectors/
-│   │   ├── keycloak_collector.py      # ⚠️ dev에는 스켈레톤 — feature/keycloak-collector에 구현 완료 (33개 함수, 1,302줄)
-│   │   ├── wazuh_collector.py         # ⚠️ dev에는 스켈레톤 — feature/wazuh-collector에 구현 완료 (42개 함수, 1,821줄)
+│   │   ├── keycloak_collector.py      # ✅ 구현 완료 — 33개 함수 (dev 머지 완료)
+│   │   ├── wazuh_collector.py         # ✅ 구현 완료 — 42개 함수 (dev 머지 완료)
 │   │   ├── nmap_collector.py          # ⬜ 스켈레톤 (미구현)
 │   │   └── trivy_collector.py         # ⬜ 스켈레톤 (미구현)
 │   ├── routers/
-│   │   ├── assessment.py              # ✅ 구현 완료
-│   │   ├── score.py                   # ✅ 구현 완료
+│   │   ├── assessment.py              # ✅ 구현 완료 (4개 엔드포인트)
+│   │   ├── score.py                   # ✅ 구현 완료 (3개 엔드포인트)
 │   │   ├── checklist.py               # ✅ 구현 완료
 │   │   ├── improvement.py             # ✅ 구현 완료
-│   │   ├── manual.py                  # ⬜ TODO
-│   │   └── report.py                  # ⬜ TODO
+│   │   ├── manual.py                  # ⬜ TODO (NotImplementedError)
+│   │   └── report.py                  # ⬜ TODO (NotImplementedError)
 │   ├── scoring/
-│   │   └── engine.py                  # ✅ 구현 완료
+│   │   └── engine.py                  # ✅ 구현 완료 (⚠️ threshold=0 버그 있음, §13 참고)
 │   └── scripts/
-│       └── seed_checklist.py          # 체크리스트 DB 적재 스크립트
+│       └── seed_checklist.py          # ✅ 체크리스트 DB 적재 스크립트 (루트에도 중복 존재)
 ├── frontend/
-│   ├── src/app/pages/                 # Dashboard, History, NewAssessment, Reporting 등
+│   ├── src/app/pages/
+│   │   ├── Dashboard.tsx              # ✅ API 연동 완료 (fallback 포함)
+│   │   ├── History.tsx                # ✅ API 연동 완료 (fallback 포함)
+│   │   ├── NewAssessment.tsx          # ✅ API 연동 완료 (runAssessment 호출)
+│   │   └── Reporting.tsx              # ✅ API 연동 완료 (fallback 포함)
 │   ├── src/app/data/                  # mockData.ts, checklistItems.ts, constants.ts
 │   ├── src/config/api.ts              # API 호출 함수
 │   └── src/types/api.ts               # TypeScript 타입 정의
-├── nmap-wrapper/app.py                # Nmap CLI 래퍼 (Flask)
-├── trivy-wrapper/app.py               # Trivy CLI 래퍼 (Flask)
+├── nmap-wrapper/
+│   └── app.py                         # ✅ 구현 완료 — 10개 엔드포인트 (Flask)
+├── trivy-wrapper/
+│   └── app.py                         # ✅ 구현 완료 — 11개 엔드포인트 (Flask)
 ├── docker-compose.yml
 └── CLAUDE.md
 ```
@@ -69,11 +76,13 @@ zt-assessment/
 | 8000 | 백엔드 (FastAPI) |
 | 3000 | Shuffle UI |
 | 8443 | Keycloak |
-| 9200 | Wazuh Indexer (OpenSearch) |
+| 9201 | Wazuh Indexer / Elasticsearch (호스트 포트 9201 → 컨테이너 9200) |
 | 55000 | Wazuh Manager API |
-| 5000 | Nmap 래퍼 |
-| 5001 | Trivy 래퍼 |
+| 8001 | Nmap 래퍼 (호스트 포트 8001 → 컨테이너 5000) |
+| 8002 | Trivy 래퍼 (호스트 포트 8002 → 컨테이너 5001) |
 | 3306 | MySQL |
+
+> Shuffle 서비스는 docker-compose.yml에서 주석 처리됨 (로컬 미사용).
 
 ---
 
@@ -121,7 +130,7 @@ user_id: int
 
 **내부 동작**
 1. `DiagnosisSession` 레코드 생성 (status="진행 중")
-2. `SHUFFLE_WORKFLOW_ID` 환경변수 있으면 Shuffle API `POST /api/v1/workflows/{id}/execute` 호출
+2. `SHUFFLE_WORKFLOW_ID` 환경변수 있으면 Shuffle API `POST /api/v1/workflows/{id}/execute` 호출 (`httpx` 사용)
 3. Shuffle 호출 실패해도 세션 ID는 반환 (fire-and-forget)
 
 ---
@@ -280,12 +289,19 @@ pillar별 성숙도 점수 요약.
 
 `score = maturity_score × weight`
 
+> ⚠️ **알려진 버그**: `threshold == 0`이면 값 누락으로 간주하여 강제로 "평가불가" 반환.  
+> `cleartext_alert_count`, `critical_unfixed_count`, `high_risk_alert_count` 등 threshold=0인 항목이 항상 평가불가 처리됨. 수정 필요.
+
 ### 세션 채점 (`score_session`)
 
 1. 항목별 `score_single_item` 실행
 2. pillar별 점수 평균 → `pillar_scores`
 3. pillar 점수 전체 평균 → `total_score`
 4. `determine_maturity_level(total_score)` → `maturity_level`
+
+### 추가 함수 (`generate_recommendations`)
+
+미충족·부분충족 항목의 check_id를 기준으로 ImprovementGuide를 매핑하여 우선순위(Critical→Low) + 기간(단기→장기) 순으로 반환. assessment.py의 `_trigger_scoring()`에서 사용.
 
 ---
 
@@ -310,9 +326,7 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 8. Keycloak Collector (feature/keycloak-collector 브랜치 기준)
-
-> **주의**: 아래 내용은 `feature/keycloak-collector` 브랜치 기준. `dev` 브랜치의 해당 파일은 스켈레톤(65줄)이며 아직 머지되지 않음.
+## 8. Keycloak Collector (feature/keycloak-collector 브랜치 기준 → dev 머지 완료)
 
 **파일**: `backend/collectors/keycloak_collector.py` (1,302줄)  
 **API**: Keycloak Admin REST API (`KEYCLOAK_URL/admin/realms/...`)  
@@ -378,9 +392,7 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 9. Wazuh Collector (feature/wazuh-collector 브랜치 기준)
-
-> **주의**: 아래 내용은 `feature/wazuh-collector` 브랜치 기준. `dev` 브랜치의 해당 파일은 스켈레톤(60줄)이며 아직 머지되지 않음.
+## 9. Wazuh Collector (feature/wazuh-collector 브랜치 기준 → dev 머지 완료)
 
 **파일**: `backend/collectors/wazuh_collector.py` (1,821줄)  
 **API A (Manager API)**: `WAZUH_API_URL` (포트 55000) — JWT 인증  
@@ -525,18 +537,82 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 10. 미구현 항목
+## 10. Nmap 래퍼 (nmap-wrapper/app.py) — ✅ 구현 완료
+
+**포트**: 8001 (호스트) → 5000 (컨테이너)  
+**인증**: 없음 (내부 서비스)  
+**권한**: `cap_add: NET_RAW, NET_ADMIN` (docker-compose 적용됨)
+
+| 엔드포인트 | 항목 | metric_key | 설명 |
+|-----------|------|------------|------|
+| `POST /scan/ports` | 2.1.1_기존, 3.1.1_기존 | open_port_count | `-p {ports} --open` 포트 스캔 |
+| `POST /scan/tls` | 3.3.1_기존 | tls_covered_ratio | `--script ssl-cert` TLS 적용 비율 |
+| `POST /scan/subnets` | 3.1.1_기존, 4.3.1_기존 | subnet_count | `-sn` 서브넷 검색 |
+| `POST /scan/hosts` | 2.1.1_기존 | host_discovery_ratio | `-sn` 활성 호스트 비율 |
+| `POST /scan/port-distribution` | 3.1.2_기존 | port_distribution_variance | 호스트별 포트 분산값 |
+| `POST /scan/tls-version` | 3.3.1_향상 | tls13_ratio | `--script ssl-enum-ciphers` TLS 1.3 비율 |
+| `POST /scan/services` | 3.4.1_초기 | service_mapping_count | `-sV` 서비스 식별 수 |
+| `POST /scan/redundancy` | 3.5.1_초기 | redundancy_path_count | 동일 서비스 포트 열린 호스트 수 |
+| `POST /scan/vpn` | 5.3.1_기존 | vpn_port_count | VPN 포트(1194/500/4500 등) 개방 여부 |
+| `POST /scan/vulnerable-services` | 2.4.2_초기 | vulnerable_service_count | `-sV` 알려진 취약 버전 서비스 수 |
+
+---
+
+## 11. Trivy 래퍼 (trivy-wrapper/app.py) — ✅ 구현 완료
+
+**포트**: 8002 (호스트) → 5001 (컨테이너)  
+**캐시**: `trivy-cache` 볼륨 마운트 (DB 재다운로드 방지)  
+**환경변수**: `TRIVY_NO_PROGRESS=true`  
+**볼륨**: `/var/run/docker.sock` (이미지 스캔용)
+
+| 엔드포인트 | 항목 | metric_key | 설명 |
+|-----------|------|------------|------|
+| `POST /scan/image` | 5.4.1_초기 | critical_high_vuln_count | 이미지 Critical+High 취약점 수 |
+| `POST /scan/fs` | 5.5.1_초기 | fs_vuln_count | 파일시스템 취약점 스캔 |
+| `POST /scan/sbom` | 5.5.1_초기 | sbom_component_count | SPDX-JSON SBOM 컴포넌트 수 |
+| `POST /scan/cicd` | 5.4.1_초기 | cicd_scan_ratio | 다중 이미지 스캔 완료 비율 |
+| `POST /scan/integrity` | 5.4.1_초기 | integrity_check_count | 코드 무결성 검사 수행 여부 |
+| `POST /scan/compliance` | 5.4.1_향상 | fixable_critical_count | 패치 가능한 Critical 위반 수 |
+| `POST /scan/coverage` | 5.4.1_향상 | component_scan_ratio | 전체 대상 스캔 완료 비율 |
+| `POST /scan/third-party` | 5.5.1_향상 | third_party_critical_count | 서드파티 라이브러리 Critical 수 |
+| `POST /scan/sbom-full` | 5.5.1_향상 | full_sbom_count | 전 주기 SBOM 생성 성공 수 |
+| `POST /scan/risk` | 5.5.2_초기 | risk_scan_count | 소프트웨어 위험 평가 수행 여부 |
+| `POST /scan/supply-chain` | 5.5.2_향상 | supply_chain_scan_count | SBOM 기반 공급망 스캔 수행 여부 |
+
+---
+
+## 12. 프론트엔드 API 연동 현황
+
+| 페이지 | 상태 | 연동 API | fallback |
+|--------|------|----------|---------|
+| `Dashboard.tsx` | ✅ 완료 | `getScoreSummary()`, `getAssessmentHistory()`, `getImprovement()` | mockData |
+| `History.tsx` | ✅ 완료 | `getAssessmentHistory()` | mockSessions |
+| `NewAssessment.tsx` | ✅ 완료 | `runAssessment()` → `navigate(/in-progress/{session_id})` | navigate("/in-progress/new-session") |
+| `Reporting.tsx` | ✅ 완료 | `getAssessmentResult(sessionId)`, `getImprovement(sessionId)` | mockData |
+
+---
+
+## 13. 미구현 및 알려진 이슈
+
+### 미구현 항목
 
 | 파일 | 상태 | 내용 |
 |------|------|------|
 | `backend/routers/manual.py` | ⬜ TODO | `POST /api/manual/submit` — 수동 진단 결과 제출 |
 | `backend/routers/report.py` | ⬜ TODO | `GET /api/report/generate/{session_id}` — JSON/PDF 리포트 |
-| `backend/collectors/nmap_collector.py` | ⬜ 스켈레톤 | Nmap 래퍼 연동 수집 함수 |
-| `backend/collectors/trivy_collector.py` | ⬜ 스켈레톤 | Trivy 래퍼 연동 수집 함수 |
+| `backend/collectors/nmap_collector.py` | ⬜ 스켈레톤 | Nmap 래퍼 연동 수집 함수 (nmap-wrapper와 별개) |
+| `backend/collectors/trivy_collector.py` | ⬜ 스켈레톤 | Trivy 래퍼 연동 수집 함수 (trivy-wrapper와 별개) |
+
+### 알려진 버그
+
+| 파일 | 심각도 | 내용 |
+|------|--------|------|
+| `backend/scoring/engine.py:17` | 🔴 High | `threshold == 0`이면 강제로 "평가불가" 반환. threshold=0 항목(`cleartext_alert_count`, `critical_unfixed_count`, `high_risk_alert_count`)이 항상 평가불가 처리됨. `threshold == 0` 조건 제거 필요. |
+| `seed_checklist.py` | 🟡 Medium | 루트(`/`)와 `backend/scripts/` 두 곳에 중복 존재. 루트 파일 삭제 또는 git에서 추적 제외 필요. |
 
 ---
 
-## 11. 환경변수 전체 목록
+## 14. 환경변수 전체 목록
 
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
@@ -555,10 +631,11 @@ pillar별 성숙도 점수 요약.
 | `SHUFFLE_WORKFLOW_ID` | 실행할 워크플로우 ID | — |
 | `SHUFFLE_API_KEY` | Shuffle API 키 | — |
 | `CORS_ORIGINS` | CORS 허용 도메인 (콤마 구분) | `*` |
+| `VITE_API_BASE` | 프론트엔드 API 베이스 URL | `http://3.35.200.145:8000` |
 
 ---
 
-## 12. 동작 확인 체크리스트
+## 15. 동작 확인 체크리스트
 
 ### 백엔드 기본 동작
 
@@ -589,20 +666,20 @@ curl "http://3.35.200.145:8000/api/score/trend?org_id=1"
 curl "http://3.35.200.145:8000/api/improvement/session/1"
 ```
 
-### Keycloak Collector 단독 테스트
+### Nmap 래퍼 테스트
 
 ```bash
-# 환경변수 설정 후 함수 단건 호출 테스트
-export KEYCLOAK_URL="https://3.35.200.145:8443"
-export KEYCLOAK_ADMIN_USER="admin"
-export KEYCLOAK_ADMIN_PASS="..."
+curl -X POST "http://3.35.200.145:8001/scan/ports" \
+  -H "Content-Type: application/json" \
+  -d '{"target_ip": "3.35.200.145", "ports": "80,443,8000,8080", "item_id": "2.1.1_기존"}'
+```
 
-python3 -c "
-from backend.collectors.keycloak_collector import collect_mfa_required
-import json
-result = collect_mfa_required('1.1.1', '향상')
-print(json.dumps(result, indent=2, ensure_ascii=False))
-"
+### Trivy 래퍼 테스트
+
+```bash
+curl -X POST "http://3.35.200.145:8002/scan/image" \
+  -H "Content-Type: application/json" \
+  -d '{"image_name": "nginx:latest", "item_id": "5.4.1_초기"}'
 ```
 
 ### Wazuh Collector 단위 테스트 (mock, 네트워크 불필요)
@@ -612,28 +689,9 @@ python3 backend/collectors/wazuh_collector.py
 # → Ran 33 tests in 0.022s OK
 ```
 
-### Wazuh Collector 실서버 단독 테스트
-
-```bash
-export WAZUH_API_URL="https://3.35.200.145:55000"
-export WAZUH_API_USER="wazuh"
-export WAZUH_API_PASS="..."
-export WAZUH_INDEXER_URL="https://3.35.200.145:9200"
-export WAZUH_INDEXER_USER="admin"
-export WAZUH_INDEXER_PASS="..."
-
-python3 -c "
-from backend.collectors.wazuh_collector import collect_auth_failure_alerts
-import json
-result = collect_auth_failure_alerts('1.1.1_향상', '향상')
-print(json.dumps(result, indent=2, ensure_ascii=False))
-"
-```
-
 ### Webhook 수동 테스트
 
 ```bash
-# Shuffle 대신 직접 수집 결과 전송
 curl -X POST "http://3.35.200.145:8000/api/assessment/webhook" \
   -H "Content-Type: application/json" \
   -d '{
@@ -654,7 +712,7 @@ curl -X POST "http://3.35.200.145:8000/api/assessment/webhook" \
 
 ---
 
-## 13. 주의사항 (CLAUDE.md 요약)
+## 16. 주의사항 (CLAUDE.md 요약)
 
 - 모든 민감 정보는 `.env` 환경변수로 관리. **하드코딩 금지**
 - `frontend/` ↔ `backend/` 크로스 수정 금지
