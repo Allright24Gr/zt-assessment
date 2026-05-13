@@ -1,6 +1,6 @@
 # Readyz-T ZT Assessment — 전체 구현 현황 및 기능 명세
 
-> 작성일: 2026-05-13 (최초: 2026-05-12, 최종 수정: 2026-05-13)  
+> 작성일: 2026-05-13 (최초: 2026-05-12, 최종 수정: 2026-05-13 v3)  
 > 현재 체크아웃: `dev`  
 > 서버: EC2 `3.35.200.145` (Ubuntu 24.04, t3a.xlarge 4vCPU/16GB)
 
@@ -11,7 +11,7 @@
 | 브랜치 | 로컬 | 원격 | 마지막 커밋 | 담당 |
 |--------|------|------|-------------|------|
 | `master` | ✅ | ✅ | — | 최종 배포본 (직접 push 금지) |
-| `dev` | ✅ | ✅ | `f95a1bb` Merge feature/nmap-trivy-wrapper | 통합 기준 |
+| `dev` | ✅ | ✅ | `2d015d2` feat: add entrypoint.sh for auto seed | 통합 기준 |
 | `feature/keycloak-collector` | ❌ | ✅ `e0fa919` | feat: wire assessment pipeline and API endpoints | 공나영 |
 | `feature/wazuh-collector` | ❌ | ✅ `02879ea` | feat: implement wazuh_collector with 42 diagnostic functions | 공나영 (대리) |
 | `feature/backend-skeleton` | ✅ | ✅ | — | 서진우 |
@@ -31,8 +31,10 @@ zt-assessment/
 │   ├── database.py                    # SQLAlchemy DB 연결
 │   ├── models.py                      # DB 모델 10개
 │   ├── requirements.txt
-│   ├── Dockerfile
+│   ├── Dockerfile                         # entrypoint.sh 기반으로 변경
+│   ├── entrypoint.sh                      # ✅ 컨테이너 시작 시 seed 자동 실행 후 서버 기동
 │   ├── init.sql
+│   ├── 신뢰많이된다_체크리스트_매핑_v7.xlsx  # ✅ 체크리스트 원본 데이터 (컨테이너 빌드용)
 │   ├── collectors/
 │   │   ├── keycloak_collector.py      # ✅ 구현 완료 — 65개 함수
 │   │   ├── wazuh_collector.py         # ✅ 구현 완료 — 122개 함수
@@ -43,8 +45,8 @@ zt-assessment/
 │   │   ├── score.py                   # ✅ 구현 완료 (3개 엔드포인트)
 │   │   ├── checklist.py               # ✅ 구현 완료
 │   │   ├── improvement.py             # ✅ 구현 완료
-│   │   ├── manual.py                  # ⬜ TODO (NotImplementedError)
-│   │   └── report.py                  # ⬜ TODO (NotImplementedError)
+│   │   ├── manual.py                  # ✅ 구현 완료 (POST /submit, GET /items/{session_id})
+│   │   └── report.py                  # ✅ 구현 완료 (GET /generate/{session_id}?fmt=json)
 │   ├── scoring/
 │   │   └── engine.py                  # ✅ 구현 완료 (threshold=0 버그 수정 완료)
 │   └── scripts/
@@ -131,7 +133,17 @@ user_id: int
 **내부 동작**
 1. `DiagnosisSession` 레코드 생성 (status="진행 중")
 2. `SHUFFLE_WORKFLOW_ID` 환경변수 있으면 Shuffle API `POST /api/v1/workflows/{id}/execute` 호출 (`httpx` 사용)
-3. Shuffle 호출 실패해도 세션 ID는 반환 (fire-and-forget)
+3. `SHUFFLE_WORKFLOW_ID` **없으면** `_run_collectors(session_id)`를 백그라운드 스레드로 실행 (fallback 디스패처)
+4. Shuffle/collector 호출 실패해도 세션 ID는 반환 (fire-and-forget)
+
+**Fallback 디스패처 (`_run_collectors`)**  
+Shuffle 없이 백엔드가 직접 97개 collector 함수를 실행한다.
+- Keycloak: 31개 함수 (`collect_xxx(item_id, maturity)` 형태)
+- Wazuh: 41개 함수 (`collect_xxx(item_id, maturity)` 형태)
+- Nmap: 14개 함수 (`collect_xxx()` 형태 — 인자 없음)
+- Trivy: 11개 함수 (`collect_xxx()` 형태 — 인자 없음)
+
+수집 결과를 `POST /api/assessment/webhook`으로 self-POST하여 DB 저장 및 채점 트리거.
 
 ---
 
@@ -244,17 +256,53 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-### 5-5. Manual (`/api/manual`) — ⬜ 미구현
+### 5-5. Manual (`/api/manual`) — ✅ 구현 완료
 
 #### `POST /api/manual/submit`
-수동 진단 항목 결과 제출 (TODO).
+수동 진단 항목 결과 제출.
+
+**요청 파라미터 (query)**
+```
+session_id: int
+item_id: str
+result: str  # 충족 | 부분충족 | 미충족 | 평가불가
+evidence_text: str (optional)
+```
+
+**내부 동작**
+1. result 값 검증 (4가지 외 400 반환)
+2. 세션·체크리스트 존재 확인 (수동 항목인지 체크)
+3. `CollectedData` upsert (metric_key=manual_result, threshold=1.0)
+4. `DiagnosisResult` upsert (score = maturity_score × weight)
+5. evidence_text 있으면 `Evidence` 저장
+
+**응답**
+```json
+{ "status": "ok", "session_id": 1, "item_id": "1.1.1.1_1", "result": "충족" }
+```
+
+#### `GET /api/manual/items/{session_id}`
+세션에서 수동 진단이 필요한 항목 목록 및 제출 현황 반환.
 
 ---
 
-### 5-6. Report (`/api/report`) — ⬜ 미구현
+### 5-6. Report (`/api/report`) — ✅ 구현 완료
 
-#### `GET /api/report/generate/{session_id}?fmt=json|pdf`
-리포트 생성 (TODO).
+#### `GET /api/report/generate/{session_id}?fmt=json`
+진단 결과 JSON 리포트 생성 (PDF 미지원).
+
+**응답 구조**
+```json
+{
+  "report_generated_at": "...",
+  "session": { "session_id": 1, "org": "...", "manager": "...", "status": "완료" },
+  "summary": { "overall_score": 2.5, "overall_level": "향상", "total_items": 120,
+                "pass_cnt": 80, "partial_cnt": 20, "fail_cnt": 15, "na_cnt": 5, "pass_rate": 0.667 },
+  "pillar_scores": [...],
+  "checklist_results": [...],
+  "improvement_targets": [/* 미충족·부분충족 항목만 */]
+}
+```
 
 ---
 
@@ -716,12 +764,14 @@ pillar별 성숙도 점수 요약.
 
 | 파일 | 상태 | 내용 |
 |------|------|------|
-| `backend/routers/manual.py` | ⬜ TODO | `POST /api/manual/submit` — 수동 진단 결과 제출 |
-| `backend/routers/report.py` | ⬜ TODO | `GET /api/report/generate/{session_id}` — JSON/PDF 리포트 |
+| `backend/routers/report.py` | 🟡 부분 구현 | PDF 리포트 미지원 (`fmt=pdf` → 400 반환) |
 
 ### 알려진 이슈
 
-없음 (모든 알려진 이슈 해결 완료)
+| 파일 | 심각도 | 내용 |
+|------|--------|------|
+| `assessment.py: _run_collectors` | 🟡 낮음 | webhook 자기 호출 URL이 `http://localhost:8000` 하드코딩 — 컨테이너 내부에서는 동작하나 환경변수화 권장 |
+| `manual.py: /submit` | 🟡 낮음 | 수동 항목 전체 제출 완료 시 `_trigger_scoring()` 자동 호출 없음 — 세션 상태가 "진행 중"으로 유지됨 |
 
 ---
 
