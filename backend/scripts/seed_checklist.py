@@ -1,592 +1,162 @@
 """
-체크리스트 시드 스크립트
-신뢰많이된다_체크리스트_매핑_v7.xlsx 기반 데이터를 Checklist 테이블에 적재한다.
+seed_checklist.py — 체크리스트 DB 적재 스크립트
+데이터 소스: /root/projects/신뢰많이된다_체크리스트_매핑_v7.xlsx  시트: 체크리스트_도구매핑
 실행: python backend/scripts/seed_checklist.py
 """
 import sys
 import os
+from collections import defaultdict
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+try:
+    import openpyxl
+except ImportError:
+    print("openpyxl 미설치: pip install openpyxl")
+    sys.exit(1)
 
 from database import SessionLocal
 from models import Checklist
 
-CHECKLIST_DATA = [
-    # ───────────────────────────────────────────────
-    # Pillar 1: 식별자 및 신원
-    # ───────────────────────────────────────────────
-    {
-        "item_id": "1.1.1_기존",
-        "pillar": "식별자 및 신원",
-        "category": "1.1.1 사용자 인벤토리",
-        "item_name": "사용자 계정 목록이 존재하는가",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "Keycloak에 사용자 계정이 등록·관리되고 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}/users 응답",
-        "criteria": "활성 사용자 수 >= 1",
-        "fields": "id, username, enabled",
-        "logic": "enabled=true 사용자 수 확인",
-        "exceptions": "서비스 계정(serviceAccountClientId) 제외",
-    },
-    {
-        "item_id": "1.1.1_초기",
-        "pillar": "식별자 및 신원",
-        "category": "1.1.1 사용자 인벤토리",
-        "item_name": "역할 기반 계정 관리 비율",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "전체 사용자 중 역할이 명시적으로 부여된 비율이 70% 이상인가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}/users?briefRepresentation=false",
-        "criteria": "역할 부여 사용자 비율 >= 0.7",
-        "fields": "realmRoles, clientRoles",
-        "logic": "기본 역할(default-roles-*, offline_access, uma_authorization) 제외 후 역할 보유 비율",
-        "exceptions": "서비스 계정 제외",
-    },
-    {
-        "item_id": "1.1.1_향상",
-        "pillar": "식별자 및 신원",
-        "category": "1.1.1 사용자 인벤토리",
-        "item_name": "자동화된 계정 수명주기 관리",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "계정 생성/수정/삭제 이벤트가 자동으로 감사 로그에 기록되는가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}/events?type=REGISTER,DELETE_ACCOUNT",
-        "criteria": "감사 이벤트 보존 기간 >= 90일",
-        "fields": "type, time, userId, ipAddress",
-        "logic": "이벤트 유형 REGISTER, UPDATE_PROFILE, DELETE_ACCOUNT 포함 여부",
-        "exceptions": "시스템 계정 이벤트 제외",
-    },
-    {
-        "item_id": "1.1.1_최적화",
-        "pillar": "식별자 및 신원",
-        "category": "1.1.1 사용자 인벤토리",
-        "item_name": "실시간 비정상 계정 탐지",
-        "maturity": "최적화",
-        "maturity_score": 4,
-        "question": "비정상 로그인 패턴이 실시간으로 탐지·알림되고 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "보안 운영 알림 설정 화면 스크린샷",
-        "criteria": "실시간 알림 정책 활성화 여부",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    # ── MFA ──
-    {
-        "item_id": "1.2.1_기존",
-        "pillar": "식별자 및 신원",
-        "category": "1.2.1 다중인증(MFA)",
-        "item_name": "MFA 기능 활성화 여부",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "Keycloak에서 TOTP(OTP) Required Action이 활성화되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}/authentication/required-actions",
-        "criteria": "CONFIGURE_TOTP enabled=true",
-        "fields": "alias, enabled, defaultAction",
-        "logic": "alias=CONFIGURE_TOTP이고 enabled=true 확인",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "1.2.1_초기",
-        "pillar": "식별자 및 신원",
-        "category": "1.2.1 다중인증(MFA)",
-        "item_name": "관리자 계정 MFA 적용률",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "관리자 권한 사용자 중 MFA 등록 비율이 90% 이상인가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}/users?credentials=true",
-        "criteria": "관리자 MFA 적용 비율 >= 0.9",
-        "fields": "credentials[type=otp]",
-        "logic": "realm-admin 역할 보유 사용자 중 OTP 크리덴셜 보유 비율",
-        "exceptions": "서비스 계정 제외",
-    },
-    {
-        "item_id": "1.2.1_향상",
-        "pillar": "식별자 및 신원",
-        "category": "1.2.1 다중인증(MFA)",
-        "item_name": "전체 사용자 MFA 적용률",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "전체 활성 사용자 중 MFA 등록 비율이 80% 이상인가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}/users?credentials=true",
-        "criteria": "전체 MFA 적용 비율 >= 0.8",
-        "fields": "credentials[type=otp], enabled",
-        "logic": "enabled=true 사용자 중 OTP 크리덴셜 보유 비율",
-        "exceptions": "서비스 계정 제외",
-    },
-    {
-        "item_id": "1.2.1_최적화",
-        "pillar": "식별자 및 신원",
-        "category": "1.2.1 다중인증(MFA)",
-        "item_name": "적응형 MFA 정책 적용",
-        "maturity": "최적화",
-        "maturity_score": 4,
-        "question": "위험 수준에 따른 적응형 MFA 정책이 구성되어 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "Keycloak 인증 플로우 설정 화면",
-        "criteria": "조건부 OTP 플로우 활성화",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    # ── 세션 관리 ──
-    {
-        "item_id": "1.3.1_기존",
-        "pillar": "식별자 및 신원",
-        "category": "1.3.1 세션 및 토큰 관리",
-        "item_name": "세션 타임아웃 설정 여부",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "유휴 세션 타임아웃(ssoSessionIdleTimeout)이 설정되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}",
-        "criteria": "ssoSessionIdleTimeout > 0",
-        "fields": "ssoSessionIdleTimeout",
-        "logic": "ssoSessionIdleTimeout 값이 0보다 큰지 확인",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "1.3.1_초기",
-        "pillar": "식별자 및 신원",
-        "category": "1.3.1 세션 및 토큰 관리",
-        "item_name": "액세스 토큰 만료 시간 적절성",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "액세스 토큰 수명이 1시간 이하로 설정되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}",
-        "criteria": "accessTokenLifespan <= 3600",
-        "fields": "accessTokenLifespan",
-        "logic": "accessTokenLifespan 값이 3600초(1시간) 이하인지 확인",
-        "exceptions": "N/A",
-    },
-    # ───────────────────────────────────────────────
-    # Pillar 2: 디바이스
-    # ───────────────────────────────────────────────
-    {
-        "item_id": "2.1.1_기존",
-        "pillar": "디바이스",
-        "category": "2.1.1 엔드포인트 보안",
-        "item_name": "Wazuh 에이전트 설치율",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "등록된 서버/엔드포인트 중 Wazuh 에이전트 설치 비율이 50% 이상인가?",
-        "diagnosis_type": "자동",
-        "tool": "wazuh",
-        "evidence": "GET /agents?status=active",
-        "criteria": "에이전트 설치 비율 >= 0.5",
-        "fields": "id, name, status, os.name",
-        "logic": "status=active 에이전트 수 / 전체 등록 에이전트 수",
-        "exceptions": "disconnected 상태 에이전트 포함하여 분모 계산",
-    },
-    {
-        "item_id": "2.1.1_초기",
-        "pillar": "디바이스",
-        "category": "2.1.1 엔드포인트 보안",
-        "item_name": "핵심 서버 에이전트 커버리지",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "핵심 서버의 Wazuh 에이전트 활성화 비율이 80% 이상인가?",
-        "diagnosis_type": "자동",
-        "tool": "wazuh",
-        "evidence": "GET /agents?status=active&group=critical",
-        "criteria": "핵심 서버 에이전트 활성화 비율 >= 0.8",
-        "fields": "id, name, status, group",
-        "logic": "critical 그룹 내 active 에이전트 비율",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "2.1.1_향상",
-        "pillar": "디바이스",
-        "category": "2.1.1 엔드포인트 보안",
-        "item_name": "보안 정책 기준선 준수율",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "CIS 벤치마크 기반 보안 정책 준수율이 70% 이상인가?",
-        "diagnosis_type": "자동",
-        "tool": "wazuh",
-        "evidence": "GET /sca/{agent_id}/checks",
-        "criteria": "SCA 통과 비율 >= 0.7",
-        "fields": "policy_id, passed, failed, score",
-        "logic": "passed / (passed + failed) 비율 계산",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "2.1.1_최적화",
-        "pillar": "디바이스",
-        "category": "2.1.1 엔드포인트 보안",
-        "item_name": "자동 위협 대응 활성화",
-        "maturity": "최적화",
-        "maturity_score": 4,
-        "question": "위협 탐지 시 자동 격리 및 대응 규칙이 활성화되어 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "Wazuh Active Response 설정 파일 내용",
-        "criteria": "active-response 블록 설정 존재",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    # ── 취약점 관리 ──
-    {
-        "item_id": "2.2.1_기존",
-        "pillar": "디바이스",
-        "category": "2.2.1 취약점 관리",
-        "item_name": "컨테이너 이미지 취약점 스캔 실시",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "운영 중인 컨테이너 이미지에 대해 Trivy 스캔이 수행되고 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "trivy",
-        "evidence": "trivy image --format json {image}",
-        "criteria": "스캔 결과 존재 (취약점 수 >= 0)",
-        "fields": "Results[].Vulnerabilities[].VulnerabilityID",
-        "logic": "스캔 실행 성공 여부 확인",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "2.2.1_초기",
-        "pillar": "디바이스",
-        "category": "2.2.1 취약점 관리",
-        "item_name": "심각(CRITICAL) 취약점 미존재",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "운영 중인 컨테이너 이미지에 CRITICAL 취약점이 없는가?",
-        "diagnosis_type": "자동",
-        "tool": "trivy",
-        "evidence": "trivy image --severity CRITICAL --format json {image}",
-        "criteria": "CRITICAL 취약점 수 = 0",
-        "fields": "Results[].Vulnerabilities[].Severity",
-        "logic": "Severity=CRITICAL인 취약점 수가 0인지 확인",
-        "exceptions": "OS 패키지 취약점에 한정",
-    },
-    {
-        "item_id": "2.2.1_향상",
-        "pillar": "디바이스",
-        "category": "2.2.1 취약점 관리",
-        "item_name": "HIGH 이상 취약점 패치율",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "HIGH 이상 취약점 중 패치 완료 비율이 80% 이상인가?",
-        "diagnosis_type": "자동",
-        "tool": "trivy",
-        "evidence": "trivy image --severity HIGH,CRITICAL --format json {image}",
-        "criteria": "미패치 HIGH 이상 취약점 비율 <= 0.2",
-        "fields": "Results[].Vulnerabilities[].FixedVersion",
-        "logic": "FixedVersion이 있는 취약점 중 패치 적용 비율",
-        "exceptions": "FixedVersion이 없는 취약점은 제외",
-    },
-    {
-        "item_id": "2.2.1_최적화",
-        "pillar": "디바이스",
-        "category": "2.2.1 취약점 관리",
-        "item_name": "취약점 자동 수정 파이프라인",
-        "maturity": "최적화",
-        "maturity_score": 4,
-        "question": "CI/CD 파이프라인에 취약점 자동 탐지 및 차단이 통합되어 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "CI/CD 파이프라인 설정 파일 및 스캔 결과",
-        "criteria": "파이프라인 내 trivy 스캔 단계 존재",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    # ───────────────────────────────────────────────
-    # Pillar 3: 네트워크
-    # ───────────────────────────────────────────────
-    {
-        "item_id": "3.1.1_기존",
-        "pillar": "네트워크",
-        "category": "3.1.1 네트워크 분리",
-        "item_name": "외부 노출 포트 현황 파악",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "외부에 노출된 포트 목록이 파악·관리되고 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "nmap",
-        "evidence": "nmap -sV --open {target}",
-        "criteria": "스캔 완료 및 포트 목록 존재",
-        "fields": "port, protocol, state, service",
-        "logic": "open 상태 포트 수 확인",
-        "exceptions": "내부 네트워크 대역 제외",
-    },
-    {
-        "item_id": "3.1.1_초기",
-        "pillar": "네트워크",
-        "category": "3.1.1 네트워크 분리",
-        "item_name": "불필요한 포트 노출 최소화",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "허용 목록에 없는 외부 노출 포트가 없는가?",
-        "diagnosis_type": "자동",
-        "tool": "nmap",
-        "evidence": "nmap -sV --open {target}",
-        "criteria": "미승인 포트 수 = 0",
-        "fields": "port, state",
-        "logic": "허용 포트 목록(80, 443, 22) 외 open 포트 수",
-        "exceptions": "내부 서비스용 포트(8080, 8443) 별도 정책 적용",
-    },
-    {
-        "item_id": "3.1.1_향상",
-        "pillar": "네트워크",
-        "category": "3.1.1 네트워크 분리",
-        "item_name": "서비스별 네트워크 세그먼트 분리",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "애플리케이션/DB/관리 네트워크가 논리적으로 분리되어 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "네트워크 구성도 및 VLAN/서브넷 설정",
-        "criteria": "최소 3개 이상의 분리된 네트워크 세그먼트",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "3.1.1_최적화",
-        "pillar": "네트워크",
-        "category": "3.1.1 네트워크 분리",
-        "item_name": "마이크로세그멘테이션 적용",
-        "maturity": "최적화",
-        "maturity_score": 4,
-        "question": "서비스 간 통신이 마이크로세그멘테이션 정책으로 제어되는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "네트워크 정책(NetworkPolicy/방화벽 규칙) 설정",
-        "criteria": "서비스별 인그레스/이그레스 정책 존재",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    # ── 암호화 ──
-    {
-        "item_id": "3.2.1_기존",
-        "pillar": "네트워크",
-        "category": "3.2.1 전송 암호화",
-        "item_name": "HTTPS 적용 여부",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "외부 노출 웹 서비스에 HTTPS(443)가 적용되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "nmap",
-        "evidence": "nmap --script ssl-cert -p 443 {target}",
-        "criteria": "443 포트 open 및 SSL 인증서 존재",
-        "fields": "port, ssl-cert.subject, ssl-cert.validity",
-        "logic": "443 포트 open 상태이며 유효한 SSL 인증서 존재",
-        "exceptions": "내부 전용 서비스 제외",
-    },
-    {
-        "item_id": "3.2.1_초기",
-        "pillar": "네트워크",
-        "category": "3.2.1 전송 암호화",
-        "item_name": "TLS 1.2 이상 적용",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "TLS 1.0/1.1 등 취약한 프로토콜이 비활성화되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "nmap",
-        "evidence": "nmap --script ssl-enum-ciphers -p 443 {target}",
-        "criteria": "TLSv1.0, TLSv1.1 미지원",
-        "fields": "ssl-enum-ciphers.least strength, protocols",
-        "logic": "TLSv1.0/TLSv1.1 프로토콜 지원 여부 확인",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "3.2.1_향상",
-        "pillar": "네트워크",
-        "category": "3.2.1 전송 암호화",
-        "item_name": "내부 서비스 간 mTLS 적용",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "내부 서비스 간 통신에 mTLS(상호 TLS)가 적용되어 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "서비스 메시 또는 인증서 설정 증적",
-        "criteria": "클라이언트 인증서 요구 설정 존재",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    # ───────────────────────────────────────────────
-    # Pillar 4: 애플리케이션
-    # ───────────────────────────────────────────────
-    {
-        "item_id": "4.1.1_기존",
-        "pillar": "애플리케이션",
-        "category": "4.1.1 API 보안",
-        "item_name": "API 인증 적용 여부",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "공개 API 엔드포인트에 인증(Bearer Token/OAuth2)이 적용되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "Keycloak 클라이언트 목록 및 설정",
-        "criteria": "OAuth2 클라이언트 수 >= 1",
-        "fields": "clientId, protocol, enabled",
-        "logic": "openid-connect 프로토콜 클라이언트 수 확인",
-        "exceptions": "public 클라이언트 허용 여부 검토",
-    },
-    {
-        "item_id": "4.1.1_초기",
-        "pillar": "애플리케이션",
-        "category": "4.1.1 API 보안",
-        "item_name": "API 권한 범위 최소화",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "API 클라이언트의 권한 범위(scope)가 최소 권한 원칙으로 설정되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "keycloak",
-        "evidence": "GET /admin/realms/{realm}/clients/{id}/default-client-scopes",
-        "criteria": "와일드카드(*) 스코프 미사용",
-        "fields": "name, protocol, attributes",
-        "logic": "스코프에 와일드카드 또는 admin 권한 포함 여부 확인",
-        "exceptions": "내부 시스템 통합 클라이언트 별도 검토",
-    },
-    {
-        "item_id": "4.1.1_향상",
-        "pillar": "애플리케이션",
-        "category": "4.1.1 API 보안",
-        "item_name": "API 접근 로그 모니터링",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "API 인증 실패 이벤트가 Wazuh에서 탐지·알림되는가?",
-        "diagnosis_type": "자동",
-        "tool": "wazuh",
-        "evidence": "GET /alerts?rule.groups=authentication_failed",
-        "criteria": "인증 실패 알림 규칙 활성화",
-        "fields": "rule.id, rule.description, agent.name",
-        "logic": "Keycloak 인증 실패 이벤트 탐지 규칙 활성화 여부",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "4.1.1_최적화",
-        "pillar": "애플리케이션",
-        "category": "4.1.1 API 보안",
-        "item_name": "지속적 API 보안 검증",
-        "maturity": "최적화",
-        "maturity_score": 4,
-        "question": "API 보안 취약점 자동 스캔(DAST)이 배포 파이프라인에 통합되어 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "CI/CD DAST 도구 설정 및 스캔 결과",
-        "criteria": "자동 API 보안 스캔 실행 기록 존재",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    # ───────────────────────────────────────────────
-    # Pillar 5: 데이터
-    # ───────────────────────────────────────────────
-    {
-        "item_id": "5.1.1_기존",
-        "pillar": "데이터",
-        "category": "5.1.1 데이터 보호",
-        "item_name": "데이터 분류 정책 존재 여부",
-        "maturity": "기존",
-        "maturity_score": 1,
-        "question": "조직 내 데이터 분류 기준(공개/내부/기밀/극비)이 문서화되어 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "데이터 분류 정책 문서",
-        "criteria": "데이터 분류 정책 문서 존재",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "5.1.1_초기",
-        "pillar": "데이터",
-        "category": "5.1.1 데이터 보호",
-        "item_name": "민감 데이터 저장 암호화",
-        "maturity": "초기",
-        "maturity_score": 2,
-        "question": "개인정보 및 기밀 데이터가 암호화되어 저장되고 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "DB 암호화 설정 스크린샷 또는 설정 파일",
-        "criteria": "저장 암호화(at-rest) 적용 확인",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "5.1.1_향상",
-        "pillar": "데이터",
-        "category": "5.1.1 데이터 보호",
-        "item_name": "데이터 유출 탐지(DLP) 적용",
-        "maturity": "향상",
-        "maturity_score": 3,
-        "question": "Wazuh를 통한 민감 데이터 접근 이상 탐지가 설정되어 있는가?",
-        "diagnosis_type": "자동",
-        "tool": "wazuh",
-        "evidence": "GET /rules?group=data_loss_prevention",
-        "criteria": "DLP 관련 탐지 규칙 수 >= 1",
-        "fields": "rule.id, rule.description, rule.groups",
-        "logic": "data_loss_prevention 그룹 규칙 활성화 여부",
-        "exceptions": "N/A",
-    },
-    {
-        "item_id": "5.1.1_최적화",
-        "pillar": "데이터",
-        "category": "5.1.1 데이터 보호",
-        "item_name": "자동화된 데이터 분류 및 마스킹",
-        "maturity": "최적화",
-        "maturity_score": 4,
-        "question": "민감 데이터 자동 분류 및 마스킹 도구가 운영되고 있는가?",
-        "diagnosis_type": "수동",
-        "tool": "수동",
-        "evidence": "데이터 분류 도구 운영 현황 및 처리 결과",
-        "criteria": "자동 분류 도구 도입 및 운영 확인",
-        "fields": "N/A",
-        "logic": "N/A",
-        "exceptions": "N/A",
-    },
-]
+# ─── 상수 ────────────────────────────────────────────────────────────────────
 
-
+MATURITY_NUM = {"기존": 1, "초기": 2, "향상": 3, "최적화": 4}
+MATURITY_SCORE = {"기존": 1, "초기": 2, "향상": 3, "최적화": 4}
 MATURITY_WEIGHT = {"기존": 0.1, "초기": 0.2, "향상": 0.3, "최적화": 0.4}
+
+TOOL_MAP = {
+    "수동": "수동",
+    "Keycloak": "keycloak",
+    "Wazuh": "wazuh",
+    "Nmap (래퍼 필요)": "nmap",
+    "Trivy (래퍼 필요)": "trivy",
+}
+
+# xlsx 헤더 → 컬럼 인덱스 (0-based)
+# ['구분', '항목', '성숙도', '세부 질문', '진단유형', '사용 도구', '증적',
+#  '판정 기준', '추출 필드', '처리 로직 (분자/분모)', '예외 처리']
+COL = {
+    "pillar": 0,
+    "category": 1,
+    "maturity": 2,
+    # '세부 질문' (index 3) → 저장하지 않음
+    "diagnosis_type": 4,
+    "tool": 5,
+    "evidence": 6,
+    "criteria": 7,
+    "fields": 8,
+    "logic": 9,
+    "exceptions": 10,
+}
+
+
+def _find_xlsx() -> Path:
+    candidates = [
+        Path("/root/projects/신뢰많이된다_체크리스트_매핑_v7.xlsx"),
+        Path(__file__).parent.parent.parent / "신뢰많이된다_체크리스트_매핑_v7.xlsx",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        "xlsx 파일을 찾을 수 없습니다. 경로 확인: " + str(candidates[0])
+    )
+
+
+def _cell(row, col: int) -> str:
+    val = row[col]
+    if val is None:
+        return ""
+    return str(val).strip()
+
+
+def load_rows(xlsx_path: Path) -> list:
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+    ws = wb["체크리스트_도구매핑"]
+
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    wb.close()
+
+    counter = defaultdict(int)
+    result = []
+
+    for raw in rows:
+        if not any(raw):
+            continue
+        if len(raw) < 11:
+            continue
+
+        pillar = _cell(raw, COL["pillar"])
+        category_full = _cell(raw, COL["category"])  # "1.1.1 사용자 인벤토리"
+        maturity = _cell(raw, COL["maturity"])
+
+        if not pillar or not category_full or maturity not in MATURITY_NUM:
+            continue
+
+        # 항목번호 추출 (예: "1.1.1")
+        parts = category_full.split(" ", 1)
+        item_num = parts[0]
+        item_name = parts[1] if len(parts) > 1 else category_full
+
+        maturity_num = MATURITY_NUM[maturity]
+        base = f"{item_num}.{maturity_num}"
+        counter[base] += 1
+        item_id = f"{base}_{counter[base]}"
+
+        tool_raw = _cell(raw, COL["tool"])
+        tool = TOOL_MAP.get(tool_raw, tool_raw.lower() if tool_raw else "수동")
+
+        result.append({
+            "item_id": item_id,
+            "item_num": item_num,
+            "pillar": pillar,
+            "category": category_full,
+            "item_name": item_name,
+            "maturity": maturity,
+            "maturity_score": MATURITY_SCORE[maturity],
+            "weight": MATURITY_WEIGHT[maturity],
+            "diagnosis_type": _cell(raw, COL["diagnosis_type"]) or "수동",
+            "tool": tool,
+            "evidence": _cell(raw, COL["evidence"]) or None,
+            "criteria": _cell(raw, COL["criteria"]) or None,
+            "fields": _cell(raw, COL["fields"]) or None,
+            "logic": _cell(raw, COL["logic"]) or None,
+            "exceptions": _cell(raw, COL["exceptions"]) or None,
+        })
+
+    return result
 
 
 def seed():
+    xlsx_path = _find_xlsx()
+    print(f"xlsx 파일 로드: {xlsx_path}")
+    rows = load_rows(xlsx_path)
+    print(f"파싱된 행 수: {len(rows)}")
+
     db = SessionLocal()
+    inserted = 0
+    updated = 0
+
     try:
-        inserted = 0
-        updated = 0
-        for row in CHECKLIST_DATA:
-            row = {**row, "weight": MATURITY_WEIGHT.get(row.get("maturity", "기존"), 0.1)}
+        for d in rows:
             existing = db.query(Checklist).filter(
-                Checklist.item_id == row["item_id"]
+                Checklist.item_id == d["item_id"]
             ).first()
+
             if existing:
-                for k, v in row.items():
+                for k, v in d.items():
                     setattr(existing, k, v)
                 updated += 1
             else:
-                db.add(Checklist(**row))
+                db.add(Checklist(**d))
                 inserted += 1
+
         db.commit()
-        print(f"완료: {inserted}건 신규 삽입, {updated}건 업데이트")
-    except Exception as e:
+        print(f"완료: {inserted}건 신규 삽입, {updated}건 업데이트 (총 {len(rows)}건)")
+    except Exception as exc:
         db.rollback()
-        print(f"오류: {e}")
+        print(f"오류: {exc}")
         raise
     finally:
         db.close()

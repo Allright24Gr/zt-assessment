@@ -34,7 +34,6 @@ export interface ChecklistItemResult {
   item: string;
   maturity: MaturityLevel | string;
   maturity_score?: number;
-  question: string;
   diagnosis_type?: string;
   tool: string;
   result: AssessmentResult;
@@ -121,12 +120,12 @@ export interface ScoreTrendResponse {
 
 export interface ChecklistItem {
   id: string;
+  item_num?: string;
   pillar: string;
   category: string;
   item: string;
   maturity: MaturityLevel | string;
   maturity_score: number;
-  question: string;
   diagnosis_type: string;
   tool: string;
   evidence: string;

@@ -66,13 +66,13 @@ class Checklist(Base):
     __tablename__ = "Checklist"
 
     check_id = Column(Integer, primary_key=True, autoincrement=True)
-    item_id = Column(String(20), nullable=False, unique=True)
+    item_id = Column(String(30), nullable=False, unique=True)
+    item_num = Column(String(20), nullable=True)
     pillar = Column(String(100), nullable=False)
     category = Column(String(100), nullable=False)
     item_name = Column(String(200), nullable=False)
     maturity = Column(String(20), nullable=False)
     maturity_score = Column(Integer, nullable=False)
-    question = Column(Text, nullable=False)
     diagnosis_type = Column(String(20), nullable=False)
     tool = Column(String(100), nullable=False)
     evidence = Column(Text, nullable=True)

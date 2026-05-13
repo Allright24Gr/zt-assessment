@@ -1364,40 +1364,6 @@ def collect_privilege_escalation_alerts(item_id: str, maturity: str) -> Collecte
     return _ok(item_id, maturity, res, mk, count, thr, raw)
 
 
-# ─── 39. collect_abnormal_privilege_alerts ───────────────────────────────────
-
-def collect_abnormal_privilege_alerts(item_id: str, maturity: str) -> CollectedResult:
-    mk, thr, raw = "abnormal_privilege_count", 1.0, {}
-    rule_enabled: Optional[bool] = None
-    try:
-        r = _wazuh_get("/rules", {"search": "privilege_escalation", "status": "enabled", "limit": 1})
-        raw["rules"] = r
-        rule_enabled = r.get("data", {}).get("total_affected_items", 0) >= 1
-    except Exception as e:
-        raw["rules_error"] = str(e)
-
-    try:
-        ir = _indexer_search("wazuh-alerts-*", {
-            "size": 0, "track_total_hits": True,
-            "query": {"bool": {"must": [
-                {"term": {"rule.groups": "privilege_escalation"}},
-                {"range": {"rule.level": {"gte": 7}}},
-            ]}},
-        })
-        raw["indexer"] = ir
-        count = float(ir["hits"]["total"]["value"])
-    except Exception as e:
-        return _err(item_id, maturity, mk, thr, str(e), raw)
-
-    if rule_enabled is True and count >= 1:
-        res = "충족"
-    elif rule_enabled is True:
-        res = "부분충족"
-    else:
-        res = "미충족"
-    return _ok(item_id, maturity, res, mk, count, thr, raw)
-
-
 # ─── 40. collect_fim_status ──────────────────────────────────────────────────
 
 def collect_fim_status(item_id: str, maturity: str) -> CollectedResult:
@@ -1489,6 +1455,1117 @@ def collect_dlp_alerts(item_id: str, maturity: str) -> CollectedResult:
     else:
         res = "미충족"
     return _ok(item_id, maturity, res, mk, count, thr, raw)
+
+
+# ─── New functions (43~122) ───────────────────────────────────────────────────
+
+def collect_auto_reauth(item_id: str, maturity: str) -> CollectedResult:
+    """1.2.2.4_1: 탐지 룰 AND 세션 종료 자동화 → 충족 / 탐지만 → 부분충족"""
+    mk, thr, raw = "auto_reauth_count", 1.0, {}
+    rule_ok = False
+    try:
+        r = _wazuh_get("/rules", {"search": "authentication_failure", "status": "enabled", "limit": 1})
+        raw["rules"] = r
+        rule_ok = r.get("data", {}).get("total_affected_items", 0) >= 1
+    except Exception as e:
+        raw["rules_error"] = str(e)
+    ar_count = 0
+    try:
+        ar = _wazuh_get("/active-response")
+        raw["active_response"] = ar
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+    except Exception as e:
+        raw["ar_error"] = str(e)
+    if rule_ok and ar_count >= 1:
+        res = "충족"
+    elif rule_ok:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, float(ar_count), thr, raw)
+
+
+def collect_icam_automation(item_id: str, maturity: str) -> CollectedResult:
+    """1.3.1.3_2: AR ≥ 1 AND 비율 ≥ 80% → 충족 / 미달 → 부분충족"""
+    mk, thr, raw = "ar_count", 1.0, {}
+    try:
+        ar = _wazuh_get("/active-response")
+        raw["active_response"] = ar
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+    agents = _get_active_agents()
+    agent_count = len(agents)
+    ratio = ar_count / agent_count if agent_count > 0 else 0.0
+    raw["ratio"] = ratio
+    if ar_count >= 1 and ratio >= 0.8:
+        res = "충족"
+    elif ar_count >= 1:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, float(ar_count), thr, raw)
+
+
+def collect_dynamic_access_policy(item_id: str, maturity: str) -> CollectedResult:
+    """1.4.1.4_1: 자동화 구성 → 충족 / 수동만 → 부분충족"""
+    mk, thr, raw = "dynamic_ar_count", 1.0, {}
+    try:
+        ar = _wazuh_get("/active-response")
+        raw["active_response"] = ar
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+    res = "충족" if ar_count >= 1 else "부분충족"
+    return _ok(item_id, maturity, res, mk, float(ar_count), thr, raw)
+
+
+def collect_dynamic_privilege_change(item_id: str, maturity: str) -> CollectedResult:
+    """1.4.2.4_1: 권한상승 알림 ≥ 1 → 충족 / 구성됐으나 0 → 부분충족"""
+    mk, thr = "dynamic_priv_count", 1.0
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"must": [
+                {"term": {"rule.groups": "privilege_escalation"}},
+                {"range": {"@timestamp": {"gte": "now-2592000s"}}}
+            ]}}
+        }))
+        res = "충족" if count >= thr else "부분충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_realtime_least_privilege(item_id: str, maturity: str) -> CollectedResult:
+    """1.4.2.4_2: 워크플로우 구성 AND 이벤트 ≥ 1 → 충족 / 구성만 → 부분충족"""
+    mk, thr, raw = "realtime_priv_workflow", 1.0, {}
+    ar_count = 0
+    try:
+        ar = _wazuh_get("/active-response")
+        raw["ar"] = ar
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+    except Exception as e:
+        raw["ar_error"] = str(e)
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"must": [
+                {"term": {"rule.groups": "privilege_escalation"}},
+                {"range": {"@timestamp": {"gte": "now-3600s"}}}
+            ]}}
+        }))
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e), raw)
+    if ar_count >= 1 and count >= 1:
+        res = "충족"
+    elif ar_count >= 1:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, count, thr, raw)
+
+
+def collect_device_security_check(item_id: str, maturity: str) -> CollectedResult:
+    """2.2.1.3_1: SCA ≥ 70점 비율 ≥ 80% → 충족 / 50~80% → 부분충족"""
+    mk, thr, raw = "sca_pass_ratio_80", 0.8, {}
+    try:
+        agents = _get_active_agents()
+        raw["agent_count"] = len(agents)
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+    sca_data = []
+    for a in agents:
+        try:
+            r = _wazuh_get(f"/sca/{a['id']}")
+            sca_data.extend(r.get("data", {}).get("affected_items", []))
+        except Exception:
+            pass
+    if not sca_data:
+        return _err(item_id, maturity, mk, thr, "SCA 결과 없음")
+    pass_count = sum(1 for s in sca_data if s.get("score", 0) >= 70)
+    ratio = pass_count / len(sca_data)
+    if ratio >= 0.8:
+        res = "충족"
+    elif ratio >= 0.5:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, {"pass_count": pass_count, "total": len(sca_data)})
+
+
+def collect_device_security_integration(item_id: str, maturity: str) -> CollectedResult:
+    """2.2.1.4_2: 연동 워크플로우 AND 실행 이력 ≥ 1 → 충족 / 구성만 → 부분충족"""
+    mk, thr, raw = "integration_workflow_count", 1.0, {}
+    try:
+        agents = _get_active_agents()
+        raw["agent_count"] = len(agents)
+        ar = _wazuh_get("/active-response")
+        raw["ar"] = ar
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+    if ar_count >= 1 and len(agents) >= 1:
+        res = "충족"
+    elif ar_count >= 1:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, float(ar_count), thr, raw)
+
+
+def collect_endpoint_central_policy(item_id: str, maturity: str) -> CollectedResult:
+    """2.3.2.3_1: AR 있는 에이전트 비율 ≥ 90% → 충족 / 미달 → 부분충족"""
+    mk, thr, raw = "central_policy_ratio", 0.9, {}
+    try:
+        agents = _get_active_agents()
+        raw["agent_count"] = len(agents)
+        ar = _wazuh_get("/active-response")
+        raw["ar"] = ar
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+    denom = len(agents)
+    if denom == 0:
+        return _err(item_id, maturity, mk, thr, "활성 에이전트 0개")
+    ratio = min(ar_count / denom, 1.0)
+    if ratio >= 0.9:
+        res = "충족"
+    elif ratio >= 0.5:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, raw)
+
+
+def collect_vuln_integrated(item_id: str, maturity: str) -> CollectedResult:
+    """2.4.2.3_2: 통합 운영 → 충족 / 독립 운영 → 부분충족"""
+    mk, thr, raw = "vuln_integrated_count", 1.0, {}
+    try:
+        agents = _get_active_agents()
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+        agent_ids = [a.get("id") for a in agents if a.get("id")]
+        vuln_count = 0
+        if agent_ids:
+            vuln_count = _indexer_count("wazuh-states-vulnerabilities-*", {
+                "query": {"terms": {"agent.id": agent_ids}}
+            })
+        raw.update({"ar_count": ar_count, "vuln_count": vuln_count})
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+    if ar_count >= 1 and vuln_count >= 1:
+        res = "충족"
+    elif vuln_count >= 1:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, float(ar_count), thr, raw)
+
+
+def _indexer_alert_count(groups: list, window: str = "now-86400s") -> float:
+    """Helper: indexer alert count by rule.groups within time window."""
+    should = [{"term": {"rule.groups": g}} for g in groups]
+    query = {
+        "query": {"bool": {"must": [
+            {"bool": {"should": should, "minimum_should_match": 1}},
+            {"range": {"@timestamp": {"gte": window}}}
+        ]}}
+    }
+    return float(_indexer_count("wazuh-alerts-*", query))
+
+
+def _rule_and_alert(item_id, maturity, mk, thr, rule_search, groups, window="now-86400s"):
+    """Helper: rule-exists AND alert-count pattern."""
+    raw = {}
+    rule_ok = False
+    try:
+        r = _wazuh_get("/rules", {"search": rule_search, "status": "enabled", "limit": 1})
+        raw["rules"] = r
+        rule_ok = r.get("data", {}).get("total_affected_items", 0) >= 1
+    except Exception as e:
+        raw["rules_error"] = str(e)
+    try:
+        count = _indexer_alert_count(groups, window)
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e), raw)
+    if rule_ok and count >= thr:
+        res = "충족"
+    elif rule_ok:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, count, thr, raw)
+
+
+def _alert_only(item_id, maturity, mk, thr, groups, window="now-86400s"):
+    """Helper: indexer alert-only pattern."""
+    try:
+        count = _indexer_alert_count(groups, window)
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_segment_traffic_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """3.1.1.2_2: 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "segment_traffic_count", 1.0, "network_scan", ["network_scan"])
+
+
+def collect_macro_segment_custom_policy(item_id: str, maturity: str) -> CollectedResult:
+    """3.1.1.3_1: 차등 정책 알림 → 충족 / 단일만 → 부분충족"""
+    return _alert_only(item_id, maturity, "custom_segment_count", 1.0, ["network_policy"])
+
+
+def collect_macro_segment_response(item_id: str, maturity: str) -> CollectedResult:
+    """3.1.1.3_2: AR 활성 AND 실행 이력 ≥ 1 → 충족 / 룰만 → 부분충족"""
+    mk, thr, raw = "macro_ar_count", 1.0, {}
+    try:
+        ar = _wazuh_get("/active-response")
+        raw["ar"] = ar
+        ar_items = ar.get("data", {}).get("affected_items", [])
+        ar_count = len(ar_items)
+        recent = sum(1 for a in ar_items if a.get("last_execution"))
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e))
+    if ar_count >= 1 and recent >= 1:
+        res = "충족"
+    elif ar_count >= 1:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, float(ar_count), thr, raw)
+
+
+def collect_micro_segment_block(item_id: str, maturity: str) -> CollectedResult:
+    """3.1.2.2_2: 차단 룰 AND 실행 이력 ≥ 1 → 충족 / 룰만 → 부분충족"""
+    mk, thr, raw = "micro_block_count", 1.0, {}
+    rule_ok = False
+    try:
+        r = _wazuh_get("/rules", {"search": "network_policy", "status": "enabled", "limit": 1})
+        rule_ok = r.get("data", {}).get("total_affected_items", 0) >= 1
+    except Exception as e:
+        raw["rules_error"] = str(e)
+    try:
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+    except Exception as e:
+        return _err(item_id, maturity, mk, thr, str(e), raw)
+    if rule_ok and ar_count >= 1:
+        res = "충족"
+    elif rule_ok:
+        res = "부분충족"
+    else:
+        res = "미충족"
+    return _ok(item_id, maturity, res, mk, float(ar_count), thr, raw)
+
+
+def collect_micro_segment_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """3.1.2.2_3: 모니터링 룰 활성화 → 충족 / 미활성 → 미충족"""
+    mk, thr = "micro_monitor_count", 1.0
+    try:
+        r = _wazuh_get("/rules", {"search": "network", "status": "enabled", "limit": 1})
+        count = float(r.get("data", {}).get("total_affected_items", 0))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"rule_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_micro_segment_policy_ratio(item_id: str, maturity: str) -> CollectedResult:
+    """3.1.2.3_1: 정책 적용 비율 ≥ 90% → 충족 / 50~90% → 부분충족"""
+    mk, thr, raw = "micro_policy_ratio", 0.9, {}
+    try:
+        agents = _get_active_agents()
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+        denom = len(agents)
+        if denom == 0:
+            return _err(item_id, maturity, mk, thr, "에이전트 0개")
+        ratio = min(ar_count / denom, 1.0)
+        if ratio >= 0.9:
+            res = "충족"
+        elif ratio >= 0.5:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, {"ar": ar_count, "agents": denom})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_static_network_rules(item_id: str, maturity: str) -> CollectedResult:
+    """3.2.1.1_2: 룰 ≥ 1 → 충족"""
+    mk, thr = "static_rule_count", 1.0
+    try:
+        r = _wazuh_get("/rules", {"status": "enabled", "limit": 1})
+        count = float(r.get("data", {}).get("total_affected_items", 0))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"rule_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_app_profile_traffic(item_id: str, maturity: str) -> CollectedResult:
+    """3.2.1.2_2: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "app_profile_alert_count", 1.0, ["application_profile"])
+
+
+def collect_dynamic_network_rules(item_id: str, maturity: str) -> CollectedResult:
+    """3.2.1.3_2: 동적 룰 ≥ 1 → 충족"""
+    mk, thr = "dynamic_rule_count", 1.0
+    try:
+        r = _wazuh_get("/rules", {"search": "network", "status": "enabled"})
+        count = float(r.get("data", {}).get("total_affected_items", 0))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"rule_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_network_auto_response(item_id: str, maturity: str) -> CollectedResult:
+    """3.2.1.4_1: 실행 ≥ 1 → 충족 / 룰만 → 부분충족"""
+    mk, thr, raw = "network_ar_count", 1.0, {}
+    try:
+        ar = _wazuh_get("/active-response")
+        ar_items = ar.get("data", {}).get("affected_items", [])
+        ar_count = len(ar_items)
+        recent = sum(1 for a in ar_items if a.get("last_execution"))
+        if ar_count >= 1 and recent >= 1:
+            res = "충족"
+        elif ar_count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, float(ar_count), thr, {"ar_count": ar_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_app_profile_change_detect(item_id: str, maturity: str) -> CollectedResult:
+    """3.2.1.4_2: 탐지 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "profile_change_count", 1.0, ["application_profile"])
+
+
+def collect_tls_coverage(item_id: str, maturity: str) -> CollectedResult:
+    """3.3.1.2_1: 비율 ≥ 80% → 충족 / 50~80% → 부분충족"""
+    mk, thr = "tls_coverage_ratio", 0.8
+    try:
+        total = float(_indexer_count("wazuh-alerts-*", {"query": {"match_all": {}}}))
+        tls = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"should": [
+                {"term": {"rule.groups": "tls"}}, {"term": {"rule.groups": "ssl"}}
+            ]}}
+        }))
+        ratio = tls / total if total > 0 else 0.0
+        if ratio >= 0.8:
+            res = "충족"
+        elif ratio >= 0.5:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, {"tls_alerts": int(tls), "total": int(total)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_tls_policy_rule(item_id: str, maturity: str) -> CollectedResult:
+    """3.3.1.2_2: TLS 정책 룰 활성화 → 충족 / 미활성 → 미충족"""
+    mk, thr = "tls_rule_count", 1.0
+    try:
+        r = _wazuh_get("/rules", {"search": "tls", "status": "enabled", "limit": 1})
+        count = float(r.get("data", {}).get("total_affected_items", 0))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"tls_rule_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_auto_data_flow_map(item_id: str, maturity: str) -> CollectedResult:
+    """3.4.1.2_2: 자동 매핑 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "auto_flow_map_count", 1.0, ["network_flow"])
+
+
+def collect_abnormal_data_movement(item_id: str, maturity: str) -> CollectedResult:
+    """3.4.1.3_1: 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "abnormal_data_count", 1.0, "data_exfiltration", ["data_exfiltration"])
+
+
+def collect_correlation_threat_detect(item_id: str, maturity: str) -> CollectedResult:
+    """3.4.1.3_2: 상관 분석 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "correlation_alert_count", 1.0, ["correlation"])
+
+
+def collect_network_continuity(item_id: str, maturity: str) -> CollectedResult:
+    """3.5.1.4_1: 활성 비율 ≥ 99.9% AND 알림 수집 → 충족 / 미달 → 부분충족"""
+    mk, thr, raw = "network_continuity_ratio", 0.999, {}
+    try:
+        agents = _get_all_agents()
+        denom = len(agents)
+        if denom == 0:
+            return _err(item_id, maturity, mk, thr, "에이전트 0개")
+        numer = sum(1 for a in agents if a.get("status") == "active")
+        ratio = numer / denom
+        alert_count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"range": {"@timestamp": {"gte": "now-3600s"}}}
+        }))
+        if ratio >= 0.999 and alert_count >= 1:
+            res = "충족"
+        elif ratio >= 0.99:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, {"active": numer, "total": denom})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_auto_recovery(item_id: str, maturity: str) -> CollectedResult:
+    """3.5.1.4_2: 장애 감지 AND 자동 복구 이력 ≥ 1 → 충족 / 감지만 → 부분충족"""
+    mk, thr, raw = "auto_recovery_count", 1.0, {}
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"should": [
+                {"term": {"rule.groups": "agent_disconnected"}},
+                {"term": {"rule.groups": "ossec"}},
+            ]}}
+        }))
+        raw["detect_count"] = int(count)
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+        if count >= 1 and ar_count >= 1:
+            res = "충족"
+        elif count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"detect_count": int(count), "ar_count": ar_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_realtime_access_event(item_id: str, maturity: str) -> CollectedResult:
+    """4.1.1.4_1: 이벤트 ≥ 1 → 충족 / 구성만 → 부분충족"""
+    return _alert_only(item_id, maturity, "access_event_count", 1.0, ["access_control"], "now-3600s")
+
+
+def collect_command_trust_reeval(item_id: str, maturity: str) -> CollectedResult:
+    """4.1.1.4_3: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "command_alert_count", 1.0, ["command_execution"])
+
+
+def collect_risk_based_access_policy(item_id: str, maturity: str) -> CollectedResult:
+    """4.1.1.4_4: 위험 분석 기반 룰 운영 → 충족 / 계획만 → 부분충족"""
+    mk, thr, raw = "risk_policy_count", 1.0, {}
+    rule_ok = False
+    try:
+        r = _wazuh_get("/rules", {"search": "access", "status": "enabled", "limit": 1})
+        rule_ok = r.get("data", {}).get("total_affected_items", 0) >= 1
+    except Exception as e:
+        raw["rules_error"] = str(e)
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"must": [
+                {"range": {"rule.level": {"gte": 7}}},
+                {"range": {"@timestamp": {"gte": "now-86400s"}}}
+            ]}}
+        }))
+        if rule_ok and count >= 1:
+            res = "충족"
+        elif rule_ok:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"rule_ok": rule_ok, "count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_pam_basic(item_id: str, maturity: str) -> CollectedResult:
+    """4.2.1.1_1: 특권 계정 목록 존재(에이전트 ≥ 1) → 충족"""
+    mk, thr = "privileged_agent_count", 1.0
+    try:
+        agents = _get_active_agents()
+        count = float(len(agents))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"agent_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_pam_policy(item_id: str, maturity: str) -> CollectedResult:
+    """4.2.1.1_2: PAM 정책 룰 존재 → 충족"""
+    mk, thr = "pam_rule_count", 1.0
+    try:
+        r = _wazuh_get("/rules", {"search": "privilege", "status": "enabled"})
+        count = float(r.get("data", {}).get("total_affected_items", 0))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"pam_rule_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_pam_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """4.2.1.2_1: 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "pam_monitor_count", 1.0, "privilege_access", ["privilege_access"])
+
+
+def collect_abnormal_auth_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """4.2.2.3_3: 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "abnormal_auth_count", 1.0, "authentication_failure",
+                           ["authentication_failure", "authentication_failed"], "now-3600s")
+
+
+def collect_inter_segment_control(item_id: str, maturity: str) -> CollectedResult:
+    """4.3.1.2_2: 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "inter_segment_count", 1.0, "lateral_movement", ["lateral_movement"])
+
+
+def collect_workload_segment_policy(item_id: str, maturity: str) -> CollectedResult:
+    """4.3.1.3_1: 워크로드별 차등 정책 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "workload_policy_count", 1.0, ["network_policy"])
+
+
+def collect_realtime_segment_inspect(item_id: str, maturity: str) -> CollectedResult:
+    """4.3.1.3_3: 알림 수집 → 충족 / 미수집 → 미충족"""
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"must": [
+                {"range": {"rule.level": {"gte": 7}}},
+                {"range": {"@timestamp": {"gte": "now-3600s"}}}
+            ]}}
+        }))
+        res = "충족" if count >= 1.0 else "미충족"
+        return _ok(item_id, maturity, res, "realtime_segment_count", count, 1.0, {"count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, "realtime_segment_count", 1.0, str(exc))
+
+
+def collect_group_move_analysis(item_id: str, maturity: str) -> CollectedResult:
+    """4.3.1.3_4: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "group_move_count", 1.0, ["lateral_movement"])
+
+
+def collect_realtime_group_move_policy(item_id: str, maturity: str) -> CollectedResult:
+    """4.3.1.3_6: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "realtime_policy_count", 1.0, ["policy_changed"], "now-3600s")
+
+
+def collect_system_policy_basic(item_id: str, maturity: str) -> CollectedResult:
+    """4.4.1.1_1: 에이전트 ≥ 1 AND SCA 활성 → 충족 / 에이전트만 → 부분충족"""
+    mk, thr, raw = "system_sca_count", 1.0, {}
+    try:
+        agents = _get_active_agents()
+        agent_count = len(agents)
+        sca_count = 0
+        for a in agents[:5]:
+            try:
+                r = _wazuh_get(f"/sca/{a['id']}", {"limit": 1})
+                if r.get("data", {}).get("affected_items"):
+                    sca_count += 1
+            except Exception:
+                pass
+        if agent_count >= 1 and sca_count >= 1:
+            res = "충족"
+        elif agent_count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, float(sca_count), thr, {"agents": agent_count, "sca": sca_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_auto_policy_apply(item_id: str, maturity: str) -> CollectedResult:
+    """4.4.1.2_2: 비율 ≥ 80% → 충족 / 50~80% → 부분충족"""
+    mk, thr = "auto_policy_ratio", 0.8
+    try:
+        agents = _get_active_agents()
+        denom = len(agents)
+        if denom == 0:
+            return _err(item_id, maturity, mk, thr, "에이전트 0개")
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+        ratio = min(ar_count / denom, 1.0)
+        if ratio >= 0.8:
+            res = "충족"
+        elif ratio >= 0.5:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, {"ar": ar_count, "agents": denom})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_dynamic_policy_change(item_id: str, maturity: str) -> CollectedResult:
+    """4.4.1.3_2: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "dynamic_policy_count", 1.0, ["policy_changed"])
+
+
+def collect_autonomous_policy(item_id: str, maturity: str) -> CollectedResult:
+    """4.4.1.4_1: 자율 적용 이벤트 ≥ 1 → 충족 / 구성만 → 부분충족"""
+    mk, thr = "autonomous_policy_event", 1.0
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"must": [
+                {"term": {"rule.groups": "policy_changed"}},
+                {"range": {"@timestamp": {"gte": "now-3600s"}}}
+            ]}}
+        }))
+        res = "충족" if count >= thr else "부분충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_consistent_policy_ratio(item_id: str, maturity: str) -> CollectedResult:
+    """4.4.1.4_2: 비율 ≥ 90% → 충족 / 50~90% → 부분충족"""
+    mk, thr = "consistent_policy_ratio", 0.9
+    try:
+        agents = _get_active_agents()
+        denom = len(agents)
+        if denom == 0:
+            return _err(item_id, maturity, mk, thr, "에이전트 0개")
+        sca_ok = 0
+        for a in agents:
+            try:
+                r = _wazuh_get(f"/sca/{a['id']}", {"limit": 1})
+                if r.get("data", {}).get("affected_items"):
+                    sca_ok += 1
+            except Exception:
+                pass
+        ratio = sca_ok / denom
+        if ratio >= 0.9:
+            res = "충족"
+        elif ratio >= 0.5:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, {"sca_ok": sca_ok, "agents": denom})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_workload_anomaly(item_id: str, maturity: str) -> CollectedResult:
+    """5.1.1.4_1: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "workload_anomaly_count", 1.0, ["anomaly_detection"])
+
+
+def collect_abnormal_access_block(item_id: str, maturity: str) -> CollectedResult:
+    """5.1.1.4_3: 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "abnormal_access_block_count", 1.0, "access", ["access_control"])
+
+
+def collect_app_security_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """5.2.1.2_1: 알림 AND 룰 활성 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "app_monitor_count", 1.0, "web", ["web", "application"])
+
+
+def collect_system_change_review(item_id: str, maturity: str) -> CollectedResult:
+    """5.2.1.2_2: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "config_change_count", 1.0, ["configuration_changed", "syslog"])
+
+
+def collect_system_realtime_threat(item_id: str, maturity: str) -> CollectedResult:
+    """5.2.1.4_1: 알림 AND 처리지연 ≤ 60s → 충족 / 수집만 → 부분충족"""
+    mk, thr, raw = "system_threat_count", 1.0, {}
+    try:
+        ir = _indexer_search("wazuh-alerts-*", {
+            "size": 5, "track_total_hits": True,
+            "query": {"bool": {"must": [
+                {"range": {"rule.level": {"gte": 7}}},
+                {"range": {"@timestamp": {"gte": "now-3600s"}}}
+            ]}},
+            "sort": [{"@timestamp": {"order": "desc"}}],
+        })
+        raw["indexer"] = ir
+        count = float(ir["hits"]["total"]["value"])
+        hits = ir.get("hits", {}).get("hits", [])
+        delay_sec = None
+        if hits:
+            ts = _parse_dt(hits[0].get("_source", {}).get("@timestamp", ""))
+            if ts:
+                delay_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+        if count >= 1 and delay_sec is not None and delay_sec <= 60:
+            res = "충족"
+        elif count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, raw)
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_remote_device_sca(item_id: str, maturity: str) -> CollectedResult:
+    """5.3.1.2_1: SCA 평균 ≥ 70 → 충족 / 50~70 → 부분충족"""
+    mk, thr, raw = "remote_sca_avg", 70.0, {}
+    try:
+        agents = _get_active_agents()
+        scores = []
+        for a in agents:
+            try:
+                r = _wazuh_get(f"/sca/{a['id']}")
+                for item in r.get("data", {}).get("affected_items", []):
+                    if "score" in item:
+                        scores.append(item["score"])
+            except Exception:
+                pass
+        if not scores:
+            return _err(item_id, maturity, mk, thr, "SCA 결과 없음")
+        avg = sum(scores) / len(scores)
+        if avg >= 70:
+            res = "충족"
+        elif avg >= 50:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, round(avg, 2), thr, {"avg": round(avg, 2), "count": len(scores)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_remote_realtime_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """5.3.1.3_1: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "remote_monitor_count", 1.0, ["remote_access"], "now-3600s")
+
+
+def collect_deploy_pipeline_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """5.4.1.2_1: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "deploy_monitor_count", 1.0, ["deployment"])
+
+
+def collect_deploy_continuous_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """5.4.1.3_1: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "deploy_continuous_count", 1.0, ["deployment"])
+
+
+def collect_deploy_anomaly_detect(item_id: str, maturity: str) -> CollectedResult:
+    """5.4.1.3_3: 탐지 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "deploy_anomaly_count", 1.0, ["deployment", "anomaly"])
+
+
+def collect_app_inventory_auto(item_id: str, maturity: str) -> CollectedResult:
+    """5.4.2.2_1: 수집 비율 ≥ 80% → 충족 / 미달 → 부분충족"""
+    mk, thr, raw = "app_inventory_ratio", 0.8, {}
+    try:
+        agents = _get_active_agents()
+        denom = len(agents)
+        if denom == 0:
+            return _err(item_id, maturity, mk, thr, "에이전트 0개")
+        numer = 0
+        for a in agents:
+            try:
+                r = _wazuh_get(f"/syscollector/{a['id']}/packages", {"limit": 1})
+                if r.get("data", {}).get("affected_items"):
+                    numer += 1
+            except Exception:
+                pass
+        ratio = numer / denom
+        if ratio >= 0.8:
+            res = "충족"
+        elif ratio >= 0.5:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, round(ratio, 4), thr, {"ok": numer, "total": denom})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_runtime_analysis_auto(item_id: str, maturity: str) -> CollectedResult:
+    """5.5.1.4_2: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "runtime_analysis_count", 1.0, ["runtime_anomaly"])
+
+
+def collect_data_risk_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.1.3_1: 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "data_risk_count", 1.0, "data_access", ["data_access"])
+
+
+def collect_sensitive_data_protect(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.1.3_2: 알림 AND 보호 정책 ≥ 1 → 충족 / 알림만 → 부분충족"""
+    mk, thr, raw = "sensitive_protect_count", 1.0, {}
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"term": {"rule.groups": "data_access"}}
+        }))
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+        if count >= 1 and ar_count >= 1:
+            res = "충족"
+        elif count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"alert_count": int(count), "ar_count": ar_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_data_usage_pattern(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.1.3_3: 분석 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "data_pattern_count", 1.0, "data_access", ["data_access"])
+
+
+def collect_data_catalog_integrated(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.1.4_2: 통합 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "catalog_integrated_count", 1.0, ["data_catalog"])
+
+
+def collect_data_governance_audit(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.2.2_1: 감사 룰 AND 알림 → 충족 / 룰만 → 부분충족"""
+    return _rule_and_alert(item_id, maturity, "governance_audit_count", 1.0, "audit", ["audit"])
+
+
+def collect_data_governance_auto(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.2.3_1: 자동화 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "governance_auto_count", 1.0, ["data_governance"])
+
+
+def collect_data_policy_realtime(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.2.3_2: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "policy_realtime_count", 1.0, ["policy_violation"], "now-3600s")
+
+
+def collect_data_governance_integrated(item_id: str, maturity: str) -> CollectedResult:
+    """6.1.2.4_1: 통합 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "governance_integrated_count", 1.0, ["data_governance"])
+
+
+def collect_data_access_auto_adjust(item_id: str, maturity: str) -> CollectedResult:
+    """6.2.1.4_1: 알림 AND 자동 조정 이벤트 → 충족 / 알림만 → 부분충족"""
+    mk, thr, raw = "access_auto_adjust_count", 1.0, {}
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"term": {"rule.groups": "data_access"}}
+        }))
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+        if count >= 1 and ar_count >= 1:
+            res = "충족"
+        elif count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"data_alerts": int(count), "ar_count": ar_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_data_encryption_basic(item_id: str, maturity: str) -> CollectedResult:
+    """6.3.1.2_1: 활성 에이전트 ≥ 1 → 충족"""
+    mk, thr = "encryption_agent_count", 1.0
+    try:
+        agents = _get_active_agents()
+        count = float(len(agents))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"agent_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_data_encryption_integrated(item_id: str, maturity: str) -> CollectedResult:
+    """6.3.1.3_1: 통합 운영 → 충족 / 부분 → 부분충족"""
+    return _alert_only(item_id, maturity, "encryption_integrated_count", 1.0, ["encryption"])
+
+
+def collect_data_masking_realtime(item_id: str, maturity: str) -> CollectedResult:
+    """6.3.1.4_2: 마스킹 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "masking_alert_count", 1.0, ["data_masking"])
+
+
+def collect_data_label_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """6.4.1.2_2: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "label_monitor_count", 1.0, ["data_label"])
+
+
+def collect_auto_label_classify(item_id: str, maturity: str) -> CollectedResult:
+    """6.4.1.3_1: 자동 분류 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "auto_label_count", 1.0, ["data_classification"])
+
+
+def collect_label_security_integration(item_id: str, maturity: str) -> CollectedResult:
+    """6.4.1.3_2: 연계 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "label_integration_count", 1.0, ["data_label", "security"])
+
+
+def collect_dlp_policy_central(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.1.2_2: DLP 룰 ≥ 1 → 충족"""
+    mk, thr = "dlp_rule_count", 1.0
+    try:
+        r = _wazuh_get("/rules", {"search": "data_loss", "status": "enabled"})
+        count = float(r.get("data", {}).get("total_affected_items", 0))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"dlp_rule_count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_dlp_monitor_mode(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.1.2_3: 모니터링 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "dlp_monitor_count", 1.0, ["data_loss"], "now-86400s")
+
+
+def collect_dlp_realtime(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.1.3_1: 알림 AND 처리지연 ≤ 60s → 충족 / 수집만 → 부분충족"""
+    mk, thr, raw = "dlp_realtime_count", 1.0, {}
+    try:
+        ir = _indexer_search("wazuh-alerts-*", {
+            "size": 5, "track_total_hits": True,
+            "query": {"bool": {"must": [
+                {"bool": {"should": [
+                    {"term": {"rule.groups": "data_loss"}},
+                    {"term": {"rule.groups": "exfiltration"}},
+                ]}},
+                {"range": {"@timestamp": {"gte": "now-3600s"}}}
+            ]}},
+            "sort": [{"@timestamp": {"order": "desc"}}],
+        })
+        count = float(ir["hits"]["total"]["value"])
+        hits = ir.get("hits", {}).get("hits", [])
+        delay_sec = None
+        if hits:
+            ts = _parse_dt(hits[0].get("_source", {}).get("@timestamp", ""))
+            if ts:
+                delay_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+        if count >= 1 and delay_sec is not None and delay_sec <= 60:
+            res = "충족"
+        elif count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"count": int(count), "delay_sec": delay_sec})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_dlp_prevent_mode(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.1.3_2: 차단 룰 AND 실행 이력 ≥ 1 → 충족 / 룰만 → 부분충족"""
+    mk, thr, raw = "dlp_prevent_count", 1.0, {}
+    rule_ok = False
+    try:
+        r = _wazuh_get("/rules", {"search": "data_loss", "status": "enabled", "limit": 1})
+        rule_ok = r.get("data", {}).get("total_affected_items", 0) >= 1
+    except Exception as e:
+        raw["rules_error"] = str(e)
+    try:
+        ar = _wazuh_get("/active-response")
+        ar_items = ar.get("data", {}).get("affected_items", [])
+        ar_count = len(ar_items)
+        if rule_ok and ar_count >= 1:
+            res = "충족"
+        elif rule_ok:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, float(ar_count), thr, {"rule_ok": rule_ok, "ar_count": ar_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_dlp_auto_optimize(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.1.4_2: 자동 최적화 알림 → 충족 / 미수집 → 미충족"""
+    mk, thr = "dlp_optimize_count", 1.0
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"bool": {"should": [
+                {"term": {"rule.groups": "data_loss"}},
+                {"term": {"rule.groups": "policy_changed"}},
+            ]}}
+        }))
+        res = "충족" if count >= thr else "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_data_activity_monitor(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.2.2_1: FIM 에이전트 ≥ 1 AND 감시 디렉토리 ≥ 1 → 충족 / 에이전트만 → 부분충족"""
+    mk, thr, raw = "fim_dir_count", 1.0, {}
+    try:
+        agents = _get_active_agents()
+        agent_count = len(agents)
+        fim_count = 0
+        dir_count = 0
+        for a in agents[:5]:
+            try:
+                r = _wazuh_get(f"/syscheck/{a['id']}", {"limit": 1})
+                items = r.get("data", {}).get("affected_items", [])
+                if items:
+                    fim_count += 1
+                    dir_count += len(items)
+            except Exception:
+                pass
+        if fim_count >= 1 and dir_count >= 1:
+            res = "충족"
+        elif agent_count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, float(dir_count), thr, {"fim_agents": fim_count, "dirs": dir_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_data_anomaly_detect(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.2.2_2: 알림 수집 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "data_anomaly_count", 1.0, ["data_access", "anomaly"])
+
+
+def collect_data_realtime_anomaly(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.2.3_1: 알림 AND 처리지연 ≤ 60s → 충족 / 수집만 → 부분충족"""
+    mk, thr, raw = "data_realtime_count", 1.0, {}
+    try:
+        ir = _indexer_search("wazuh-alerts-*", {
+            "size": 5, "track_total_hits": True,
+            "query": {"bool": {"must": [
+                {"term": {"rule.groups": "data_access"}},
+                {"range": {"@timestamp": {"gte": "now-3600s"}}}
+            ]}},
+            "sort": [{"@timestamp": {"order": "desc"}}],
+        })
+        count = float(ir["hits"]["total"]["value"])
+        hits = ir.get("hits", {}).get("hits", [])
+        delay_sec = None
+        if hits:
+            ts = _parse_dt(hits[0].get("_source", {}).get("@timestamp", ""))
+            if ts:
+                delay_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+        if count >= 1 and delay_sec is not None and delay_sec <= 60:
+            res = "충족"
+        elif count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"count": int(count)})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
+
+
+def collect_data_security_integration(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.2.3_2: 연계 알림 → 충족 / 미수집 → 미충족"""
+    return _alert_only(item_id, maturity, "data_integration_count", 1.0, ["data_access", "security"])
+
+
+def collect_data_context_access(item_id: str, maturity: str) -> CollectedResult:
+    """6.5.2.4_1: 모니터링 AND 최소 접근제어 정책 ≥ 1 → 충족 / 모니터링만 → 부분충족"""
+    mk, thr, raw = "context_access_count", 1.0, {}
+    try:
+        count = float(_indexer_count("wazuh-alerts-*", {
+            "query": {"term": {"rule.groups": "data_access"}}
+        }))
+        ar = _wazuh_get("/active-response")
+        ar_count = len(ar.get("data", {}).get("affected_items", []))
+        if count >= 1 and ar_count >= 1:
+            res = "충족"
+        elif count >= 1:
+            res = "부분충족"
+        else:
+            res = "미충족"
+        return _ok(item_id, maturity, res, mk, count, thr, {"alert_count": int(count), "ar_count": ar_count})
+    except Exception as exc:
+        return _err(item_id, maturity, mk, thr, str(exc))
 
 
 # ─── Unit Tests ───────────────────────────────────────────────────────────────

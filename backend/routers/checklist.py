@@ -26,17 +26,20 @@ def get_checklist(
         {
             "check_id": c.check_id,
             "item_id": c.item_id,
+            "item_num": c.item_num,
             "pillar": c.pillar,
             "category": c.category,
             "item_name": c.item_name,
             "maturity": c.maturity,
             "maturity_score": c.maturity_score,
-            "question": c.question,
             "diagnosis_type": c.diagnosis_type,
             "tool": c.tool,
             "weight": c.weight,
-            "criteria": c.criteria,
             "evidence": c.evidence,
+            "criteria": c.criteria,
+            "fields": c.fields,
+            "logic": c.logic,
+            "exceptions": c.exceptions,
         }
         for c in items
     ]

@@ -245,7 +245,6 @@ def get_result(session_id: int, db: Session = Depends(get_db)):
             "item": cl.item_name,
             "maturity": cl.maturity,
             "maturity_score": cl.maturity_score,
-            "question": cl.question,
             "diagnosis_type": cl.diagnosis_type,
             "tool": cl.tool,
             "result": dr.result,

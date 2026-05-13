@@ -50,13 +50,13 @@ CREATE TABLE IF NOT EXISTS DiagnosisSession (
 -- 4. Checklist
 CREATE TABLE IF NOT EXISTS Checklist (
   check_id       INT          NOT NULL AUTO_INCREMENT,
-  item_id        VARCHAR(20)  NOT NULL,
+  item_id        VARCHAR(30)  NOT NULL,
+  item_num       VARCHAR(20)  NULL,
   pillar         VARCHAR(100) NOT NULL,
   category       VARCHAR(100) NOT NULL,
   item_name      VARCHAR(200) NOT NULL,
   maturity       VARCHAR(20)  NOT NULL,
   maturity_score INT          NOT NULL DEFAULT 0,
-  question       TEXT         NOT NULL,
   diagnosis_type VARCHAR(20)  NOT NULL,
   tool           VARCHAR(100) NOT NULL,
   evidence       TEXT         NULL,
@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS Checklist (
   fields         TEXT         NULL,
   logic          TEXT         NULL,
   exceptions     TEXT         NULL,
+  weight         FLOAT        NOT NULL DEFAULT 0.1,
   PRIMARY KEY (check_id),
   UNIQUE KEY uq_checklist_item_id (item_id)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

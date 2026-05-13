@@ -1,6 +1,6 @@
 # Readyz-T ZT Assessment — 전체 구현 현황 및 기능 명세
 
-> 작성일: 2026-05-13 (최초: 2026-05-12)  
+> 작성일: 2026-05-13 (최초: 2026-05-12, 최종 수정: 2026-05-13)  
 > 현재 체크아웃: `dev`  
 > 서버: EC2 `3.35.200.145` (Ubuntu 24.04, t3a.xlarge 4vCPU/16GB)
 
@@ -34,10 +34,10 @@ zt-assessment/
 │   ├── Dockerfile
 │   ├── init.sql
 │   ├── collectors/
-│   │   ├── keycloak_collector.py      # ✅ 구현 완료 — 33개 함수 (dev 머지 완료)
-│   │   ├── wazuh_collector.py         # ✅ 구현 완료 — 42개 함수 (dev 머지 완료)
-│   │   ├── nmap_collector.py          # ⬜ 스켈레톤 (미구현)
-│   │   └── trivy_collector.py         # ⬜ 스켈레톤 (미구현)
+│   │   ├── keycloak_collector.py      # ✅ 구현 완료 — 65개 함수
+│   │   ├── wazuh_collector.py         # ✅ 구현 완료 — 122개 함수
+│   │   ├── nmap_collector.py          # ✅ 구현 완료 — 14개 함수
+│   │   └── trivy_collector.py         # ✅ 구현 완료 — 11개 함수
 │   ├── routers/
 │   │   ├── assessment.py              # ✅ 구현 완료 (4개 엔드포인트)
 │   │   ├── score.py                   # ✅ 구현 완료 (3개 엔드포인트)
@@ -46,9 +46,9 @@ zt-assessment/
 │   │   ├── manual.py                  # ⬜ TODO (NotImplementedError)
 │   │   └── report.py                  # ⬜ TODO (NotImplementedError)
 │   ├── scoring/
-│   │   └── engine.py                  # ✅ 구현 완료 (⚠️ threshold=0 버그 있음, §13 참고)
+│   │   └── engine.py                  # ✅ 구현 완료 (threshold=0 버그 수정 완료)
 │   └── scripts/
-│       └── seed_checklist.py          # ✅ 체크리스트 DB 적재 스크립트 (루트에도 중복 존재)
+│       └── seed_checklist.py          # ✅ 체크리스트 DB 적재 스크립트 (xlsx → 새 item_id 포맷)
 ├── frontend/
 │   ├── src/app/pages/
 │   │   ├── Dashboard.tsx              # ✅ API 연동 완료 (fallback 포함)
@@ -95,7 +95,7 @@ zt-assessment/
 | `Organization` | org_id, name, industry, size, cloud_type | 조직 정보 |
 | `User` | user_id, org_id, name, email, role, mfa_enabled | 사용자 |
 | `DiagnosisSession` | session_id, org_id, user_id, status(진행중/완료/오류), level, total_score, started_at, completed_at | 진단 세션 |
-| `Checklist` | check_id, item_id, pillar, category, item_name, maturity, maturity_score, question, diagnosis_type, tool, weight | 진단 체크리스트 항목 |
+| `Checklist` | check_id, item_id, item_num, pillar, category, item_name, maturity, maturity_score, diagnosis_type, tool, weight | 진단 체크리스트 항목 (`question` 필드 제거, `item_num` 추가) |
 | `CollectedData` | data_id, session_id, check_id, tool, metric_key, metric_value, threshold, raw_json, error | 수집 원시 데이터 |
 | `Evidence` | evidence_id, session_id, check_id, source, observed, location, reason, impact | 증거 데이터 |
 | `DiagnosisResult` | result_id, session_id, check_id, result(충족/부분충족/미충족/평가불가), score, recommendation | 진단 결과 |
@@ -311,9 +311,9 @@ pillar별 성숙도 점수 요약.
 
 ```python
 {
-    "item_id":      str,       # 체크리스트 항목 ID (예: "1.1.1_향상")
-    "maturity":     str,       # 성숙도 단계
-    "tool":         str,       # "keycloak" | "wazuh"
+    "item_id":      str,       # 체크리스트 항목 ID (예: "1.1.1.2_1" = 항목1.1.1, 초기(2), 질문1)
+    "maturity":     str,       # 성숙도 단계 ("기존"|"초기"|"향상"|"최적화")
+    "tool":         str,       # "keycloak" | "wazuh" | "nmap" | "trivy"
     "result":       str,       # "충족" | "부분충족" | "미충족" | "평가불가"
     "metric_key":   str,       # 측정 지표 키
     "metric_value": float,     # 측정값
@@ -324,11 +324,18 @@ pillar별 성숙도 점수 요약.
 }
 ```
 
+### item_id 포맷
+
+`{항목번호}.{성숙도번호}_{질문번호}` — 예: `1.1.1.2_1`  
+- 항목번호: `1.1.1` (xlsx `항목` 컬럼에서 첫 번째 공백 기준 앞부분)  
+- 성숙도번호: 기존=1, 초기=2, 향상=3, 최적화=4  
+- 질문번호: 동일 항목+성숙도 내 순서 (1부터)
+
 ---
 
-## 8. Keycloak Collector (feature/keycloak-collector 브랜치 기준 → dev 머지 완료)
+## 8. Keycloak Collector
 
-**파일**: `backend/collectors/keycloak_collector.py` (1,302줄)  
+**파일**: `backend/collectors/keycloak_collector.py`  
 **API**: Keycloak Admin REST API (`KEYCLOAK_URL/admin/realms/...`)  
 **인증**: `POST /realms/master/protocol/openid-connect/token` → Bearer 토큰 (캐시)  
 **SSL**: verify=True (기본)
@@ -350,9 +357,15 @@ pillar별 성숙도 점수 요약.
 | `_get_admin_token()` | 토큰 발급·캐시 (expires_in 기준, 만료 30초 전 재발급) |
 | `_kc_get(path, params)` | `GET {KEYCLOAK_URL}/admin/realms/{REALM}{path}` |
 | `_now_iso()` | UTC ISO 8601 문자열 |
-| `_make_result(...)` | 공통 결과 dict 생성 |
+| `_make_result(...)` / `_unavailable(...)` | 공통 결과 dict 생성 |
+| `_get_all_users()` | 전체 사용자 목록 수집 |
+| `_active_human_users()` | 활성 사람 계정 필터 |
+| `_flows_with_executions()` | 인증 흐름 + 실행기 목록 |
+| `_get_authz_clients()` | 인가 서비스 활성 클라이언트 목록 |
+| `_get_all_authz_policies()` | 전체 인가 정책 목록 |
+| `_get_all_authz_permissions()` | 전체 인가 권한 목록 |
 
-### collector 함수 목록 (33개)
+### collector 함수 목록 (65개)
 
 | # | 함수명 | item_id 계열 | metric_key | threshold | API 엔드포인트 | 판정 기준 |
 |---|--------|-------------|------------|-----------|----------------|-----------|
@@ -389,12 +402,13 @@ pillar별 성숙도 점수 요약.
 | 31 | `collect_mfa_required_actions` | MFA Required Actions | mfa_action_count | 1 | `/authentication/required-actions` | CONFIGURE_TOTP 또는 webauthn-register enabled ≥ 1 |
 | 32 | `collect_webauthn_credential_users` | WebAuthn 자격증명 사용자 수 | webauthn_credential_count | 1 | `/users/{id}/credentials` | webauthn 자격증명 보유 사용자 수 ≥ 1 |
 | 33 | `collect_sso_clients` | SSO 클라이언트 | sso_client_count | 1 | `/clients` | standardFlowEnabled=true 클라이언트 ≥ 1 |
+| 34–65 | (pillar 3~6 정책·인가·데이터 관련 함수) | — | — | — | — | 각 pillar의 중앙인가, ABAC, RBAC, 세션, 집계 정책, 컨텍스트, 데이터 접근 등 32개 추가 |
 
 ---
 
-## 9. Wazuh Collector (feature/wazuh-collector 브랜치 기준 → dev 머지 완료)
+## 9. Wazuh Collector
 
-**파일**: `backend/collectors/wazuh_collector.py` (1,821줄)  
+**파일**: `backend/collectors/wazuh_collector.py`  
 **API A (Manager API)**: `WAZUH_API_URL` (포트 55000) — JWT 인증  
 **API B (Indexer API)**: `WAZUH_INDEXER_URL` (포트 9200) — Basic Auth  
 **SSL**: `verify=False` (urllib3 경고 억제)
@@ -428,7 +442,34 @@ pillar별 성숙도 점수 요약.
 | `_ok(...)` | 정상 결과 공통 반환 |
 | `_parse_dt(s)` | ISO 8601 문자열 → datetime (Z 처리 포함) |
 
-### collector 함수 목록 (42개)
+### 추가 헬퍼 (DRY 패턴)
+
+| 함수 | 설명 |
+|------|------|
+| `_indexer_alert_count(groups, window)` | 그룹 목록으로 인덱서 알림 수 집계 |
+| `_rule_and_alert(...)` | rule 존재 여부 + 알림 수 패턴 |
+| `_alert_only(...)` | 알림 수만으로 판정하는 패턴 |
+
+### collector 함수 목록 (122개)
+
+함수 1–42는 이전과 동일. 43–122는 아래 영역 추가:
+
+| 영역 | 함수 수 | 대표 함수 |
+|------|---------|-----------|
+| 인증 자동화·동적 접근 | 6 | collect_auto_reauth, collect_icam_automation, collect_dynamic_access_policy |
+| 기기·엔드포인트 | 4 | collect_device_security_check, collect_endpoint_central_policy |
+| 네트워크 세그먼테이션 | 14 | collect_macro_segment_*, collect_micro_segment_*, collect_static_network_rules |
+| 앱·TLS·데이터 흐름 | 7 | collect_tls_coverage, collect_auto_data_flow_map, collect_abnormal_data_movement |
+| 복구·연속성 | 3 | collect_network_continuity, collect_auto_recovery |
+| PAM·접근 관리 | 5 | collect_pam_basic, collect_pam_policy, collect_pam_monitor |
+| 워크로드·정책 자동화 | 12 | collect_workload_segment_policy, collect_system_policy_basic, collect_autonomous_policy |
+| 앱·배포 파이프라인 | 6 | collect_deploy_pipeline_monitor, collect_app_inventory_auto |
+| 데이터 거버넌스·암호화 | 15 | collect_data_risk_monitor, collect_data_encryption_*, collect_dlp_* |
+| 데이터 활동 모니터링 | 8 | collect_data_activity_monitor, collect_data_anomaly_detect, collect_data_context_access |
+
+---
+
+### 이전 collector 함수 목록 (1–42)
 
 #### 인증·사용자 행동 영역 (항목 1~8)
 
@@ -581,7 +622,81 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 12. 프론트엔드 API 연동 현황
+## 10. Nmap Collector — ✅ 구현 완료 (14개 함수)
+
+**파일**: `backend/collectors/nmap_collector.py`  
+**환경변수**: `NMAP_WRAPPER_URL` (기본: `http://localhost:8001`), `NMAP_TARGET` (기본: `127.0.0.1`)
+
+| # | 함수명 | item_id | metric_key | threshold | 엔드포인트 |
+|---|--------|---------|------------|-----------|-----------|
+| 1 | `collect_host_discovery` | 2.1.1.1_1 | identified_host_count | 1.0 | POST /scan/ports |
+| 2 | `collect_port_service_map` | 2.4.2.2_1 | scan_performed | 1.0 | POST /scan/ports |
+| 3 | `collect_subnet_topology` | 3.1.1.1_1 | subnet_count | 2.0 | POST /scan/subnets |
+| 4 | `collect_subnet_traffic_map` | 3.1.1.1_2 | subnet_count | 2.0 | POST /scan/subnets |
+| 5 | `collect_micro_segment_ports` | 3.1.2.1_1 | unique_port_profile_count | 2.0 | POST /scan/ports |
+| 6 | `collect_tls_ratio` | 3.3.1.1_1 | tls_ratio | 0.5 | POST /scan/tls |
+| 7 | `collect_tls_services` | 3.3.1.1_2 | tls_service_count | 1.0 | POST /scan/tls |
+| 8 | `collect_tls_advanced` | 3.3.1.3_2 | tls13_ratio | 0.8 | POST /scan/tls |
+| 9 | `collect_app_traffic_map` | 3.4.1.2_1 | service_map_count | 1.0 | POST /scan/ports |
+| 10 | `collect_network_redundancy` | 3.5.1.2_3 | redundant_subnet_count | 2.0 | POST /scan/subnets |
+| 11 | `collect_subnet_segmentation` | 4.3.1.1_1 | subnet_count | 2.0 | POST /scan/subnets |
+| 12 | `collect_perimeter_model` | 4.3.1.1_2 | open_port_count | 1.0 | POST /scan/ports |
+| 13 | `collect_system_subnet_separation` | 4.3.1.2_1 | subnet_count | 2.0 | POST /scan/subnets |
+| 14 | `collect_vpn_ports` | 5.3.1.1_1 | vpn_port_count | 1.0 | POST /scan/ports (500,1194,1723,4500) |
+
+---
+
+## 11. Trivy Collector — ✅ 구현 완료 (11개 함수)
+
+**파일**: `backend/collectors/trivy_collector.py`  
+**환경변수**: `TRIVY_WRAPPER_URL` (기본: `http://localhost:8002`), `TRIVY_TARGET` (기본: `.`)
+
+| # | 함수명 | item_id | metric_key | threshold | 엔드포인트 |
+|---|--------|---------|------------|-----------|-----------|
+| 1 | `collect_image_scan` | 6.1.1.1_1 | critical_high_vuln_count | 0.0 | POST /scan/image |
+| 2 | `collect_cicd_scan_ratio` | 6.1.1.2_1 | scan_ratio | 0.8 | POST /scan/image |
+| 3 | `collect_integrity_check` | 6.1.1.3_1 | integrity_check_passed | 1.0 | POST /scan/image |
+| 4 | `collect_policy_compliance_scan` | 6.2.1.1_1 | compliance_pass_ratio | 0.8 | POST /scan/fs |
+| 5 | `collect_full_component_scan` | 6.2.1.2_1 | component_count | 1.0 | POST /scan/fs |
+| 6 | `collect_fs_scan` | 6.3.1.1_1 | fs_vuln_count | 0.0 | POST /scan/fs |
+| 7 | `collect_sbom` | 6.4.1.1_1 | sbom_component_count | 1.0 | POST /scan/sbom |
+| 8 | `collect_dependency_scan` | 6.4.1.2_1 | dependency_vuln_count | 0.0 | POST /scan/sbom |
+| 9 | `collect_sbom_full` | 6.4.1.3_1 | sbom_component_count | 10.0 | POST /scan/sbom |
+| 10 | `collect_risk_scan` | 6.5.1.1_1 | risk_score | 50.0 | POST /scan/image |
+| 11 | `collect_supply_chain_scan` | 6.5.1.2_1 | supply_chain_vuln_count | 0.0 | POST /scan/sbom |
+
+---
+
+## 12. Nmap 래퍼 (nmap-wrapper/app.py) — ✅ 구현 완료
+
+**포트**: 8001 (호스트) → 5000 (컨테이너)  
+**인증**: 없음 (내부 서비스)  
+**권한**: `cap_add: NET_RAW, NET_ADMIN` (docker-compose 적용됨)
+
+| 엔드포인트 | metric_key | 설명 |
+|-----------|------------|------|
+| `POST /scan/ports` | open_port_count | `-p {ports} --open` 포트 스캔 |
+| `POST /scan/tls` | tls_covered_ratio | `--script ssl-cert` TLS 적용 비율 |
+| `POST /scan/subnets` | subnet_count | `-sn` 서브넷 검색 |
+
+---
+
+## 13. Trivy 래퍼 (trivy-wrapper/app.py) — ✅ 구현 완료
+
+**포트**: 8002 (호스트) → 5001 (컨테이너)  
+**캐시**: `trivy-cache` 볼륨 마운트 (DB 재다운로드 방지)  
+**환경변수**: `TRIVY_NO_PROGRESS=true`  
+**볼륨**: `/var/run/docker.sock` (이미지 스캔용)
+
+| 엔드포인트 | metric_key | 설명 |
+|-----------|------------|------|
+| `POST /scan/image` | critical_high_vuln_count | 이미지 Critical+High 취약점 수 |
+| `POST /scan/fs` | fs_vuln_count | 파일시스템 취약점 스캔 |
+| `POST /scan/sbom` | sbom_component_count | SPDX-JSON SBOM 컴포넌트 수 |
+
+---
+
+## 14. 프론트엔드 API 연동 현황
 
 | 페이지 | 상태 | 연동 API | fallback |
 |--------|------|----------|---------|
@@ -592,7 +707,7 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 13. 미구현 및 알려진 이슈
+## 15. 미구현 및 알려진 이슈
 
 ### 미구현 항목
 
@@ -600,19 +715,16 @@ pillar별 성숙도 점수 요약.
 |------|------|------|
 | `backend/routers/manual.py` | ⬜ TODO | `POST /api/manual/submit` — 수동 진단 결과 제출 |
 | `backend/routers/report.py` | ⬜ TODO | `GET /api/report/generate/{session_id}` — JSON/PDF 리포트 |
-| `backend/collectors/nmap_collector.py` | ⬜ 스켈레톤 | Nmap 래퍼 연동 수집 함수 (nmap-wrapper와 별개) |
-| `backend/collectors/trivy_collector.py` | ⬜ 스켈레톤 | Trivy 래퍼 연동 수집 함수 (trivy-wrapper와 별개) |
 
-### 알려진 버그
+### 알려진 이슈
 
 | 파일 | 심각도 | 내용 |
 |------|--------|------|
-| `backend/scoring/engine.py:17` | 🔴 High | `threshold == 0`이면 강제로 "평가불가" 반환. threshold=0 항목(`cleartext_alert_count`, `critical_unfixed_count`, `high_risk_alert_count`)이 항상 평가불가 처리됨. `threshold == 0` 조건 제거 필요. |
-| `seed_checklist.py` | 🟡 Medium | 루트(`/`)와 `backend/scripts/` 두 곳에 중복 존재. 루트 파일 삭제 또는 git에서 추적 제외 필요. |
+| `seed_checklist.py` | 🟡 낮음 | 루트(`/`)와 `backend/scripts/` 두 곳에 중복 존재. 루트 파일 삭제 또는 git에서 추적 제외 필요. |
 
 ---
 
-## 14. 환경변수 전체 목록
+## 16. 환경변수 전체 목록
 
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
@@ -627,6 +739,10 @@ pillar별 성숙도 점수 요약.
 | `WAZUH_INDEXER_URL` | Wazuh Indexer | `https://localhost:9200` |
 | `WAZUH_INDEXER_USER` | Indexer 계정 | `admin` |
 | `WAZUH_INDEXER_PASS` | Indexer 비밀번호 | `admin` |
+| `NMAP_WRAPPER_URL` | Nmap 래퍼 주소 | `http://localhost:8001` |
+| `NMAP_TARGET` | Nmap 스캔 대상 IP/대역 | `127.0.0.1` |
+| `TRIVY_WRAPPER_URL` | Trivy 래퍼 주소 | `http://localhost:8002` |
+| `TRIVY_TARGET` | Trivy 스캔 대상 경로/이미지 | `.` |
 | `SHUFFLE_URL` | Shuffle 주소 | `http://shuffle:3000` |
 | `SHUFFLE_WORKFLOW_ID` | 실행할 워크플로우 ID | — |
 | `SHUFFLE_API_KEY` | Shuffle API 키 | — |
@@ -635,7 +751,7 @@ pillar별 성숙도 점수 요약.
 
 ---
 
-## 15. 동작 확인 체크리스트
+## 17. 동작 확인 체크리스트
 
 ### 백엔드 기본 동작
 
@@ -712,7 +828,7 @@ curl -X POST "http://3.35.200.145:8000/api/assessment/webhook" \
 
 ---
 
-## 16. 주의사항 (CLAUDE.md 요약)
+## 18. 주의사항 (CLAUDE.md 요약)
 
 - 모든 민감 정보는 `.env` 환경변수로 관리. **하드코딩 금지**
 - `frontend/` ↔ `backend/` 크로스 수정 금지
