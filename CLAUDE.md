@@ -93,7 +93,9 @@ GET  /api/report/generate : 리포트 생성
 
 8443: Keycloak / 9200: Elasticsearch / 55000: Wazuh API
 
-5000: Nmap 래퍼 / 5001: Trivy 래퍼 / 3306: MySQL
+8001: Nmap 래퍼 (호스트 8001 → 컨테이너 5000)
+8002: Trivy 래퍼 (호스트 8002 → 컨테이너 5001)
+3306: MySQL
 
 서버 사양
 

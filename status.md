@@ -289,8 +289,11 @@ pillar별 성숙도 점수 요약.
 
 `score = maturity_score × weight`
 
-> ⚠️ **알려진 버그**: `threshold == 0`이면 값 누락으로 간주하여 강제로 "평가불가" 반환.  
-> `cleartext_alert_count`, `critical_unfixed_count`, `high_risk_alert_count` 등 threshold=0인 항목이 항상 평가불가 처리됨. 수정 필요.
+| threshold == 0 조건 | result | weight |
+|--------------------|--------|--------|
+| `metric_value == 0` | 충족 | 1.0 |
+| `0 < metric_value ≤ 5` | 부분충족 | 0.5 |
+| `metric_value > 5` | 미충족 | 0.0 |
 
 ### 세션 채점 (`score_session`)
 
@@ -653,17 +656,17 @@ pillar별 성숙도 점수 요약.
 
 | # | 함수명 | item_id | metric_key | threshold | 엔드포인트 |
 |---|--------|---------|------------|-----------|-----------|
-| 1 | `collect_image_scan` | 6.1.1.1_1 | critical_high_vuln_count | 0.0 | POST /scan/image |
-| 2 | `collect_cicd_scan_ratio` | 6.1.1.2_1 | scan_ratio | 0.8 | POST /scan/image |
-| 3 | `collect_integrity_check` | 6.1.1.3_1 | integrity_check_passed | 1.0 | POST /scan/image |
-| 4 | `collect_policy_compliance_scan` | 6.2.1.1_1 | compliance_pass_ratio | 0.8 | POST /scan/fs |
-| 5 | `collect_full_component_scan` | 6.2.1.2_1 | component_count | 1.0 | POST /scan/fs |
-| 6 | `collect_fs_scan` | 6.3.1.1_1 | fs_vuln_count | 0.0 | POST /scan/fs |
-| 7 | `collect_sbom` | 6.4.1.1_1 | sbom_component_count | 1.0 | POST /scan/sbom |
-| 8 | `collect_dependency_scan` | 6.4.1.2_1 | dependency_vuln_count | 0.0 | POST /scan/sbom |
-| 9 | `collect_sbom_full` | 6.4.1.3_1 | sbom_component_count | 10.0 | POST /scan/sbom |
-| 10 | `collect_risk_scan` | 6.5.1.1_1 | risk_score | 50.0 | POST /scan/image |
-| 11 | `collect_supply_chain_scan` | 6.5.1.2_1 | supply_chain_vuln_count | 0.0 | POST /scan/sbom |
+| 1 | `collect_image_scan` | 5.4.1.2_2 | critical_vuln_count | 0.0 | POST /scan/image |
+| 2 | `collect_cicd_scan_ratio` | 5.4.1.2_3 | scan_ratio | 0.9 | POST /scan/image |
+| 3 | `collect_integrity_check` | 5.4.1.2_4 | integrity_check_passed | 1.0 | POST /scan/fs |
+| 4 | `collect_policy_compliance_scan` | 5.4.1.3_2 | policy_violation_count | 0.0 | POST /scan/image |
+| 5 | `collect_full_component_scan` | 5.4.1.3_4 | component_scan_ratio | 0.9 | POST /scan/fs |
+| 6 | `collect_fs_scan` | 5.5.1.2_1 | scan_performed | 1.0 | POST /scan/fs |
+| 7 | `collect_sbom` | 5.5.1.2_3 | sbom_component_count | 1.0 | POST /scan/sbom |
+| 8 | `collect_dependency_scan` | 5.5.1.3_1 | critical_dep_count | 0.0 | POST /scan/fs |
+| 9 | `collect_sbom_full` | 5.5.1.3_2 | sbom_component_count | 1.0 | POST /scan/sbom |
+| 10 | `collect_risk_scan` | 5.5.2.2_1 | scan_performed | 1.0 | POST /scan/image |
+| 11 | `collect_supply_chain_scan` | 5.5.2.3_1 | sbom_scan_count | 1.0 | POST /scan/sbom |
 
 ---
 
@@ -718,9 +721,7 @@ pillar별 성숙도 점수 요약.
 
 ### 알려진 이슈
 
-| 파일 | 심각도 | 내용 |
-|------|--------|------|
-| `seed_checklist.py` | 🟡 낮음 | 루트(`/`)와 `backend/scripts/` 두 곳에 중복 존재. 루트 파일 삭제 또는 git에서 추적 제외 필요. |
+없음 (모든 알려진 이슈 해결 완료)
 
 ---
 

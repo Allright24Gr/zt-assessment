@@ -77,13 +77,13 @@ def _scan_sbom(payload: dict, timeout: int = 330) -> tuple[dict, str | None]:
 # ─── 11 Collector Functions ───────────────────────────────────────────────────
 
 def collect_image_scan() -> CollectedResult:
-    """6.1.1.1_1 — 이미지 취약점 스캔: critical_high_vuln_count == 0"""
-    item_id, maturity = "6.1.1.1_1", "기존"
-    mk, thr = "critical_high_vuln_count", 0.0
+    """5.4.1.2_2 — 이미지 취약점 스캔: critical_vuln_count == 0"""
+    item_id, maturity = "5.4.1.2_2", "초기"
+    mk, thr = "critical_vuln_count", 0.0
     data, error = _scan_image({"image_name": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
-    count = float(data.get("critical_high_vuln_count", data.get("metric_value", 0)))
+    count = float(data.get("critical_vuln_count", data.get("metric_value", 0)))
     if count == 0:
         result = "충족"
     elif count <= 5:
@@ -94,9 +94,9 @@ def collect_image_scan() -> CollectedResult:
 
 
 def collect_cicd_scan_ratio() -> CollectedResult:
-    """6.1.1.2_1 — CI/CD 파이프라인 스캔 비율: scan_ratio >= 0.8"""
-    item_id, maturity = "6.1.1.2_1", "초기"
-    mk, thr = "scan_ratio", 0.8
+    """5.4.1.2_3 — CI/CD 파이프라인 스캔 비율: scan_ratio >= 0.9"""
+    item_id, maturity = "5.4.1.2_3", "초기"
+    mk, thr = "scan_ratio", 0.9
     data, error = _scan_image({"image_name": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
@@ -111,25 +111,47 @@ def collect_cicd_scan_ratio() -> CollectedResult:
 
 
 def collect_integrity_check() -> CollectedResult:
-    """6.1.1.3_1 — 무결성 검증: integrity_check_passed >= 1"""
-    item_id, maturity = "6.1.1.3_1", "향상"
+    """5.4.1.2_4 — 무결성 검증 및 격리: integrity_check_passed >= 1"""
+    item_id, maturity = "5.4.1.2_4", "초기"
     mk, thr = "integrity_check_passed", 1.0
-    data, error = _scan_image({"image_name": TRIVY_TARGET})
+    data, error = _scan_fs({"path": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
     passed = float(data.get("integrity_check_passed", data.get("metric_value", 0)))
-    result = "충족" if passed >= thr else "미충족"
+    if passed >= thr:
+        result = "충족"
+    elif passed > 0:
+        result = "부분충족"
+    else:
+        result = "미충족"
     return _ok(item_id, maturity, result, mk, passed, thr, data)
 
 
 def collect_policy_compliance_scan() -> CollectedResult:
-    """6.2.1.1_1 — 정책 컴플라이언스 스캔: compliance_pass_ratio >= 0.8"""
-    item_id, maturity = "6.2.1.1_1", "기존"
-    mk, thr = "compliance_pass_ratio", 0.8
+    """5.4.1.3_2 — 정책 컴플라이언스 스캔: policy_violation_count == 0"""
+    item_id, maturity = "5.4.1.3_2", "향상"
+    mk, thr = "policy_violation_count", 0.0
+    data, error = _scan_image({"image_name": TRIVY_TARGET})
+    if error:
+        return _err(item_id, maturity, mk, thr, error, data)
+    count = float(data.get("policy_violation_count", data.get("metric_value", 0)))
+    if count == 0:
+        result = "충족"
+    elif count <= 5:
+        result = "부분충족"
+    else:
+        result = "미충족"
+    return _ok(item_id, maturity, result, mk, count, thr, data)
+
+
+def collect_full_component_scan() -> CollectedResult:
+    """5.4.1.3_4 — 전체 컴포넌트 스캔 비율: component_scan_ratio >= 0.9"""
+    item_id, maturity = "5.4.1.3_4", "향상"
+    mk, thr = "component_scan_ratio", 0.9
     data, error = _scan_fs({"path": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
-    ratio = float(data.get("compliance_pass_ratio", data.get("metric_value", 0)))
+    ratio = float(data.get("component_scan_ratio", data.get("metric_value", 0)))
     if ratio >= thr:
         result = "충족"
     elif ratio >= 0.5:
@@ -139,38 +161,21 @@ def collect_policy_compliance_scan() -> CollectedResult:
     return _ok(item_id, maturity, result, mk, ratio, thr, data)
 
 
-def collect_full_component_scan() -> CollectedResult:
-    """6.2.1.2_1 — 전체 컴포넌트 스캔: component_count >= 1"""
-    item_id, maturity = "6.2.1.2_1", "초기"
-    mk, thr = "component_count", 1.0
-    data, error = _scan_fs({"path": TRIVY_TARGET})
-    if error:
-        return _err(item_id, maturity, mk, thr, error, data)
-    count = float(data.get("component_count", data.get("metric_value", 0)))
-    result = "충족" if count >= thr else "미충족"
-    return _ok(item_id, maturity, result, mk, count, thr, data)
-
-
 def collect_fs_scan() -> CollectedResult:
-    """6.3.1.1_1 — 파일시스템 취약점 스캔: fs_vuln_count == 0"""
-    item_id, maturity = "6.3.1.1_1", "기존"
-    mk, thr = "fs_vuln_count", 0.0
+    """5.5.1.2_1 — 파일시스템 스캔 수행: scan_performed >= 1"""
+    item_id, maturity = "5.5.1.2_1", "초기"
+    mk, thr = "scan_performed", 1.0
     data, error = _scan_fs({"path": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
-    count = float(data.get("fs_vuln_count", data.get("metric_value", 0)))
-    if count == 0:
-        result = "충족"
-    elif count <= 10:
-        result = "부분충족"
-    else:
-        result = "미충족"
-    return _ok(item_id, maturity, result, mk, count, thr, data)
+    performed = 1.0 if data else 0.0
+    result = "충족" if performed >= thr else "미충족"
+    return _ok(item_id, maturity, result, mk, performed, thr, data)
 
 
 def collect_sbom() -> CollectedResult:
-    """6.4.1.1_1 — SBOM 생성: sbom_component_count >= 1"""
-    item_id, maturity = "6.4.1.1_1", "기존"
+    """5.5.1.2_3 — SBOM 생성: sbom_component_count >= 1"""
+    item_id, maturity = "5.5.1.2_3", "초기"
     mk, thr = "sbom_component_count", 1.0
     data, error = _scan_sbom({"image_name": TRIVY_TARGET})
     if error:
@@ -181,13 +186,13 @@ def collect_sbom() -> CollectedResult:
 
 
 def collect_dependency_scan() -> CollectedResult:
-    """6.4.1.2_1 — 의존성 취약점 스캔: dependency_vuln_count == 0"""
-    item_id, maturity = "6.4.1.2_1", "초기"
-    mk, thr = "dependency_vuln_count", 0.0
-    data, error = _scan_sbom({"image_name": TRIVY_TARGET})
+    """5.5.1.3_1 — 의존성 Critical 취약점: critical_dep_count == 0"""
+    item_id, maturity = "5.5.1.3_1", "향상"
+    mk, thr = "critical_dep_count", 0.0
+    data, error = _scan_fs({"path": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
-    count = float(data.get("dependency_vuln_count", data.get("metric_value", 0)))
+    count = float(data.get("critical_dep_count", data.get("metric_value", 0)))
     if count == 0:
         result = "충족"
     elif count <= 5:
@@ -198,16 +203,16 @@ def collect_dependency_scan() -> CollectedResult:
 
 
 def collect_sbom_full() -> CollectedResult:
-    """6.4.1.3_1 — SBOM 전체 구성요소 식별: sbom_component_count >= 10"""
-    item_id, maturity = "6.4.1.3_1", "향상"
-    mk, thr = "sbom_component_count", 10.0
+    """5.5.1.3_2 — SBOM 전체 구성요소 식별: sbom_component_count >= 1"""
+    item_id, maturity = "5.5.1.3_2", "향상"
+    mk, thr = "sbom_component_count", 1.0
     data, error = _scan_sbom({"image_name": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
     count = float(data.get("sbom_component_count", data.get("metric_value", 0)))
     if count >= thr:
         result = "충족"
-    elif count >= 1:
+    elif count > 0:
         result = "부분충족"
     else:
         result = "미충족"
@@ -215,34 +220,24 @@ def collect_sbom_full() -> CollectedResult:
 
 
 def collect_risk_scan() -> CollectedResult:
-    """6.5.1.1_1 — 리스크 기반 스캔: risk_score <= 50"""
-    item_id, maturity = "6.5.1.1_1", "향상"
-    mk, thr = "risk_score", 50.0
+    """5.5.2.2_1 — 소프트웨어 위험 평가 스캔 수행: scan_performed >= 1"""
+    item_id, maturity = "5.5.2.2_1", "초기"
+    mk, thr = "scan_performed", 1.0
     data, error = _scan_image({"image_name": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
-    score = float(data.get("risk_score", data.get("metric_value", 100)))
-    if score <= thr:
-        result = "충족"
-    elif score <= 80:
-        result = "부분충족"
-    else:
-        result = "미충족"
-    return _ok(item_id, maturity, result, mk, score, thr, data)
+    performed = 1.0 if data else 0.0
+    result = "충족" if performed >= thr else "미충족"
+    return _ok(item_id, maturity, result, mk, performed, thr, data)
 
 
 def collect_supply_chain_scan() -> CollectedResult:
-    """6.5.1.2_1 — 공급망 보안 스캔: supply_chain_vuln_count == 0"""
-    item_id, maturity = "6.5.1.2_1", "최적화"
-    mk, thr = "supply_chain_vuln_count", 0.0
+    """5.5.2.3_1 — SBOM 기반 공급망 스캔: sbom_scan_count >= 1"""
+    item_id, maturity = "5.5.2.3_1", "향상"
+    mk, thr = "sbom_scan_count", 1.0
     data, error = _scan_sbom({"image_name": TRIVY_TARGET})
     if error:
         return _err(item_id, maturity, mk, thr, error, data)
-    count = float(data.get("supply_chain_vuln_count", data.get("metric_value", 0)))
-    if count == 0:
-        result = "충족"
-    elif count <= 3:
-        result = "부분충족"
-    else:
-        result = "미충족"
+    count = float(data.get("sbom_scan_count", data.get("metric_value", 0)))
+    result = "충족" if count >= thr else "미충족"
     return _ok(item_id, maturity, result, mk, count, thr, data)
