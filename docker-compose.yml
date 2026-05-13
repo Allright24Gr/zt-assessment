@@ -101,7 +101,10 @@ services:
       context: ./nmap-wrapper
       dockerfile: Dockerfile
     ports:
-      - "5000:5000"
+      - "8001:5000"
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     networks:
       - zt-network
 
@@ -110,7 +113,12 @@ services:
       context: ./trivy-wrapper
       dockerfile: Dockerfile
     ports:
-      - "5001:5001"
+      - "8002:5001"
+    volumes:
+      - trivy-cache:/root/.cache/trivy
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TRIVY_NO_PROGRESS=true
     networks:
       - zt-network
 
@@ -124,3 +132,4 @@ volumes:
   elasticsearch-data:
   shuffle-apps:
   shuffle-files:
+  trivy-cache:

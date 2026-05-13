@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { FileText, Download, TrendingUp, AlertTriangle, AlertCircle, ArrowRight, ChevronDown, RotateCcw } from "lucide-react";
 import {
@@ -6,12 +6,69 @@ import {
   ResponsiveContainer, Legend,
 } from "recharts";
 import { useAuth } from "../context/AuthContext";
-import { sessions, improvements } from "../data/mockData";
+import { sessions as mockSessions, improvements as mockImprovements } from "../data/mockData";
+import type { ChecklistDetail, Improvement, Session } from "../data/mockData";
 import { PILLARS } from "../data/constants";
 import { getMaturityLevel, getScoreColor } from "../lib/maturity";
+import { getAssessmentResult, getImprovement } from "../../config/api";
+import type { ChecklistItemResult, ImprovementItem } from "../../types/api";
 
-const CURRENT_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
+const DEFAULT_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
 const TARGET_SCORES  = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
+
+const PILLAR_NAME_TO_KEY: Record<string, string> = {
+  "식별자 및 신원": "Identify",
+  "식별 및 신원": "Identify",
+  "기기 및 엔드포인트": "Device",
+  "기기": "Device",
+  "디바이스": "Device",
+  "네트워크": "Network",
+  "시스템": "System",
+  "애플리케이션 및 워크로드": "Application",
+  "애플리케이션": "Application",
+  "데이터": "Data",
+};
+
+function adaptChecklistResult(item: ChecklistItemResult): ChecklistDetail {
+  return {
+    id: item.id,
+    pillar: PILLAR_NAME_TO_KEY[item.pillar] ?? item.pillar,
+    category: item.category,
+    item: item.item,
+    maturity: item.maturity,
+    maturityScore: item.maturity_score ?? 0,
+    question: item.question,
+    diagnosisType: item.diagnosis_type ?? "",
+    tool: item.tool,
+    result: item.result as "충족" | "미흡" | "해당 없음",
+    score: item.score,
+    evidence: item.evidence,
+    criteria: item.criteria,
+    fields: item.fields,
+    logic: item.logic,
+    exceptions: item.exceptions,
+    recommendation: item.recommendation,
+    evidenceSummary: item.evidence_summary,
+    relatedImprovementIds: item.related_improvement_ids,
+  };
+}
+
+function adaptImprovement(item: ImprovementItem): Improvement {
+  return {
+    id: item.id,
+    task: item.task,
+    priority: item.priority,
+    term: item.term,
+    pillar: item.pillar,
+    duration: item.duration,
+    difficulty: item.difficulty,
+    owner: item.owner,
+    expectedGain: item.expected_gain,
+    relatedItem: item.related_item,
+    steps: item.steps,
+    expectedEffect: item.expected_effect,
+  };
+}
 
 const ERROR_DETAILS: Record<string, { area: string; description: string; location: string; pillar: string; query: string }> = {
   E001: {
@@ -219,9 +276,53 @@ export function Reporting() {
   const [detailQuestionQuery, setDetailQuestionQuery] = useState("");
   const [selectedRiskCode, setSelectedRiskCode] = useState<string | null>(null);
 
-  const session = sessions.find((s) => s.id === Number(sessionId)) || sessions[0];
+  const fallbackSession: Session = mockSessions.find((s) => s.id === Number(sessionId)) ?? mockSessions[0];
+  const [session, setSession] = useState<Session>(fallbackSession);
+  const [currentScores, setCurrentScores] = useState(DEFAULT_SCORES);
+  const [checklistDetails, setChecklistDetails] = useState<ChecklistDetail[]>(fallbackSession.checklistDetails);
+  const [improvements, setImprovements] = useState<Improvement[]>(mockImprovements);
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    getAssessmentResult(sessionId)
+      .then((data) => {
+        setSession({
+          id: Number(data.session.id),
+          org: data.session.org,
+          date: data.session.date,
+          manager: data.session.manager,
+          userId: String(data.session.user_id ?? ""),
+          level: data.session.level,
+          status: data.session.status,
+          score: data.session.score,
+          errors: (data.session.errors ?? []).map((e) => ({
+            code: e.code,
+            message: e.message,
+            severity: e.severity,
+          })),
+          checklistDetails: [],
+        });
+
+        const scores = PILLARS.map((p, i) => {
+          const match = data.pillar_scores.find((ps) =>
+            (PILLAR_NAME_TO_KEY[ps.pillar] ?? ps.pillar) === p.key
+          );
+          return match ? match.score : DEFAULT_SCORES[i];
+        });
+        setCurrentScores(scores);
+
+        setChecklistDetails(data.checklist_results.map(adaptChecklistResult));
+      })
+      .catch(() => {});
+
+    getImprovement(sessionId)
+      .then((data) => setImprovements(data.items.map(adaptImprovement)))
+      .catch(() => {});
+  }, [sessionId]);
+
   const normalizedQuestionQuery = detailQuestionQuery.trim().toLowerCase();
-  const filteredChecklistDetails = session.checklistDetails.filter((detail) => {
+  const filteredChecklistDetails = checklistDetails.filter((detail) => {
     const matchesPillar = detailPillarFilter === "all" || detail.pillar === detailPillarFilter;
     const searchable = `${detail.item} ${detail.question} ${detail.tool} ${detail.evidence} ${detail.criteria} ${detail.fields} ${detail.logic} ${detail.recommendation}`.toLowerCase();
     const matchesQuestion = normalizedQuestionQuery.length === 0 || searchable.includes(normalizedQuestionQuery);
@@ -234,17 +335,17 @@ export function Reporting() {
 
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
-    "현재(AS-IS)": CURRENT_SCORES[i],
+    "현재(AS-IS)": currentScores[i],
     "목표(TO-BE)": TARGET_SCORES[i],
   }));
 
   const pillarScores = PILLARS.map((p, i) => ({
     key: p.key,
     name: p.label,
-    score: CURRENT_SCORES[i],
+    score: currentScores[i],
     target: TARGET_SCORES[i],
-    level: getMaturityLevel(CURRENT_SCORES[i]),
-    gap: parseFloat((CURRENT_SCORES[i] - TARGET_SCORES[i]).toFixed(1)),
+    level: getMaturityLevel(currentScores[i]),
+    gap: parseFloat((currentScores[i] - TARGET_SCORES[i]).toFixed(1)),
   }));
 
   const byTerm = ["단기", "중기", "장기"].map((term) => ({
@@ -480,7 +581,7 @@ export function Reporting() {
           </div>
 
           <div className="mb-4 flex items-center justify-between rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-600">
-            <span>총 {session.checklistDetails.length}개 중 {filteredChecklistDetails.length}개 표시</span>
+            <span>총 {checklistDetails.length}개 중 {filteredChecklistDetails.length}개 표시</span>
             {(detailPillarFilter !== "all" || detailQuestionQuery) && (
               <button
                 onClick={() => {
