@@ -74,27 +74,27 @@ services:
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
     ports:
-      - "9200:9200"
+      - "9201:9200"
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
       - zt-network
 
-  shuffle:
-    image: ghcr.io/shuffle/shuffle:latest
-    environment:
-      SHUFFLE_DEFAULT_USERNAME: ${SHUFFLE_ADMIN_USER:-admin}
-      SHUFFLE_DEFAULT_PASSWORD: ${SHUFFLE_ADMIN_PASSWORD:-shuffleadmin}
-      SHUFFLE_DEFAULT_APIKEY: ${SHUFFLE_API_KEY}
-      SHUFFLE_APP_HOTLOAD_FOLDER: /shuffle-apps
-      SHUFFLE_FILE_LOCATION: /shuffle-files
-    ports:
-      - "3000:3000"
-    volumes:
-      - shuffle-apps:/shuffle-apps
-      - shuffle-files:/shuffle-files
-    networks:
-      - zt-network
+#  shuffle:
+#    image: ghcr.io/shuffle/shuffle:latest
+#    environment:
+#      SHUFFLE_DEFAULT_USERNAME: ${SHUFFLE_ADMIN_USER:-admin}
+#      SHUFFLE_DEFAULT_PASSWORD: ${SHUFFLE_ADMIN_PASSWORD:-shuffleadmin}
+#      SHUFFLE_DEFAULT_APIKEY: ${SHUFFLE_API_KEY}
+#      SHUFFLE_APP_HOTLOAD_FOLDER: /shuffle-apps
+#      SHUFFLE_FILE_LOCATION: /shuffle-files
+#    ports:
+#      - "3000:3000"
+#    volumes:
+#      - shuffle-apps:/shuffle-apps
+#      - shuffle-files:/shuffle-files
+#    networks:
+#      - zt-network
 
   nmap-wrapper:
     build:
