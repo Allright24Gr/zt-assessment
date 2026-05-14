@@ -9,12 +9,11 @@ from routers import assessment, score, improvement, report, manual, checklist
 
 app = FastAPI(title="ZT Assessment API", version="1.0.0")
 
-_origins = os.environ.get("CORS_ORIGINS", "*")
-origins = _origins.split(",") if _origins != "*" else ["*"]
+ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

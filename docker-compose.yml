@@ -18,6 +18,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      - SELF_BASE_URL=http://zt-backend:8000
     networks:
       - zt-network
     depends_on:
@@ -80,21 +82,47 @@ services:
     networks:
       - zt-network
 
-#  shuffle:
-#    image: ghcr.io/shuffle/shuffle:latest
-#    environment:
-#      SHUFFLE_DEFAULT_USERNAME: ${SHUFFLE_ADMIN_USER:-admin}
-#      SHUFFLE_DEFAULT_PASSWORD: ${SHUFFLE_ADMIN_PASSWORD:-shuffleadmin}
-#      SHUFFLE_DEFAULT_APIKEY: ${SHUFFLE_API_KEY}
-#      SHUFFLE_APP_HOTLOAD_FOLDER: /shuffle-apps
-#      SHUFFLE_FILE_LOCATION: /shuffle-files
-#    ports:
-#      - "3000:3000"
-#    volumes:
-#      - shuffle-apps:/shuffle-apps
-#      - shuffle-files:/shuffle-files
-#    networks:
-#      - zt-network
+  shuffle-backend:
+    image: ghcr.io/shuffle/shuffle-backend:latest
+    container_name: shuffle-backend
+    restart: unless-stopped
+    depends_on:
+      - shuffle-database
+    environment:
+      - DATASTORE_EMULATOR_HOST=shuffle-database:8000
+      - SHUFFLE_APP_HOTLOAD_FOLDER=/shuffle-apps
+      - SHUFFLE_FILE_LOCATION=/shuffle-files
+      - ORG_ID=Shuffle
+      - SHUFFLE_OPENSEARCH_INDEX_PREFIX=shuffle
+    volumes:
+      - shuffle-apps:/shuffle-apps
+      - shuffle-files:/shuffle-files
+    ports:
+      - "5001:5001"
+    networks:
+      - zt-network
+
+  shuffle-frontend:
+    image: ghcr.io/shuffle/shuffle-frontend:latest
+    container_name: shuffle-frontend
+    restart: unless-stopped
+    depends_on:
+      - shuffle-backend
+    environment:
+      - BACKEND_HOSTNAME=shuffle-backend
+    ports:
+      - "3001:80"
+    networks:
+      - zt-network
+
+  shuffle-database:
+    image: fjogeleit/shuffle-datastore:latest
+    container_name: shuffle-database
+    restart: unless-stopped
+    volumes:
+      - shuffle-database:/etc/datastore
+    networks:
+      - zt-network
 
   nmap-wrapper:
     build:
@@ -132,4 +160,5 @@ volumes:
   elasticsearch-data:
   shuffle-apps:
   shuffle-files:
+  shuffle-database:
   trivy-cache:

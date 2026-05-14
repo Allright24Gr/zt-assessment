@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Optional
@@ -15,27 +16,46 @@ from scoring.engine import score_session, determine_maturity_level
 
 router = APIRouter()
 
-SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "http://shuffle:3000")
+SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "")
 SHUFFLE_API_KEY = os.environ.get("SHUFFLE_API_KEY", "")
 SHUFFLE_WORKFLOW_ID = os.environ.get("SHUFFLE_WORKFLOW_ID", "")
+SELF_BASE_URL = os.getenv("SELF_BASE_URL", "http://zt-backend:8000")
+
+
+class AssessmentRunRequest(BaseModel):
+    org_name: str = "기본 조직"
+    manager: str = "담당자"
+    email: str = "manager@example.com"
+    department: Optional[str] = None
+    contact: Optional[str] = None
+    org_type: Optional[str] = None
+    infra_type: Optional[str] = None
+    employees: Optional[str] = None
+    servers: Optional[str] = None
+    applications: Optional[str] = None
+    note: Optional[str] = None
 
 
 @router.post("/run")
 def run_assessment(
-    org_id: int,
-    user_id: int,
+    req: AssessmentRunRequest,
     db: Session = Depends(get_db),
 ):
-    org = db.query(Organization).filter(Organization.org_id == org_id).first()
+    org = db.query(Organization).filter(Organization.name == req.org_name).first()
     if not org:
-        raise HTTPException(status_code=404, detail="조직을 찾을 수 없습니다.")
-    user = db.query(User).filter(User.user_id == user_id).first()
+        org = Organization(name=req.org_name)
+        db.add(org)
+        db.flush()
+
+    user = db.query(User).filter(User.email == req.email).first()
     if not user:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+        user = User(org_id=org.org_id, name=req.manager, email=req.email)
+        db.add(user)
+        db.flush()
 
     session = DiagnosisSession(
-        org_id=org_id,
-        user_id=user_id,
+        org_id=org.org_id,
+        user_id=user.user_id,
         status="진행 중",
         started_at=datetime.now(timezone.utc),
     )
@@ -514,7 +534,7 @@ def _run_collectors(session_id: int):
 
     try:
         httpx.post(
-            "http://localhost:8000/api/assessment/webhook",
+            f"{SELF_BASE_URL}/api/assessment/webhook",
             json={"session_id": session_id, "results": results},
             timeout=60,
         )

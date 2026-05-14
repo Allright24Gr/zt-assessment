@@ -13,17 +13,7 @@ from scoring.engine import determine_maturity_level
 router = APIRouter()
 
 
-@router.get("/generate/{session_id}")
-def generate_report(
-    session_id: int,
-    fmt: str = "json",
-    db: Session = Depends(get_db),
-):
-    """진단 세션 결과를 리포트로 생성한다. fmt=json(기본값)만 지원."""
-
-    if fmt not in ("json",):
-        raise HTTPException(status_code=400, detail="현재 fmt=json만 지원합니다.")
-
+def _build_report(session_id: int, db: Session):
     session = db.query(DiagnosisSession).filter(
         DiagnosisSession.session_id == session_id
     ).first()
@@ -111,3 +101,13 @@ def generate_report(
     }
 
     return JSONResponse(content=report)
+
+
+@router.get("/generate")
+def generate_report_by_query(session_id: int, db: Session = Depends(get_db)):
+    return _build_report(session_id, db)
+
+
+@router.get("/generate/{session_id}")
+def generate_report(session_id: int, db: Session = Depends(get_db)):
+    return _build_report(session_id, db)

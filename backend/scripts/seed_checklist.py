@@ -1,6 +1,6 @@
 """
 seed_checklist.py — 체크리스트 DB 적재 스크립트
-데이터 소스: /root/projects/신뢰많이된다_체크리스트_매핑_v7.xlsx  시트: 체크리스트_도구매핑
+데이터 소스: /app/zt-checklist.xlsx  시트: 체크리스트_도구매핑
 실행: python backend/scripts/seed_checklist.py
 """
 import sys
@@ -53,9 +53,9 @@ COL = {
 
 def _find_xlsx() -> Path:
     candidates = [
-        Path("/app/신뢰많이된다_체크리스트_매핑_v7.xlsx"),
-        Path("/root/projects/신뢰많이된다_체크리스트_매핑_v7.xlsx"),
-        Path(__file__).parent.parent.parent / "신뢰많이된다_체크리스트_매핑_v7.xlsx",
+        Path("/app/zt-checklist.xlsx"),
+        Path(__file__).parent.parent / "zt-checklist.xlsx",
+        Path(__file__).parent.parent.parent / "zt-checklist.xlsx",
     ]
     for p in candidates:
         if p.exists():
