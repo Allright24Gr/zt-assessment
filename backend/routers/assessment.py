@@ -312,9 +312,25 @@ def _trigger_scoring(session_id: int, db: Session):
                 recommendation=cr.get("recommendation", ""),
             ))
 
+    pillar_counts: dict = {}
+    for cr in output["checklist_results"]:
+        p = cr.get("pillar", "미분류")
+        counts = pillar_counts.setdefault(p, {"pass": 0, "fail": 0, "na": 0})
+        r = cr.get("result", "")
+        if r == "충족":
+            counts["pass"] += 1
+        elif r in ("미충족", "부분충족"):
+            counts["fail"] += 1
+        else:
+            counts["na"] += 1
+
     db.query(MaturityScore).filter(MaturityScore.session_id == session_id).delete()
     for pillar, score in output["pillar_scores"].items():
-        db.add(MaturityScore(session_id=session_id, pillar=pillar, score=score))
+        c = pillar_counts.get(pillar, {"pass": 0, "fail": 0, "na": 0})
+        db.add(MaturityScore(
+            session_id=session_id, pillar=pillar, score=score,
+            pass_cnt=c["pass"], fail_cnt=c["fail"], na_cnt=c["na"],
+        ))
 
     db.add(ScoreHistory(
         session_id=session_id,

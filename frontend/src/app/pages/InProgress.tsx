@@ -8,8 +8,6 @@ import {
 } from "../../config/api";
 import type { ManualItemDetail } from "../../types/api";
 
-const MANUAL_TEMPLATE_URL = "http://localhost:8000/api/manual/template";
-
 const RESULT_OPTIONS = [
   { value: "충족", label: "충족", color: "text-green-700 border-green-400 bg-green-50" },
   { value: "부분충족", label: "부분 충족", color: "text-yellow-700 border-yellow-400 bg-yellow-50" },
