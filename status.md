@@ -1,7 +1,7 @@
 # Readyz-T ZT Assessment — 전체 구현 현황 및 기능 명세
 
-> 작성일: 2026-05-13 (최초: 2026-05-12, 최종 수정: 2026-05-13 v3)  
-> 현재 체크아웃: `dev`  
+> 작성일: 2026-05-13 (최초: 2026-05-12, 최종 수정: 2026-05-14 v5)  
+> 현재 체크아웃: `dev` (`af69194`)  
 > 서버: EC2 `3.35.200.145` (Ubuntu 24.04, t3a.xlarge 4vCPU/16GB)
 
 ---
@@ -11,7 +11,7 @@
 | 브랜치 | 로컬 | 원격 | 마지막 커밋 | 담당 |
 |--------|------|------|-------------|------|
 | `master` | ✅ | ✅ | — | 최종 배포본 (직접 push 금지) |
-| `dev` | ✅ | ✅ | `2d015d2` feat: add entrypoint.sh for auto seed | 통합 기준 |
+| `dev` | ✅ | ✅ | `af69194` feat: tool-scope 기반 자가진단 UX 구현 | 통합 기준 |
 | `feature/keycloak-collector` | ❌ | ✅ `e0fa919` | feat: wire assessment pipeline and API endpoints | 공나영 |
 | `feature/wazuh-collector` | ❌ | ✅ `02879ea` | feat: implement wazuh_collector with 42 diagnostic functions | 공나영 (대리) |
 | `feature/backend-skeleton` | ✅ | ✅ | — | 서진우 |
@@ -34,19 +34,19 @@ zt-assessment/
 │   ├── Dockerfile                         # entrypoint.sh 기반으로 변경
 │   ├── entrypoint.sh                      # ✅ 컨테이너 시작 시 seed 자동 실행 후 서버 기동
 │   ├── init.sql
-│   ├── 신뢰많이된다_체크리스트_매핑_v7.xlsx  # ✅ 체크리스트 원본 데이터 (컨테이너 빌드용)
+│   ├── zt-checklist.xlsx              # ✅ 체크리스트 원본 데이터 (구: 신뢰많이된다_체크리스트_매핑_v7.xlsx)
 │   ├── collectors/
 │   │   ├── keycloak_collector.py      # ✅ 구현 완료 — 65개 함수
 │   │   ├── wazuh_collector.py         # ✅ 구현 완료 — 122개 함수
 │   │   ├── nmap_collector.py          # ✅ 구현 완료 — 14개 함수
 │   │   └── trivy_collector.py         # ✅ 구현 완료 — 11개 함수
 │   ├── routers/
-│   │   ├── assessment.py              # ✅ 구현 완료 (4개 엔드포인트)
+│   │   ├── assessment.py              # ✅ 구현 완료 (5개 엔드포인트 — /finalize 추가)
 │   │   ├── score.py                   # ✅ 구현 완료 (3개 엔드포인트)
 │   │   ├── checklist.py               # ✅ 구현 완료
 │   │   ├── improvement.py             # ✅ 구현 완료
-│   │   ├── manual.py                  # ✅ 구현 완료 (POST /submit, GET /items/{session_id})
-│   │   └── report.py                  # ✅ 구현 완료 (GET /generate/{session_id}?fmt=json)
+│   │   ├── manual.py                  # ✅ 구현 완료 (POST /submit 배치, GET /items?excluded_tools)
+│   │   └── report.py                  # ✅ 구현 완료 (GET /generate + GET /generate/{id})
 │   ├── scoring/
 │   │   └── engine.py                  # ✅ 구현 완료 (threshold=0 버그 수정 완료)
 │   └── scripts/
@@ -55,7 +55,8 @@ zt-assessment/
 │   ├── src/app/pages/
 │   │   ├── Dashboard.tsx              # ✅ API 연동 완료 (fallback 포함)
 │   │   ├── History.tsx                # ✅ API 연동 완료 (fallback 포함)
-│   │   ├── NewAssessment.tsx          # ✅ API 연동 완료 (runAssessment 호출)
+│   │   ├── NewAssessment.tsx          # ✅ API 연동 완료 + 도구 선택 UI (tool_scope)
+│   │   ├── InProgress.tsx             # ✅ 실제 수동 진단 설문 UI (시뮬레이션 → 실API)
 │   │   └── Reporting.tsx              # ✅ API 연동 완료 (fallback 포함)
 │   ├── src/app/data/                  # mockData.ts, checklistItems.ts, constants.ts
 │   ├── src/config/api.ts              # API 호출 함수
@@ -112,13 +113,18 @@ zt-assessment/
 ### 5-1. Assessment (`/api/assessment`)
 
 #### `POST /api/assessment/run`
-진단 세션을 생성하고 Shuffle 워크플로우를 트리거한다.
+진단 세션을 생성하고 자동 수집을 트리거한다.
 
-**요청 파라미터 (query)**
+**요청 Body (JSON)**
+```json
+{
+  "org_name": "ABC 기업",
+  "manager": "홍길동",
+  "email": "manager@example.com",
+  "tool_scope": { "keycloak": true, "wazuh": false, "nmap": false, "trivy": false }
+}
 ```
-org_id: int
-user_id: int
-```
+`tool_scope`: 기업이 실제 사용 중인 도구 선택. `true` 도구만 자동 수집. 비어있으면 전체 자동 수집.
 
 **응답**
 ```json
@@ -131,19 +137,34 @@ user_id: int
 ```
 
 **내부 동작**
-1. `DiagnosisSession` 레코드 생성 (status="진행 중")
-2. `SHUFFLE_WORKFLOW_ID` 환경변수 있으면 Shuffle API `POST /api/v1/workflows/{id}/execute` 호출 (`httpx` 사용)
-3. `SHUFFLE_WORKFLOW_ID` **없으면** `_run_collectors(session_id)`를 백그라운드 스레드로 실행 (fallback 디스패처)
-4. Shuffle/collector 호출 실패해도 세션 ID는 반환 (fire-and-forget)
+1. org_name으로 Organization 조회·생성, email로 User 조회·생성
+2. `DiagnosisSession` 레코드 생성 (status="진행 중")
+3. `SHUFFLE_WORKFLOW_ID` 환경변수 있으면 Shuffle API 호출
+4. 없으면 `tool_scope`에서 `true`인 도구만 `_run_collectors(session_id, tool_scope)` 백그라운드 실행
+5. 도구 미선택 시 스레드 미시작 (전항목 수동)
 
-**Fallback 디스패처 (`_run_collectors`)**  
-Shuffle 없이 백엔드가 직접 97개 collector 함수를 실행한다.
-- Keycloak: 31개 함수 (`collect_xxx(item_id, maturity)` 형태)
-- Wazuh: 41개 함수 (`collect_xxx(item_id, maturity)` 형태)
-- Nmap: 14개 함수 (`collect_xxx()` 형태 — 인자 없음)
-- Trivy: 11개 함수 (`collect_xxx()` 형태 — 인자 없음)
+**Fallback 디스패처 (`_run_collectors(session_id, tool_scope)`)**  
+`tool_scope` 기반으로 선택 도구만 collector 실행:
+- `keycloak=True`: 31개 Keycloak 함수
+- `wazuh=True`: 41개 Wazuh 함수
+- `nmap=True`: 14개 Nmap 함수
+- `trivy=True`: 11개 Trivy 함수
 
-수집 결과를 `POST /api/assessment/webhook`으로 self-POST하여 DB 저장 및 채점 트리거.
+수집 결과를 `POST /api/assessment/webhook`으로 self-POST하여 DB 저장.  
+**채점은 자동 트리거 안 함** → 프론트에서 수동 답변 완료 후 `POST /finalize` 호출.
+
+---
+
+---
+
+#### `POST /api/assessment/finalize`
+수동 답변 완료 후 채점을 명시적으로 트리거한다.
+
+**요청 파라미터 (query)**: `session_id: int`
+
+**내부 동작**: `_trigger_scoring()` 호출 → DiagnosisResult, MaturityScore, ScoreHistory 저장, status="완료"
+
+**응답**: `{ "status": "ok", "session_id": 1 }` (이미 완료된 경우 `"status": "already_completed"`)
 
 ---
 
@@ -259,30 +280,26 @@ pillar별 성숙도 점수 요약.
 ### 5-5. Manual (`/api/manual`) — ✅ 구현 완료
 
 #### `POST /api/manual/submit`
-수동 진단 항목 결과 제출.
+수동 진단 항목 **배치** 제출 (여러 항목 한번에).
 
-**요청 파라미터 (query)**
-```
-session_id: int
-item_id: str
-result: str  # 충족 | 부분충족 | 미충족 | 평가불가
-evidence_text: str (optional)
-```
-
-**내부 동작**
-1. result 값 검증 (4가지 외 400 반환)
-2. 세션·체크리스트 존재 확인 (수동 항목인지 체크)
-3. `CollectedData` upsert (metric_key=manual_result, threshold=1.0)
-4. `DiagnosisResult` upsert (score = maturity_score × weight)
-5. evidence_text 있으면 `Evidence` 저장
-
-**응답**
+**요청 Body (JSON)**
 ```json
-{ "status": "ok", "session_id": 1, "item_id": "1.1.1.1_1", "result": "충족" }
+{
+  "session_id": 1,
+  "answers": [
+    { "check_id": "1.1.1.2_1", "value": "충족", "evidence": "정책 문서 첨부" },
+    { "check_id": "1.2.1.1_1", "value": "미충족", "evidence": "" }
+  ]
+}
 ```
+`check_id`는 `item_id` 문자열. `value`는 충족/부분충족/미충족/평가불가 외 값이면 "평가불가" 처리.
 
-#### `GET /api/manual/items/{session_id}`
-세션에서 수동 진단이 필요한 항목 목록 및 제출 현황 반환.
+**응답**: `{ "status": "ok", "session_id": 1, "submitted_count": 2 }`
+
+#### `GET /api/manual/items/{session_id}?excluded_tools=nmap,trivy`
+수동 진단이 필요한 항목 목록 반환.
+
+`excluded_tools`: 기업이 미사용하는 도구명 (쉼표 구분). 해당 도구의 자동 항목도 수동 목록에 포함됨.
 
 ---
 
@@ -887,3 +904,31 @@ curl -X POST "http://3.35.200.145:8000/api/assessment/webhook" \
 - collector 반환 포맷은 위 공통 포맷 **반드시** 준수
 - 작업 완료 후 반드시 자기 feature 브랜치에 push
 - `main` 브랜치 직접 push 금지
+
+---
+
+## 19. 변경 이력 (2026-05-14)
+
+### v4 — `99152af` (2026-05-14)
+- xlsx 파일명 변경: `신뢰많이된다_체크리스트_매핑_v7.xlsx` → `zt-checklist.xlsx`
+- Shuffle URL/API Key/Webhook 초기화 (EC2 배포 후 직접 입력 예정)
+- docker-compose: 단일 shuffle → shuffle-backend/frontend/database 3서비스 분리
+- `POST /api/assessment/run`: 쿼리 파라미터 → JSON body (org_name, manager, email)
+- `POST /api/manual/submit`: 단일 항목 → 배치 (ManualSubmitRequest)
+- `GET /api/report/generate`: 쿼리 파라미터 버전 추가
+- CORS: `allow_origins=["*"]` + credentials 충돌 수정 → 환경변수 기반 고정 origin
+- self-call URL: localhost → SELF_BASE_URL 환경변수
+
+### v5 — `af69194` (2026-05-14)
+- **외부 기업 자가진단 UX 구현** (Scenario A/B 분기)
+- `AssessmentRunRequest.tool_scope`: 기업 사용 도구 선택 필드 추가
+- `_run_collectors`: 선택 도구만 collector 실행, 미선택 도구 항목 수동으로 처리
+- `POST /api/assessment/finalize`: 수동 답변 완료 후 명시적 채점 트리거 엔드포인트 추가
+- webhook에서 자동채점 로직 제거 → finalize로 일원화
+- `GET /api/manual/items`: `excluded_tools` 파라미터 추가 (미선택 도구 자동항목 포함)
+- `NewAssessment.tsx`: 보안 도구 선택 UI 추가 (Keycloak/Wazuh/Nmap/Trivy)
+- `InProgress.tsx`: 시뮬레이션 전면 제거 → 실제 수동 진단 설문 UI
+  - 필러별 아코디언, 충족/부분충족/미충족/해당없음 선택, 증적 입력
+  - 전항목 답변 후 finalize → Reporting 이동
+- `api.ts`: `getManualItems`, `finalizeAssessment` 함수 추가
+- `types/api.ts`: `ManualItemDetail`, `ManualItemsFullResponse` 타입 추가
