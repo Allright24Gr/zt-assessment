@@ -141,6 +141,41 @@ def finalize_assessment(session_id: int, db: Session = Depends(get_db)):
     return {"status": "ok", "session_id": session_id}
 
 
+@router.post("/internal/collect/{tool}")
+def internal_collect(tool: str, payload: dict, db: Session = Depends(get_db)):
+    """Shuffle 워크플로우가 호출하는 단일 도구 수집 엔드포인트.
+
+    Shuffle 워크플로우 구성:
+        HTTP POST http://zt-backend:8000/api/assessment/internal/collect/keycloak
+        Body: { "session_id": $exec.session_id }
+
+    수집 완료 후 /api/assessment/webhook으로 결과가 자동 전송된다.
+    """
+    VALID_TOOLS = {"keycloak", "wazuh", "nmap", "trivy"}
+    if tool not in VALID_TOOLS:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 도구입니다: {tool}")
+
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id가 필요합니다.")
+
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    import threading
+    thread = threading.Thread(
+        target=_run_collectors,
+        args=(session_id, {tool: True}),
+        daemon=True,
+    )
+    thread.start()
+
+    return {"status": "ok", "tool": tool, "session_id": session_id}
+
+
 @router.post("/webhook")
 def assessment_webhook(payload: dict, db: Session = Depends(get_db)):
     session_id = payload.get("session_id")
