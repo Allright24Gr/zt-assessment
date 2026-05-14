@@ -36,27 +36,29 @@ def _build_judgment_map(wb: openpyxl.Workbook) -> dict:
 
 
 def _find_checklist(db: Session, item_no_str: str, maturity: str, question: str) -> Optional[Checklist]:
-    """항목번호+성숙도+질문으로 Checklist 행을 찾는다."""
-    prefix = item_no_str.strip().split()[0]  # "1.1.1 사용자 인벤토리" → "1.1.1"
+    """항목번호+성숙도+질문으로 Checklist 행을 찾는다.
+
+    Excel 항목번호 예: "1.1.1 사용자 인벤토리" → prefix "1.1.1"
+    DB item_id 형식: "{prefix}.{maturity_num}_{counter}" → "1.1.1.1_1"
+    """
+    if not item_no_str:
+        return None
+    prefix = item_no_str.strip().split()[0]
     mat_num = MATURITY_NUM.get(maturity, 0)
-    pattern = f"{prefix}_{mat_num}_%"
+    if mat_num == 0:
+        return None
 
-    candidates = db.query(Checklist).filter(
-        Checklist.item_id.like(pattern)
-    ).all()
-
+    pattern = f"{prefix}.{mat_num}_%"
+    candidates = db.query(Checklist).filter(Checklist.item_id.like(pattern)).all()
     if not candidates:
         return None
 
-    # 질문 텍스트로 정확 매칭 우선
-    q = question.strip() if question else ""
-    for c in candidates:
-        if c.item_name and c.item_name.strip() == q:
-            return c
-
+    q = (question or "").strip()
+    if q:
+        for c in candidates:
+            if c.item_name and c.item_name.strip() == q:
+                return c
     return candidates[0]
-
-VALID_RESULTS = {"충족", "부분충족", "미충족", "평가불가"}
 
 
 class ManualAnswer(BaseModel):
@@ -103,6 +105,8 @@ async def manual_upload(
 
     weight_map = {"충족": 1.0, "부분충족": 0.5, "미충족": 0.0, "평가불가": 0.0}
     saved = 0
+    unmatched = 0
+    skipped = 0
 
     for r in range(4, ws.max_row + 1):
         row = [ws.cell(r, c).value for c in range(1, 9)]
@@ -110,6 +114,7 @@ async def manual_upload(
 
         # 카테고리 구분행·미입력 건너뜀
         if not m_id or str(m_id).startswith("▸") or not choice:
+            skipped += 1
             continue
 
         m_id_str = str(m_id).strip()
@@ -125,6 +130,7 @@ async def manual_upload(
 
         checklist = _find_checklist(db, str(item_no), str(maturity), str(question))
         if not checklist:
+            unmatched += 1
             continue
 
         check_id = checklist.check_id
@@ -186,7 +192,13 @@ async def manual_upload(
         saved += 1
 
     db.commit()
-    return {"status": "ok", "session_id": session_id, "parsed_count": saved}
+    return {
+        "status":          "ok",
+        "session_id":      session_id,
+        "parsed_count":    saved,
+        "unmatched_count": unmatched,
+        "skipped_count":   skipped,
+    }
 
 
 @router.post("/submit")

@@ -22,22 +22,18 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 import { sessions as mockSessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
-import { getAssessmentHistory } from "../../config/api";
+import { getAssessmentHistory, getScoreSummary } from "../../config/api";
+import { pillarMatchesKey } from "../lib/pillar";
 import type { AssessmentSession } from "../../types/api";
 
 type SortKey = "org" | "date" | "manager";
 type SortDir = "asc" | "desc";
 
-const PILLAR_OFFSETS = [0.2, 0.5, -0.3, -0.3, 0.3, -0.8];
 const COMPARE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
-
-function getPillarScores(score: number | null): number[] {
-  if (score === null) return PILLARS.map(() => 0);
-  return PILLAR_OFFSETS.map((offset) => Number(Math.max(0.5, Math.min(4, score + offset)).toFixed(1)));
-}
 
 function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
   if (!active) return <ArrowUpDown size={13} className="text-gray-300" />;
@@ -76,16 +72,20 @@ export function History() {
   const [allSessions, setAllSessions] = useState<AssessmentSession[]>(
     mockSessions.map(toApiSession)
   );
+  const [pillarScoresBySession, setPillarScoresBySession] = useState<Record<string | number, number[]>>({});
 
   useEffect(() => {
-    getAssessmentHistory()
+    const orgFilter = user?.role === "user" ? user.orgName : undefined;
+    getAssessmentHistory(orgFilter)
       .then((data) => setAllSessions(data.sessions))
-      .catch(() => {});
-  }, []);
+      .catch((err) => {
+        console.warn("[history] fetch failed:", err);
+        toast.error("이력을 불러오지 못했습니다.");
+      });
+  }, [user?.role, user?.orgName]);
 
-  const baseSessions = user?.role === "admin"
-    ? allSessions
-    : allSessions.filter((s) => String(s.user_id) === String(user?.id));
+  // 백엔드 호출이 org_name으로 이미 필터링되므로 클라이언트 필터링 불필요
+  const baseSessions = allSessions;
 
   const sessions = useMemo(() => {
     return [...baseSessions].sort((a, b) => {
@@ -117,10 +117,31 @@ export function History() {
     .map((id) => sessions.find((session) => Number(session.id) === id))
     .filter(Boolean) as AssessmentSession[];
 
+  // 선택된 세션의 실제 필러 점수 fetch
+  useEffect(() => {
+    selectedData.forEach((session) => {
+      if (pillarScoresBySession[session.id]) return;
+      if (session.status !== "완료") return;
+      getScoreSummary(session.id)
+        .then((summary) => {
+          const scores = PILLARS.map((p) => {
+            const match = summary.pillar_scores.find((ps) => pillarMatchesKey(ps.pillar, p.key));
+            return match ? match.score : 0;
+          });
+          setPillarScoresBySession((prev) => ({ ...prev, [session.id]: scores }));
+        })
+        .catch((err) => console.warn("[history] score summary:", err));
+    });
+  }, [selectedData, pillarScoresBySession]);
+
+  function pillarScoresFor(session: AssessmentSession): number[] {
+    return pillarScoresBySession[session.id] ?? PILLARS.map(() => 0);
+  }
+
   const radarData = PILLARS.map((p, i) => {
     const entry: Record<string, string | number> = { pillar: p.shortLabel };
     selectedData.forEach((session) => {
-      entry[`${session.org} (${session.date})`] = getPillarScores(session.score)[i];
+      entry[`${session.org} (${session.date})`] = pillarScoresFor(session)[i];
     });
     return entry;
   });

@@ -110,7 +110,7 @@ def _build_data(session_id: int, db: Session) -> dict:
             "priority": g.priority,
             "term":     g.term,
             "tool":     g.recommended_tool or "",
-            "solution": (g.steps[0] if g.steps else "") if g.steps else "",
+            "solution": g.steps[0] if g.steps else "",
         }
         for g in guide_rows
     ]
@@ -165,8 +165,7 @@ def _make_pdf(data: dict) -> bytes:
     from reportlab.graphics.shapes import Drawing, Rect, String
     from reportlab.graphics import renderPDF
 
-    F  = _FONT_NAME
-    FB = _FONT_NAME  # bold fallback (NanumGothic has no separate bold in slim install)
+    F = _FONT_NAME
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -178,9 +177,7 @@ def _make_pdf(data: dict) -> bytes:
     W = A4[0] - 4*cm  # usable width
 
     def sty(name, **kw) -> ParagraphStyle:
-        base = kw.pop("parent", None)
-        s = ParagraphStyle(name, fontName=F, **kw)
-        return s
+        return ParagraphStyle(name, fontName=F, **kw)
 
     h1    = sty("h1",    fontSize=22, leading=28, textColor=colors.HexColor("#1e3a5f"), spaceAfter=6)
     h2    = sty("h2",    fontSize=14, leading=18, textColor=colors.HexColor("#1e3a5f"), spaceAfter=4)
@@ -306,14 +303,14 @@ def _make_pdf(data: dict) -> bytes:
         story.append(d)
         story.append(Spacer(1, 0.4*cm))
 
-        # 점수 상세 테이블
-        hdr = ["필러", "점수", "등급", "충족", "부분충족", "미충족", "해당없음"]
+        # 점수 상세 테이블 (충족/실패(미충족+부분충족)/평가불가)
+        hdr = ["필러", "점수", "등급", "충족", "실패", "평가불가"]
         rows = [hdr] + [
             [p["pillar"], f"{p['score']:.2f}", p["level"],
-             str(p["pass_cnt"]), str(p["fail_cnt"]), str(p["na_cnt"]), "-"]  # na_cnt는 na
+             str(p["pass_cnt"]), str(p["fail_cnt"]), str(p["na_cnt"])]
             for p in ps
         ]
-        col_w = [W - 6*(1.3*cm)] + [1.3*cm]*6
+        col_w = [W - 5*(1.5*cm)] + [1.5*cm]*5
         story.append(Table(rows, colWidths=col_w, style=TableStyle([
             ("FONTNAME",      (0,0), (-1,-1), F),
             ("FONTSIZE",      (0,0), (-1,-1), 8),

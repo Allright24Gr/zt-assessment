@@ -16,6 +16,9 @@ pymysql.connect(
 done
 echo "MySQL 연결 확인."
 
+echo "스키마 마이그레이션..."
+python3 /app/scripts/migrate_schema.py || echo "[migrate] 마이그레이션 실패 (무시)"
+
 echo "체크리스트 seed 실행..."
 python3 /app/scripts/seed_checklist.py
 echo "개선권고 seed 실행..."

@@ -1,25 +1,67 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Settings as SettingsIcon, Bell, Target, User, Save } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 
+const STORAGE_KEY = "zt_settings";
+
+interface PersistedSettings {
+  targetScores: number[];
+  wazuhThreshold: number;
+  trivyCritical: boolean;
+  trivyHigh: boolean;
+  trivyMedium: boolean;
+  coverageThreshold: number;
+  completeNotification: boolean;
+  errorNotification: boolean;
+  name: string;
+  email: string;
+  organization: string;
+}
+
+const DEFAULT_SETTINGS: PersistedSettings = {
+  targetScores: PILLARS.map(() => 3.5),
+  wazuhThreshold: 75,
+  trivyCritical: true,
+  trivyHigh: true,
+  trivyMedium: false,
+  coverageThreshold: 90,
+  completeNotification: true,
+  errorNotification: true,
+  name: "관리자",
+  email: "admin@example.com",
+  organization: "보안팀",
+};
+
 export function Settings() {
-  const [targetScores, setTargetScores] = useState(PILLARS.map(() => 3.5));
-  const [settings, setSettings] = useState({
-    wazuhThreshold: 75,
-    trivyCritical: true,
-    trivyHigh: true,
-    trivyMedium: false,
-    coverageThreshold: 90,
-    completeNotification: true,
-    errorNotification: true,
-    name: "관리자",
-    email: "admin@example.com",
-    organization: "보안팀",
-  });
+  const [targetScores, setTargetScores] = useState(DEFAULT_SETTINGS.targetScores);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) return;
+      const parsed = JSON.parse(stored) as Partial<PersistedSettings>;
+      setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+      if (Array.isArray(parsed.targetScores) && parsed.targetScores.length === PILLARS.length) {
+        setTargetScores(parsed.targetScores);
+      }
+    } catch (err) {
+      console.warn("[settings] load failed:", err);
+    }
+  }, []);
 
   const handleSave = () => {
-    toast.success("설정이 저장되었습니다.");
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...settings, targetScores }),
+      );
+      toast.success("설정이 저장되었습니다. (브라우저 로컬에 보관)");
+    } catch (err) {
+      console.warn("[settings] save failed:", err);
+      toast.error("설정 저장에 실패했습니다.");
+    }
   };
 
   const updateTarget = (index: number, value: number) => {
@@ -28,7 +70,15 @@ export function Settings() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <h1>설정</h1>
+      <div className="flex items-center gap-3">
+        <h1>설정</h1>
+        <span className="px-2.5 py-0.5 text-xs font-medium rounded bg-yellow-100 text-yellow-800 border border-yellow-200">
+          베타 · 브라우저 로컬 저장
+        </span>
+      </div>
+      <p className="text-sm text-gray-500">
+        현재 설정은 백엔드와 연동되지 않고 브라우저에만 저장됩니다. 진단 임계값은 백엔드 정책 파일을 직접 수정해주세요.
+      </p>
 
       {/* Threshold Settings */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">

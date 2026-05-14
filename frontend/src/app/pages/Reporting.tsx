@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
+import { toast } from "sonner";
 import { API_BASE } from "../../config/api";
 import { FileText, Download, TrendingUp, AlertTriangle, AlertCircle, ArrowRight, ChevronDown, RotateCcw } from "lucide-react";
 import {
@@ -12,25 +13,21 @@ import type { ChecklistDetail, Improvement, Session } from "../data/mockData";
 import { PILLARS } from "../data/constants";
 import { getMaturityLevel, getScoreColor } from "../lib/maturity";
 import { getAssessmentResult, getImprovement } from "../../config/api";
+import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import type { ChecklistItemResult, ImprovementItem } from "../../types/api";
 
 const DEFAULT_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
 const TARGET_SCORES  = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
 
-const PILLAR_NAME_TO_KEY: Record<string, string> = {
-  "식별자 및 신원": "Identify",
-  "식별 및 신원": "Identify",
-  "기기 및 엔드포인트": "Device",
-  "기기": "Device",
-  "디바이스": "Device",
-  "네트워크": "Network",
-  "시스템": "System",
-  "애플리케이션 및 워크로드": "Application",
-  "애플리케이션": "Application",
-  "데이터": "Data",
-};
+// 백엔드 enum → 프론트 카드용 결과 라벨로 매핑
+// 부분충족·미충족 둘 다 "미흡"으로 표시 (UI 구분이 단순)하되 색상은 result로 결정
+function _displayResult(r: string): "충족" | "미흡" | "해당 없음" {
+  if (r === "충족") return "충족";
+  if (r === "평가불가") return "해당 없음";
+  return "미흡";   // 미충족, 부분충족
+}
 
-function adaptChecklistResult(item: ChecklistItemResult): ChecklistDetail {
+function adaptChecklistResult(item: ChecklistItemResult): ChecklistDetail & { rawResult: string } {
   return {
     id: item.id,
     pillar: PILLAR_NAME_TO_KEY[item.pillar] ?? item.pillar,
@@ -38,10 +35,10 @@ function adaptChecklistResult(item: ChecklistItemResult): ChecklistDetail {
     item: item.item,
     maturity: item.maturity,
     maturityScore: item.maturity_score ?? 0,
-    question: item.question,
+    question: (item as ChecklistItemResult & { question?: string }).question ?? item.item,
     diagnosisType: item.diagnosis_type ?? "",
     tool: item.tool,
-    result: item.result as "충족" | "미흡" | "해당 없음",
+    result: _displayResult(item.result),
     score: item.score,
     evidence: item.evidence,
     criteria: item.criteria,
@@ -51,6 +48,7 @@ function adaptChecklistResult(item: ChecklistItemResult): ChecklistDetail {
     recommendation: item.recommendation,
     evidenceSummary: item.evidence_summary,
     relatedImprovementIds: item.related_improvement_ids,
+    rawResult: item.result,
   };
 }
 
@@ -71,50 +69,11 @@ function adaptImprovement(item: ImprovementItem): Improvement {
   };
 }
 
-const ERROR_DETAILS: Record<string, { area: string; description: string; location: string; pillar: string; query: string }> = {
-  E001: {
-    area: "신원 위험 영역",
-    description: "MFA가 적용되지 않은 활성 사용자가 발견되었습니다.",
-    location: "Keycloak 사용자 목록 / MFA required action 미설정 계정",
-    pillar: "Identify",
-    query: "다중인증",
-  },
-  E012: {
-    area: "데이터 위험 영역",
-    description: "데이터 암호화 정책 수립 증적이 부족합니다.",
-    location: "데이터 보호 정책 문서 / 저장 데이터 암호화 기준",
-    pillar: "Data",
-    query: "암호화",
-  },
-  E003: {
-    area: "네트워크 위험 영역",
-    description: "네트워크 세그먼테이션 기준이 충분하지 않습니다.",
-    location: "Nmap 스캔 결과 / 관리 포트 노출 구간",
-    pillar: "Network",
-    query: "세그멘테이션",
-  },
-  E005: {
-    area: "애플리케이션 위험 영역",
-    description: "취약점 스캔 실행 결과가 확인되지 않았습니다.",
-    location: "Trivy 스캔 이력 / 이미지 취약점 분석 결과",
-    pillar: "Application",
-    query: "배포",
-  },
-  E008: {
-    area: "시스템 위험 영역",
-    description: "로그 모니터링 자동화 수준이 목표보다 낮습니다.",
-    location: "Wazuh SIEM 룰 활성화 및 알림 채널 연동 상태",
-    pillar: "System",
-    query: "로그",
-  },
-  E002: {
-    area: "기기 위험 영역",
-    description: "디바이스 보안 정책 수립 증적이 부족합니다.",
-    location: "Wazuh SCA 정책 / 엔드포인트 보안 기준",
-    pillar: "Device",
-    query: "기기",
-  },
-};
+// 백엔드 error.pillar(한글) → 프론트 PILLAR.key(영문) 변환
+function _pillarKeyOf(pillar?: string): string {
+  if (!pillar) return "all";
+  return PILLAR_NAME_TO_KEY[pillar] ?? pillar;
+}
 
 function formatGap(value: number) {
   return value > 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
@@ -136,7 +95,7 @@ function getDemoFinding(detail: {
 }) {
   if (detail.evidenceSummary) return detail.evidenceSummary;
 
-  const isFailed = detail.result === "미흡";
+  const isFailed = detail.result === "미흡" || detail.result === "부분충족" || detail.result === "미충족";
   const impact = isFailed ? Number(Math.max(0.1, 4 - detail.score).toFixed(1)) : 0;
 
   if (detail.tool.includes("Keycloak")) {
@@ -302,6 +261,10 @@ export function Reporting() {
             code: e.code,
             message: e.message,
             severity: e.severity,
+            area: e.area,
+            pillar: e.pillar,
+            fail_count: e.fail_count,
+            miss_count: e.miss_count,
           })),
           checklistDetails: [],
         });
@@ -316,11 +279,16 @@ export function Reporting() {
 
         setChecklistDetails(data.checklist_results.map(adaptChecklistResult));
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn("[reporting] result fetch failed:", err);
+        toast.error("진단 결과를 불러오지 못했습니다.");
+      });
 
     getImprovement(sessionId)
       .then((data) => setImprovements(data.items.map(adaptImprovement)))
-      .catch(() => {});
+      .catch((err) => {
+        console.warn("[reporting] improvement fetch failed:", err);
+      });
   }, [sessionId]);
 
   const normalizedQuestionQuery = detailQuestionQuery.trim().toLowerCase();
@@ -349,6 +317,15 @@ export function Reporting() {
     level: getMaturityLevel(currentScores[i]),
     gap: parseFloat((currentScores[i] - TARGET_SCORES[i]).toFixed(1)),
   }));
+
+  const currentAvg = useMemo(
+    () => currentScores.reduce((a, b) => a + b, 0) / Math.max(currentScores.length, 1),
+    [currentScores],
+  );
+  const targetAvg = useMemo(
+    () => TARGET_SCORES.reduce((a, b) => a + b, 0) / TARGET_SCORES.length,
+    [],
+  );
 
   const byTerm = ["단기", "중기", "장기"].map((term) => ({
     term,
@@ -409,14 +386,12 @@ export function Reporting() {
                 <h2 className="text-red-900">위험 영역</h2>
               </div>
               <div className="space-y-2">
-                {session.errors.map((error, i) => {
-                  const detail = ERROR_DETAILS[error.code];
-                  return (
+                {session.errors.map((error, i) => (
                   <div key={i} className="flex items-center justify-between p-3 bg-white rounded-lg border border-red-100">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-sm font-bold text-red-700">{error.code}</span>
-                        <span className="text-sm font-semibold text-gray-800">{detail?.area ?? error.message}</span>
+                        <span className="text-sm font-semibold text-gray-800">{error.area ?? error.pillar ?? error.message}</span>
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
                           error.severity === "Critical" ? "bg-red-100 text-red-700" :
                           error.severity === "High"     ? "bg-orange-100 text-orange-700" :
@@ -425,22 +400,26 @@ export function Reporting() {
                           {error.severity}
                         </span>
                       </div>
-                      <p className="mt-1 text-sm text-gray-600">{detail?.description ?? error.message}</p>
-                      <p className="mt-1 text-xs text-gray-500">발견 위치: {detail?.location ?? "세부 항목에서 확인"}</p>
+                      <p className="mt-1 text-sm text-gray-600">{error.message}</p>
+                      {(error.fail_count ?? 0) > 0 && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          미충족 {error.miss_count ?? 0}건 · 부분충족 {(error.fail_count ?? 0) - (error.miss_count ?? 0)}건
+                        </p>
+                      )}
                     </div>
                     <button
                       onClick={() => {
                         setActiveTab("details");
                         setSelectedRiskCode(error.code);
-                        setDetailPillarFilter(detail?.pillar ?? "all");
-                        setDetailQuestionQuery(detail?.query ?? error.message);
+                        setDetailPillarFilter(_pillarKeyOf(error.pillar));
+                        setDetailQuestionQuery("");
                       }}
                       className="ml-4 shrink-0 text-sm font-medium text-red-700 hover:underline"
                     >
                       자세히 보기
                     </button>
                   </div>
-                )})}
+                ))}
               </div>
             </div>
           )}
@@ -598,25 +577,28 @@ export function Reporting() {
             )}
           </div>
 
-          {selectedRiskCode && ERROR_DETAILS[selectedRiskCode] && (
-            <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <div className="mb-1 flex flex-wrap items-center gap-2">
-                    <span className="rounded-full bg-red-100 px-2 py-0.5 font-mono text-xs font-bold text-red-700">
-                      {selectedRiskCode}
-                    </span>
-                    <h3 className="font-semibold text-red-900">{ERROR_DETAILS[selectedRiskCode].area}</h3>
+          {selectedRiskCode && (() => {
+            const err = session.errors.find((e) => e.code === selectedRiskCode);
+            if (!err) return null;
+            return (
+              <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-red-100 px-2 py-0.5 font-mono text-xs font-bold text-red-700">
+                        {selectedRiskCode}
+                      </span>
+                      <h3 className="font-semibold text-red-900">{err.area ?? err.pillar}</h3>
+                    </div>
+                    <p className="text-sm text-red-800">{err.message}</p>
                   </div>
-                  <p className="text-sm text-red-800">{ERROR_DETAILS[selectedRiskCode].description}</p>
-                  <p className="mt-1 text-xs text-red-700">발견 위치: {ERROR_DETAILS[selectedRiskCode].location}</p>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-red-700">
+                    관련 항목 {filteredChecklistDetails.length}개 표시
+                  </span>
                 </div>
-                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-red-700">
-                  관련 항목 {filteredChecklistDetails.length}개 표시
-                </span>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           <div className="space-y-6">
             {checklistGroups.map(({ pillar, items }) => (
@@ -635,10 +617,13 @@ export function Reporting() {
                   {items.map((detail) => {
                     const scoreColors = getScoreColor(detail.score);
                     const finding = getDemoFinding(detail);
-                    const resultCardClass = detail.result === "충족"
+                    const raw = (detail as ChecklistDetail & { rawResult?: string }).rawResult ?? detail.result;
+                    const resultCardClass = raw === "충족"
                       ? "border-green-200 bg-green-50 open:border-green-300 open:bg-green-100/60"
-                      : detail.result === "미흡"
+                      : raw === "미충족"
                       ? "border-rose-200 bg-rose-50 open:border-rose-300 open:bg-rose-100/60"
+                      : raw === "부분충족"
+                      ? "border-amber-200 bg-amber-50 open:border-amber-300 open:bg-amber-100/60"
                       : "border-gray-200 bg-white open:border-blue-200 open:bg-blue-50/30";
 
                     return (
@@ -653,13 +638,15 @@ export function Reporting() {
                                 {detail.category}
                               </span>
                               <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                detail.result === "충족"
+                                raw === "충족"
                                   ? "bg-green-100 text-green-700"
-                                  : detail.result === "미흡"
+                                  : raw === "미충족"
                                   ? "bg-red-100 text-red-700"
+                                  : raw === "부분충족"
+                                  ? "bg-amber-100 text-amber-700"
                                   : "bg-gray-100 text-gray-500"
                               }`}>
-                                {detail.result}
+                                {raw}
                               </span>
                               <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${scoreColors.badge}`}>
                                 {getMaturityLevel(detail.score)}
@@ -759,7 +746,7 @@ export function Reporting() {
               <h2 className="text-amber-900">GAP 분석 요약</h2>
             </div>
             <p className="text-sm text-gray-700">
-              현재 평균 성숙도 <strong>2.33</strong>에서 목표 <strong>3.33</strong>으로 향상하기 위한
+              현재 평균 성숙도 <strong>{currentAvg.toFixed(2)}</strong>에서 목표 <strong>{targetAvg.toFixed(2)}</strong>으로 향상하기 위한
               {" "}<strong>{improvements.length}개</strong>의 개선 과제가 있습니다.
               Critical {improvements.filter(t => t.priority === "Critical").length}건,
               High {improvements.filter(t => t.priority === "High").length}건,

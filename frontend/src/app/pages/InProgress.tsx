@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router";
 import { CheckCircle, ChevronDown, ChevronRight, Download, Loader2, Shield, Upload } from "lucide-react";
 import { toast } from "sonner";
@@ -48,7 +48,8 @@ export function InProgress() {
       return;
     }
 
-    const hasAutoTools = excludedTools !== "keycloak,wazuh,nmap,trivy" && excludedTools.split(",").filter(Boolean).length < 4;
+    const excludedCount = excludedTools.split(",").map((t) => t.trim()).filter(Boolean).length;
+    const hasAutoTools = excludedCount < 4;
     setAutoRunning(hasAutoTools);
 
     getManualItems(sid, excludedTools)
@@ -66,11 +67,11 @@ export function InProgress() {
       .finally(() => setLoading(false));
   }, [sid, excludedTools]);
 
-  // 자동수집 폴링
+  // 자동수집 폴링 (즉시 1회 + 5초 간격)
   useEffect(() => {
     if (!sid || !autoRunning || collectionDone) return;
 
-    pollRef.current = setInterval(() => {
+    const check = () => {
       getAssessmentStatus(sid)
         .then((s) => {
           if (s.collection_done) {
@@ -80,18 +81,23 @@ export function InProgress() {
             toast.success("자동 수집이 완료되었습니다.");
           }
         })
-        .catch(() => {/* 폴링 오류는 무시 */});
-    }, 5000);
+        .catch((err) => console.warn("[poll] status check failed:", err));
+    };
+
+    check();   // 즉시 한 번
+    pollRef.current = setInterval(check, 5000);
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [sid, autoRunning, collectionDone]);
 
-  const byPillar = items.reduce<Record<string, ManualItemDetail[]>>((acc, item) => {
-    (acc[item.pillar] ??= []).push(item);
-    return acc;
-  }, {});
+  const byPillar = useMemo(() => (
+    items.reduce<Record<string, ManualItemDetail[]>>((acc, item) => {
+      (acc[item.pillar] ??= []).push(item);
+      return acc;
+    }, {})
+  ), [items]);
 
   const totalCount = items.length;
   const answeredCount = Object.keys(answers).length;

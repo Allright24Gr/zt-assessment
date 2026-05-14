@@ -131,6 +131,18 @@ def seed_demo():
             user_id=user.user_id,
             status="완료",
             started_at=started_at,
+            selected_tools={"keycloak": True, "wazuh": True, "nmap": True, "trivy": True},
+            extra={
+                "department":   "정보보안팀",
+                "employees":    420,
+                "servers":      62,
+                "applications": 24,
+                "note":         "분기별 정기 진단",
+                "pillar_scope": {
+                    "Identify": True, "Device": True, "Network": True,
+                    "System": True, "Application": True, "Data": True,
+                },
+            },
         )
         db.add(session1)
         db.flush()
@@ -223,6 +235,8 @@ def seed_demo():
             user_id=user.user_id,
             status="진행 중",
             started_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+            selected_tools={"keycloak": True, "wazuh": True, "nmap": True, "trivy": True},
+            extra={"note": "자동 수집 시연용"},
         )
         db.add(session2)
         db.flush()

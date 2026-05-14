@@ -1,6 +1,6 @@
 export type MaturityLevel = "기존" | "초기" | "향상" | "최적화";
 export type AssessmentStatus = "완료" | "진행 중" | "실패" | string;
-export type AssessmentResult = "충족" | "부분충족" | "미충족" | "평가불가" | "미흡" | "해당 없음";
+export type AssessmentResult = "충족" | "부분충족" | "미충족" | "평가불가";
 export type Priority = "Critical" | "High" | "Medium" | "Low" | string;
 export type ImprovementTerm = "단기" | "중기" | "장기" | string;
 
@@ -17,6 +17,10 @@ export interface AssessmentError {
   code: string;
   message: string;
   severity: Priority;
+  area?: string;
+  pillar?: string;
+  fail_count?: number;
+  miss_count?: number;
 }
 
 export interface EvidenceSummary {
@@ -53,11 +57,12 @@ export interface AssessmentSession {
   org: string;
   date: string;
   manager: string;
-  user_id?: string;
+  user_id?: number | string;
   level: MaturityLevel | string;
   status: AssessmentStatus;
   score: number | null;
   errors: AssessmentError[];
+  extra?: Record<string, unknown>;
   checklist_details?: ChecklistItemResult[];
 }
 
@@ -69,11 +74,12 @@ export interface AssessmentRunRequest {
   contact?: string;
   org_type?: string;
   infra_type?: string;
-  employees?: number | string;
-  servers?: number | string;
-  applications?: number | string;
+  employees?: number;
+  servers?: number;
+  applications?: number;
   note?: string;
   pillar_scope?: Record<string, boolean>;
+  tool_scope?: Record<string, boolean>;
 }
 
 export interface AssessmentRunResponse {
@@ -108,15 +114,15 @@ export interface ScoreSummaryResponse {
 }
 
 export interface ScoreTrendPoint {
-  date: string;
-  score: number;
-  level?: MaturityLevel | string;
+  history_id?: number;
   session_id?: number | string;
+  total_score: number;
+  maturity_level?: MaturityLevel | string;
+  pillar_scores?: Record<string, number> | null;
+  assessed_at?: string | null;
 }
 
-export interface ScoreTrendResponse {
-  trend: ScoreTrendPoint[];
-}
+export type ScoreTrendResponse = ScoreTrendPoint[];
 
 export interface ChecklistItem {
   id: string;
@@ -183,7 +189,7 @@ export interface ManualSubmitRequest {
   session_id: number | string;
   answers: Array<{
     check_id: string;
-    value: boolean | string | number;
+    value: AssessmentResult | string;
     evidence?: string;
     note?: string;
   }>;

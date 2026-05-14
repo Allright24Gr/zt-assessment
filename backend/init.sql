@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS DiagnosisSession (
   total_score  FLOAT        NULL,
   started_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at DATETIME     NULL,
+  selected_tools JSON       NULL,
+  extra        JSON         NULL,
   PRIMARY KEY (session_id),
   CONSTRAINT fk_session_org  FOREIGN KEY (org_id)  REFERENCES Organization (org_id),
   CONSTRAINT fk_session_user FOREIGN KEY (user_id) REFERENCES User (user_id)

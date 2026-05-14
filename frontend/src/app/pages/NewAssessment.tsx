@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { Building2, Upload, CheckCircle2, FileText, X, Wrench } from "lucide-react";
+import { Building2, Upload, CheckCircle2, FileText, X, Wrench, Info } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
@@ -109,9 +109,9 @@ export function NewAssessment() {
       contact: formData.contact,
       org_type: formData.orgType,
       infra_type: formData.infraType,
-      employees: Number(formData.employees) || 0,
-      servers: Number(formData.servers) || 0,
-      applications: Number(formData.applications) || 0,
+      employees: Number(formData.employees) || undefined,
+      servers: Number(formData.servers) || undefined,
+      applications: Number(formData.applications) || undefined,
       note: formData.note,
       pillar_scope: pillarScope,
       tool_scope: toolScope,
@@ -125,7 +125,23 @@ export function NewAssessment() {
           },
         })
       )
-      .catch(() => navigate("/in-progress/demo"));
+      .catch((err) => {
+        console.warn("[new-assessment] runAssessment failed:", err);
+        toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
+      });
+  };
+
+  const handleSaveDraft = () => {
+    try {
+      localStorage.setItem(
+        "zt_new_assessment_draft",
+        JSON.stringify({ formData, pillarScope, toolScope }),
+      );
+      toast.success("입력한 내용이 임시저장되었습니다.");
+    } catch (err) {
+      console.warn("[new-assessment] save draft failed:", err);
+      toast.error("임시저장에 실패했습니다.");
+    }
   };
 
   return (
@@ -394,7 +410,11 @@ export function NewAssessment() {
             </div>
 
             <div className="flex justify-between pt-4">
-              <button className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+              <button
+                type="button"
+                onClick={handleSaveDraft}
+                className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
                 임시저장
               </button>
               <button
@@ -409,30 +429,36 @@ export function NewAssessment() {
 
         {step === 2 && (
           <div className="space-y-6">
-            <h2>Step 2: 수동 항목 직접 입력</h2>
-            <div className="space-y-4">
-              {PILLARS.filter((p) => pillarScope[p.key]).map((pillar) => (
-                <div key={pillar.key} className="border border-gray-200 rounded-lg p-4">
-                  <h3 className="mb-3">{pillar.label}</h3>
-                  <div className="space-y-2">
-                    {[1, 2, 3].map((item) => (
-                      <label key={item} className="flex items-center justify-between p-3 bg-gray-50 rounded">
-                        <span className="text-sm">체크리스트 항목 {item}</span>
-                        <div className="flex gap-4">
-                          <label className="flex items-center gap-2">
-                            <input type="radio" name={`${pillar.key}-${item}`} defaultChecked />
-                            <span className="text-sm">True</span>
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input type="radio" name={`${pillar.key}-${item}`} />
-                            <span className="text-sm">False</span>
-                          </label>
-                        </div>
-                      </label>
-                    ))}
+            <div className="flex items-center gap-2 mb-2">
+              <Info className="text-blue-600" size={22} />
+              <h2>Step 2: 진단 방식 안내</h2>
+            </div>
+            <p className="text-sm text-gray-500">
+              선택하신 필러와 도구 기반으로 진단이 진행됩니다. 다음 단계에서 최종 확인 후 진단을 시작하세요.
+            </p>
+            <div className="space-y-3">
+              {PILLARS.filter((p) => pillarScope[p.key]).map((pillar) => {
+                const autoTools = Object.entries(toolScope).filter(([, on]) => on).map(([k]) => k);
+                return (
+                  <div key={pillar.key} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-gray-800">{pillar.label}</h3>
+                      <span className="text-xs text-gray-400">진단 대상 필러</span>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-500">
+                      자동 수집 도구: {autoTools.length > 0 ? autoTools.join(", ") : "없음 (전체 수동 진단)"}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      세부 체크리스트 답변은 진단 시작 후 자동 수집과 병행하여 진행됩니다.
+                    </p>
                   </div>
-                </div>
-              ))}
+                );
+              })}
+              {Object.values(pillarScope).every((v) => !v) && (
+                <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                  선택된 필러가 없습니다. 이전 단계에서 진단 범위를 선택해주세요.
+                </p>
+              )}
             </div>
             <div className="flex justify-between pt-4">
               <button onClick={() => setStep(1)} className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">

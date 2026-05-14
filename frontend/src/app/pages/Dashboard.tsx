@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   ArrowRight,
@@ -35,24 +36,13 @@ import {
   getAssessmentHistory,
   getImprovement,
   getScoreSummary,
+  getScoreTrend,
 } from "../../config/api";
-import type { AssessmentSession, ImprovementItem } from "../../types/api";
+import type { AssessmentSession, ImprovementItem, ScoreTrendPoint } from "../../types/api";
+import { pillarMatchesKey } from "../lib/pillar";
 
 const DEFAULT_PILLAR_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
 const TARGET_SCORES = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
-const PREV_SCORE = 2.1;
-
-function pillarMatchesKey(apiPillar: string, key: string): boolean {
-  const MAP: Record<string, string[]> = {
-    Identify: ["식별", "신원"],
-    Device: ["기기", "디바이스"],
-    Network: ["네트워크"],
-    System: ["시스템"],
-    Application: ["애플리케이션"],
-    Data: ["데이터"],
-  };
-  return (MAP[key] ?? []).some((kw) => apiPillar.includes(kw));
-}
 
 export function Dashboard() {
   const { user } = useAuth();
@@ -61,37 +51,64 @@ export function Dashboard() {
   const [avgScore, setAvgScore] = useState(
     Number((DEFAULT_PILLAR_SCORES.reduce((a, b) => a + b, 0) / DEFAULT_PILLAR_SCORES.length).toFixed(2))
   );
+  const [prevScore, setPrevScore] = useState<number | null>(null);
   const [apiSessions, setApiSessions] = useState<AssessmentSession[] | null>(null);
   const [apiTopTasks, setApiTopTasks] = useState<ImprovementItem[] | null>(null);
+  const [trendPoints, setTrendPoints] = useState<ScoreTrendPoint[] | null>(null);
 
   useEffect(() => {
-    getAssessmentHistory()
+    const orgFilter = user?.role === "user" ? user.orgName : undefined;
+
+    getAssessmentHistory(orgFilter)
       .then((data) => {
         setApiSessions(data.sessions);
         const latestCompleted = data.sessions.find((s) => s.status === "완료");
-        if (latestCompleted) {
-          getScoreSummary(latestCompleted.id)
-            .then((summary) => {
-              const scores = PILLARS.map((p, i) => {
-                const match = summary.pillar_scores.find((ps) =>
-                  pillarMatchesKey(ps.pillar, p.key)
-                );
-                return match ? match.score : DEFAULT_PILLAR_SCORES[i];
-              });
-              setPillarScores(scores);
-              setAvgScore(summary.overall_score);
-            })
+        if (!latestCompleted) return;
+
+        getScoreSummary(latestCompleted.id)
+          .then((summary) => {
+            const scores = PILLARS.map((p, i) => {
+              const match = summary.pillar_scores.find((ps) =>
+                pillarMatchesKey(ps.pillar, p.key)
+              );
+              return match ? match.score : DEFAULT_PILLAR_SCORES[i];
+            });
+            setPillarScores(scores);
+            setAvgScore(summary.overall_score);
+          })
+          .catch((err) => console.warn("[dashboard] score summary:", err));
+
+        // 같은 조직의 score trend 가져오기 (가능하면 첫 세션의 org_id 추출)
+        const orgId = data.sessions[0]?.user_id;  // 백엔드 history는 org_id를 안 주므로
+        // org_id 모르면 trend 조회 생략하고 history 자체로 trend 구성
+        if (orgId !== undefined) {
+          getScoreTrend(orgId)
+            .then(setTrendPoints)
             .catch(() => {});
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn("[dashboard] history fetch failed:", err);
+        toast.error("진단 이력을 불러오지 못했습니다.");
+      });
 
     getImprovement()
       .then((data) => setApiTopTasks(data.items))
-      .catch(() => {});
-  }, []);
+      .catch((err) => console.warn("[dashboard] improvement:", err));
+  }, [user?.role, user?.orgName]);
 
-  const TREND = avgScore - PREV_SCORE;
+  // 완료된 세션에서 직전 점수 추출 → 트렌드 표시
+  useEffect(() => {
+    if (!apiSessions) return;
+    const completed = apiSessions
+      .filter((s) => s.status === "완료" && s.score !== null)
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+    if (completed.length >= 2 && typeof completed[1].score === "number") {
+      setPrevScore(completed[1].score);
+    }
+  }, [apiSessions]);
+
+  const TREND = prevScore !== null ? avgScore - prevScore : 0;
 
   const weakestPillar = PILLARS
     .map((p, i) => ({ ...p, score: pillarScores[i] }))
@@ -99,24 +116,23 @@ export function Dashboard() {
 
   const topTasks = apiTopTasks ? apiTopTasks.slice(0, 3) : improvements.slice(0, 3);
 
-  const recentSessions: AssessmentSession[] = apiSessions
-    ? (user?.role === "admin"
-      ? apiSessions.slice(0, 5)
-      : apiSessions.filter((s) => String(s.user_id) === String(user?.id)).slice(0, 3))
-    : (user?.role === "admin"
+  const recentSessions: AssessmentSession[] = useMemo(() => {
+    if (apiSessions) {
+      // 이미 백엔드에서 org_name 기준 필터링됨 (role=user인 경우)
+      return user?.role === "admin"
+        ? apiSessions.slice(0, 5)
+        : apiSessions.slice(0, 3);
+    }
+    // API 실패 시 mockSessions fallback (orgName 기준 매칭)
+    const filtered = user?.role === "admin"
       ? sessions.slice(0, 5)
-      : sessions.filter((s) => s.userId === user?.id).slice(0, 3)
-    ).map((s) => ({
-      id: s.id,
-      org: s.org,
-      date: s.date,
-      manager: s.manager,
-      user_id: s.userId,
-      level: s.level,
-      status: s.status,
-      score: s.score,
-      errors: s.errors,
+      : sessions.filter((s) => s.org === user?.orgName).slice(0, 3);
+    return filtered.map((s) => ({
+      id: s.id, org: s.org, date: s.date, manager: s.manager,
+      user_id: s.userId, level: s.level, status: s.status,
+      score: s.score, errors: s.errors,
     }));
+  }, [apiSessions, user?.role, user?.orgName]);
 
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
@@ -125,12 +141,21 @@ export function Dashboard() {
   }));
 
   const targetAvg = Number((TARGET_SCORES.reduce((a, b) => a + b, 0) / TARGET_SCORES.length).toFixed(2));
-  const trendData = [
-    { date: "2026-01", level: 1.5 },
-    { date: "2026-02", level: 1.8 },
-    { date: "2026-03", level: 2.1 },
-    { date: "2026-04", level: avgScore },
-  ];
+
+  // 실제 trend API 응답이 있으면 사용, 없으면 history의 완료 세션으로 구성
+  const trendData = useMemo(() => {
+    const points = trendPoints && trendPoints.length > 0
+      ? trendPoints.map((p) => ({
+          date: (p.assessed_at ?? "").slice(0, 10),
+          level: p.total_score,
+        }))
+      : (apiSessions ?? [])
+          .filter((s) => s.status === "완료" && typeof s.score === "number")
+          .slice()
+          .reverse()
+          .map((s) => ({ date: s.date.slice(0, 10), level: s.score as number }));
+    return points.length > 0 ? points : [{ date: "현재", level: avgScore }];
+  }, [trendPoints, apiSessions, avgScore]);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">

@@ -52,6 +52,8 @@ class DiagnosisSession(Base):
     total_score = Column(Float, nullable=True)
     started_at = Column(DateTime, server_default=func.now())
     completed_at = Column(DateTime, nullable=True)
+    selected_tools = Column(JSON, nullable=True)   # {"keycloak": true, ...}
+    extra = Column(JSON, nullable=True)            # employees, servers, note, pillar_scope, errors
 
     org = relationship("Organization", back_populates="sessions")
     manager = relationship("User", back_populates="sessions")

@@ -17,7 +17,6 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000"
 
 export const API_ENDPOINTS = {
   ASSESSMENT_RUN: "/api/assessment/run",
-  ASSESSMENT_FINALIZE: "/api/assessment/finalize",
   ASSESSMENT_WEBHOOK: "/api/assessment/webhook",
   ASSESSMENT_RESULT: "/api/assessment/result",
   ASSESSMENT_HISTORY: "/api/assessment/history",
@@ -110,8 +109,10 @@ export function getAssessmentResult(sessionId?: number | string) {
   });
 }
 
-export function getAssessmentHistory() {
-  return apiFetch<AssessmentHistoryResponse>(API_ENDPOINTS.ASSESSMENT_HISTORY);
+export function getAssessmentHistory(orgName?: string) {
+  return apiFetch<AssessmentHistoryResponse>(API_ENDPOINTS.ASSESSMENT_HISTORY, {
+    params: orgName ? { org_name: orgName } : undefined,
+  });
 }
 
 export function getScoreSummary(sessionId?: number | string) {
@@ -120,8 +121,10 @@ export function getScoreSummary(sessionId?: number | string) {
   });
 }
 
-export function getScoreTrend() {
-  return apiFetch<ScoreTrendResponse>(API_ENDPOINTS.SCORE_TREND);
+export function getScoreTrend(orgId: number | string, limit = 12) {
+  return apiFetch<ScoreTrendResponse>(API_ENDPOINTS.SCORE_TREND, {
+    params: { org_id: orgId, limit },
+  });
 }
 
 export function getChecklist() {
@@ -155,8 +158,8 @@ export function getManualItems(sessionId: number | string, excludedTools?: strin
 
 export function finalizeAssessment(sessionId: number | string) {
   return apiFetch<{ status: string; session_id: number }>(
-    API_ENDPOINTS.ASSESSMENT_FINALIZE,
-    { method: "POST", params: { session_id: sessionId } },
+    `/api/assessment/finalize/${sessionId}`,
+    { method: "POST" },
   );
 }
 
