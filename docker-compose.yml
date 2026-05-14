@@ -22,6 +22,7 @@ services:
       - .env
     environment:
       - SELF_BASE_URL=http://zt-backend:8000
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8080}
     networks:
       - zt-network
     depends_on:

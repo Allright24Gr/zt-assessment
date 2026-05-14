@@ -99,11 +99,11 @@ GET  /api/report/generate : 리포트 생성
 
 서버 사양
 
-IP: 3.35.200.145
-
 OS: Ubuntu 24.04
 
 Spec: t3a.xlarge (4vCPU / 16GB)
+
+배포: ./deploy.sh <EC2_IP> (IP는 EC2 재시작마다 변경됨)
 
 브랜치 전략
 main: 최종 배포본 (직접 push 금지)
