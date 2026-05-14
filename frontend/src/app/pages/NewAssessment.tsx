@@ -1,9 +1,36 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { Building2, Upload, CheckCircle2, FileText, X } from "lucide-react";
+import { Building2, Upload, CheckCircle2, FileText, X, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
+
+const TOOLS = [
+  {
+    key: "keycloak",
+    label: "Keycloak",
+    desc: "ID/접근 관리 (IAM/SSO/MFA)",
+    detail: "신원 확인, 인증 정책, 접근 권한 항목 자동 수집",
+  },
+  {
+    key: "wazuh",
+    label: "Wazuh",
+    desc: "SIEM / EDR / 로그 수집",
+    detail: "보안 이벤트, 취약점, 정책 위반 항목 자동 수집",
+  },
+  {
+    key: "nmap",
+    label: "Nmap",
+    desc: "네트워크 스캔",
+    detail: "네트워크 세그먼테이션, 포트·서비스 현황 자동 수집",
+  },
+  {
+    key: "trivy",
+    label: "Trivy",
+    desc: "컨테이너·소프트웨어 취약점",
+    detail: "이미지 스캔, SBOM, 공급망 보안 항목 자동 수집",
+  },
+] as const;
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
 const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"];
@@ -28,6 +55,9 @@ export function NewAssessment() {
   const [pillarScope, setPillarScope] = useState<Record<string, boolean>>(
     Object.fromEntries(PILLARS.map((p) => [p.key, true]))
   );
+  const [toolScope, setToolScope] = useState<Record<string, boolean>>({
+    keycloak: false, wazuh: false, nmap: false, trivy: false,
+  });
   const [files, setFiles] = useState<File[]>([]);
 
   const togglePillar = (key: string) => {
@@ -66,6 +96,11 @@ export function NewAssessment() {
   };
 
   const handleSubmit = () => {
+    const excludedTools = Object.entries(toolScope)
+      .filter(([, enabled]) => !enabled)
+      .map(([tool]) => tool)
+      .join(",");
+
     runAssessment({
       org_name: formData.orgName,
       manager: formData.manager,
@@ -79,9 +114,18 @@ export function NewAssessment() {
       applications: Number(formData.applications) || 0,
       note: formData.note,
       pillar_scope: pillarScope,
+      tool_scope: toolScope,
     })
-      .then((res) => navigate(`/in-progress/${res.session_id}`))
-      .catch(() => navigate("/in-progress/new-session"));
+      .then((res) =>
+        navigate(`/in-progress/${res.session_id}`, {
+          state: {
+            excludedTools,
+            orgName: formData.orgName,
+            manager: formData.manager,
+          },
+        })
+      )
+      .catch(() => navigate("/in-progress/demo"));
   };
 
   return (
@@ -251,6 +295,49 @@ export function NewAssessment() {
                   />
                 </div>
               </div>
+            </div>
+
+            {/* 보안 도구 선택 */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Wrench size={16} className="text-blue-600" />
+                <h3 className="text-sm font-semibold text-gray-700">귀사에서 사용 중인 보안 도구 선택</h3>
+              </div>
+              <p className="text-xs text-gray-500 mb-3">
+                선택한 도구의 항목은 자동으로 수집됩니다. 선택하지 않은 도구의 항목은 다음 단계에서 직접 답변합니다.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {TOOLS.map((tool) => (
+                  <label
+                    key={tool.key}
+                    className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                      toolScope[tool.key]
+                        ? "border-blue-400 bg-blue-50"
+                        : "border-gray-200 hover:bg-gray-50"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={!!toolScope[tool.key]}
+                      onChange={() =>
+                        setToolScope((prev) => ({ ...prev, [tool.key]: !prev[tool.key] }))
+                      }
+                    />
+                    <div>
+                      <p className="text-sm font-semibold text-gray-800">{tool.label}
+                        <span className="ml-2 text-xs font-normal text-gray-500">{tool.desc}</span>
+                      </p>
+                      <p className="text-xs text-gray-400 mt-0.5">{tool.detail}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              {Object.values(toolScope).every((v) => !v) && (
+                <p className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                  도구를 선택하지 않으면 모든 항목을 직접 답변해야 합니다.
+                </p>
+              )}
             </div>
 
             {/* 비고 */}

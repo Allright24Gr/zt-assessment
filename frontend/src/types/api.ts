@@ -160,6 +160,25 @@ export interface ImprovementResponse {
   total: number;
 }
 
+export interface ManualItemDetail {
+  check_id: number;
+  item_id: string;
+  pillar: string;
+  category: string;
+  item_name: string;
+  maturity: string;
+  criteria: string;
+  tool: string;
+  diagnosis_type: string;
+  submitted: boolean;
+}
+
+export interface ManualItemsFullResponse {
+  items: ManualItemDetail[];
+  total: number;
+  submitted_count: number;
+}
+
 export interface ManualSubmitRequest {
   session_id: number | string;
   answers: Array<{

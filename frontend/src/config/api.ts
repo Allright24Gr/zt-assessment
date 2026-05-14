@@ -5,6 +5,7 @@ import type {
   AssessmentRunResponse,
   ChecklistResponse,
   ImprovementResponse,
+  ManualItemsFullResponse,
   ManualSubmitRequest,
   ManualSubmitResponse,
   ReportGenerateResponse,
@@ -16,6 +17,7 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000"
 
 export const API_ENDPOINTS = {
   ASSESSMENT_RUN: "/api/assessment/run",
+  ASSESSMENT_FINALIZE: "/api/assessment/finalize",
   ASSESSMENT_WEBHOOK: "/api/assessment/webhook",
   ASSESSMENT_RESULT: "/api/assessment/result",
   ASSESSMENT_HISTORY: "/api/assessment/history",
@@ -142,4 +144,17 @@ export function generateReport(sessionId?: number | string) {
   return apiFetch<ReportGenerateResponse>(API_ENDPOINTS.REPORT_GENERATE, {
     params: { session_id: sessionId },
   });
+}
+
+export function getManualItems(sessionId: number | string, excludedTools?: string) {
+  return apiFetch<ManualItemsFullResponse>(`/api/manual/items/${sessionId}`, {
+    params: excludedTools ? { excluded_tools: excludedTools } : undefined,
+  });
+}
+
+export function finalizeAssessment(sessionId: number | string) {
+  return apiFetch<{ status: string; session_id: number }>(
+    API_ENDPOINTS.ASSESSMENT_FINALIZE,
+    { method: "POST", params: { session_id: sessionId } },
+  );
 }

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import List
 from datetime import datetime, timezone
 
@@ -108,17 +109,33 @@ def manual_submit(req: ManualSubmitRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/items/{session_id}")
-def get_manual_items(session_id: int, db: Session = Depends(get_db)):
-    """세션에서 수동 진단이 필요한 항목 목록을 반환한다."""
+def get_manual_items(
+    session_id: int,
+    excluded_tools: str = "",
+    db: Session = Depends(get_db),
+):
+    """수동 진단 항목 + 미사용 도구 항목을 반환한다.
+    excluded_tools: 쉼표 구분 도구명 (예: 'nmap,trivy') — 해당 도구 자동 항목도 수동으로 포함.
+    """
     session = db.query(DiagnosisSession).filter(
         DiagnosisSession.session_id == session_id
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
-    manual_items = db.query(Checklist).filter(
-        Checklist.diagnosis_type == "수동"
-    ).all()
+    excluded_list = [t.strip().lower() for t in excluded_tools.split(",") if t.strip()]
+
+    if excluded_list:
+        manual_items = db.query(Checklist).filter(
+            or_(
+                Checklist.diagnosis_type == "수동",
+                Checklist.tool.in_(excluded_list),
+            )
+        ).all()
+    else:
+        manual_items = db.query(Checklist).filter(
+            Checklist.diagnosis_type == "수동"
+        ).all()
 
     submitted = {
         r.check_id
