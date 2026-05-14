@@ -16,10 +16,17 @@ from scoring.engine import score_session, determine_maturity_level
 
 router = APIRouter()
 
-SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "")
-SHUFFLE_API_KEY = os.environ.get("SHUFFLE_API_KEY", "")
-SHUFFLE_WORKFLOW_ID = os.environ.get("SHUFFLE_WORKFLOW_ID", "")
-SELF_BASE_URL = os.getenv("SELF_BASE_URL", "http://zt-backend:8000")
+SHUFFLE_URL     = os.getenv("SHUFFLE_URL", "")
+SHUFFLE_API_KEY = os.getenv("SHUFFLE_API_KEY", "")
+SELF_BASE_URL   = os.getenv("SELF_BASE_URL", "http://zt-backend:8000")
+
+# 도구별 개별 워크플로우 ID (Shuffle UI에서 워크플로우 만든 후 입력)
+SHUFFLE_WF = {
+    "keycloak": os.getenv("SHUFFLE_WORKFLOW_KEYCLOAK", ""),
+    "wazuh":    os.getenv("SHUFFLE_WORKFLOW_WAZUH",    ""),
+    "nmap":     os.getenv("SHUFFLE_WORKFLOW_NMAP",     ""),
+    "trivy":    os.getenv("SHUFFLE_WORKFLOW_TRIVY",    ""),
+}
 
 
 class AssessmentRunRequest(BaseModel):
@@ -69,19 +76,15 @@ def run_assessment(
     tool_scope = req.tool_scope if req.tool_scope else {
         "keycloak": True, "wazuh": True, "nmap": True, "trivy": True
     }
-    any_auto = any(tool_scope.values())
 
-    if SHUFFLE_WORKFLOW_ID:
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                client.post(
-                    f"{SHUFFLE_URL}/api/v1/workflows/{SHUFFLE_WORKFLOW_ID}/execute",
-                    headers={"Authorization": f"Bearer {SHUFFLE_API_KEY}"},
-                    json={"execution_argument": {"session_id": session.session_id}},
-                )
-        except Exception:
-            pass
-    elif any_auto:
+    selected_tools = [t for t, enabled in tool_scope.items() if enabled]
+
+    # Shuffle 워크플로우가 하나라도 등록돼 있으면 Shuffle 경로 사용
+    has_shuffle = SHUFFLE_URL and any(SHUFFLE_WF.get(t) for t in selected_tools)
+
+    if has_shuffle:
+        _trigger_shuffle_workflows(session.session_id, selected_tools)
+    elif selected_tools:
         import threading
         thread = threading.Thread(
             target=_run_collectors,
@@ -187,6 +190,29 @@ def assessment_webhook(payload: dict, db: Session = Depends(get_db)):
 
     db.commit()
     return {"status": "ok", "saved": len(results)}
+
+
+def _trigger_shuffle_workflows(session_id: int, selected_tools: list[str]):
+    """선택된 도구에 해당하는 Shuffle 워크플로우만 개별 트리거한다."""
+    payload = {
+        "execution_argument": {
+            "session_id": session_id,
+            "webhook_url": f"{SELF_BASE_URL}/api/assessment/webhook",
+        }
+    }
+    with httpx.Client(timeout=10.0) as client:
+        for tool in selected_tools:
+            wf_id = SHUFFLE_WF.get(tool, "")
+            if not wf_id:
+                continue
+            try:
+                client.post(
+                    f"{SHUFFLE_URL}/api/v1/workflows/{wf_id}/execute",
+                    headers={"Authorization": f"Bearer {SHUFFLE_API_KEY}"},
+                    json=payload,
+                )
+            except Exception:
+                pass
 
 
 def _trigger_scoring(session_id: int, db: Session):
