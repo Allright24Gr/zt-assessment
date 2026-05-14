@@ -1,9 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router";
-import { CheckCircle, ChevronDown, ChevronRight, Loader2, Shield } from "lucide-react";
+import { CheckCircle, ChevronDown, ChevronRight, Download, Loader2, Shield, Upload } from "lucide-react";
 import { toast } from "sonner";
-import { getManualItems, submitManual, finalizeAssessment } from "../../config/api";
+import {
+  getManualItems, submitManual, finalizeAssessment,
+  getAssessmentStatus, uploadManualExcel,
+} from "../../config/api";
 import type { ManualItemDetail } from "../../types/api";
+
+const MANUAL_TEMPLATE_URL = "http://localhost:8000/api/manual/template";
 
 const RESULT_OPTIONS = [
   { value: "충족", label: "충족", color: "text-green-700 border-green-400 bg-green-50" },
@@ -31,6 +36,11 @@ export function InProgress() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [autoRunning, setAutoRunning] = useState(false);
+  const [collectionDone, setCollectionDone] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMode, setUploadMode] = useState<"form" | "excel">("form");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const sid = sessionId && sessionId !== "demo" ? sessionId : null;
 
@@ -40,26 +50,45 @@ export function InProgress() {
       return;
     }
 
-    // 선택된 도구가 하나라도 있으면 자동 수집 진행 중 표시
-    const hasAutoTools = excludedTools.split(",").length < 4;
-    setAutoRunning(hasAutoTools && excludedTools !== "keycloak,wazuh,nmap,trivy");
+    const hasAutoTools = excludedTools !== "keycloak,wazuh,nmap,trivy" && excludedTools.split(",").filter(Boolean).length < 4;
+    setAutoRunning(hasAutoTools);
 
     getManualItems(sid, excludedTools)
       .then((res) => {
         setItems(res.items);
-        // 제출된 항목은 기본값으로 "충족" 표시 (이미 제출된 것은 재답변 필요 없음)
         const pre: Record<string, ResultValue> = {};
         res.items.forEach((item) => {
           if (item.submitted) pre[item.item_id] = "충족";
         });
         setAnswers(pre);
-        // 첫 번째 필러 자동 펼치기
         const firstPillar = res.items[0]?.pillar;
         if (firstPillar) setExpandedPillars({ [firstPillar]: true });
       })
       .catch(() => toast.error("항목 로드 실패. 새로고침 해주세요."))
       .finally(() => setLoading(false));
   }, [sid, excludedTools]);
+
+  // 자동수집 폴링
+  useEffect(() => {
+    if (!sid || !autoRunning || collectionDone) return;
+
+    pollRef.current = setInterval(() => {
+      getAssessmentStatus(sid)
+        .then((s) => {
+          if (s.collection_done) {
+            setCollectionDone(true);
+            setAutoRunning(false);
+            if (pollRef.current) clearInterval(pollRef.current);
+            toast.success("자동 수집이 완료되었습니다.");
+          }
+        })
+        .catch(() => {/* 폴링 오류는 무시 */});
+    }, 5000);
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [sid, autoRunning, collectionDone]);
 
   const byPillar = items.reduce<Record<string, ManualItemDetail[]>>((acc, item) => {
     (acc[item.pillar] ??= []).push(item);
@@ -70,6 +99,29 @@ export function InProgress() {
   const answeredCount = Object.keys(answers).length;
   const allAnswered = totalCount > 0 && answeredCount >= totalCount;
   const progress = totalCount > 0 ? Math.round((answeredCount / totalCount) * 100) : 0;
+
+  const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !sid) return;
+    if (!file.name.endsWith(".xlsx")) {
+      toast.error(".xlsx 파일만 업로드 가능합니다.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const res = await uploadManualExcel(sid, file);
+      toast.success(`${res.parsed_count}개 항목이 업로드되었습니다.`);
+      await finalizeAssessment(sid);
+      toast.success("진단이 완료되었습니다.");
+      navigate(`/reporting/${sid}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "업로드 중 오류가 발생했습니다.";
+      toast.error(msg);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   const handleSubmit = async () => {
     if (!sid) {
@@ -149,13 +201,70 @@ export function InProgress() {
         )}
       </div>
 
-      {/* 설명 */}
+      {/* 입력 방식 선택 탭 */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="flex border-b border-gray-100">
+          <button
+            onClick={() => setUploadMode("form")}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${uploadMode === "form" ? "bg-blue-50 text-blue-700 border-b-2 border-blue-600" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            웹 설문 작성
+          </button>
+          <button
+            onClick={() => setUploadMode("excel")}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${uploadMode === "excel" ? "bg-blue-50 text-blue-700 border-b-2 border-blue-600" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            Excel 파일 업로드
+          </button>
+        </div>
+
+        {uploadMode === "excel" && (
+          <div className="px-5 py-5 space-y-4">
+            <p className="text-sm text-gray-600">
+              수동 진단 체크리스트 Excel을 다운로드하여 작성한 후 업로드하세요.
+              업로드 즉시 점수 계산이 시작됩니다.
+            </p>
+            <div className="flex gap-3">
+              <a
+                href={`${import.meta.env.VITE_API_BASE ?? "http://localhost:8000"}/api/manual/template`}
+                download="manual-checklist-template.xlsx"
+                className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
+              >
+                <Download size={15} />
+                템플릿 다운로드
+              </a>
+              <label className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer transition-colors ${uploading ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"}`}>
+                {uploading ? (
+                  <><Loader2 size={15} className="animate-spin" /> 업로드 중...</>
+                ) : (
+                  <><Upload size={15} /> Excel 파일 선택</>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={handleExcelUpload}
+                />
+              </label>
+            </div>
+            <p className="text-xs text-gray-400">
+              지원 형식: .xlsx — 파일 내 <strong>★ 담당자 선택 (필수)</strong> 열을 모두 작성 후 업로드하세요.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* 설명 (웹 설문 모드에서만) */}
+      {uploadMode === "form" && (
       <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-800">
         <strong>답변 기준</strong>: 귀사의 현재 보안 환경 기준으로 답변해 주세요. 확인이 어려운 항목은 <strong>해당 없음</strong>을 선택하세요.
       </div>
+      )}
 
-      {/* 항목 목록 */}
-      {totalCount === 0 ? (
+      {/* 항목 목록 (웹 설문 모드에서만) */}
+      {uploadMode === "form" && (totalCount === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
           <CheckCircle size={40} className="mx-auto text-green-500 mb-3" />
           <p className="font-semibold text-gray-700">수동 진단 항목이 없습니다</p>
@@ -259,10 +368,10 @@ export function InProgress() {
             );
           })}
         </div>
-      )}
+      ))}
 
-      {/* 제출 버튼 */}
-      {totalCount > 0 && (
+      {/* 제출 버튼 (웹 설문 모드에서만) */}
+      {uploadMode === "form" && totalCount > 0 && (
         <div className="sticky bottom-6">
           <button
             onClick={handleSubmit}

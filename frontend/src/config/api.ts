@@ -24,6 +24,7 @@ export const API_ENDPOINTS = {
   SCORE_SUMMARY: "/api/score/summary",
   SCORE_TREND: "/api/score/trend",
   MANUAL_SUBMIT: "/api/manual/submit",
+  MANUAL_UPLOAD: "/api/manual/upload",
   CHECKLIST: "/api/checklist",
   IMPROVEMENT: "/api/improvement",
   REPORT_GENERATE: "/api/report/generate",
@@ -156,5 +157,25 @@ export function finalizeAssessment(sessionId: number | string) {
   return apiFetch<{ status: string; session_id: number }>(
     API_ENDPOINTS.ASSESSMENT_FINALIZE,
     { method: "POST", params: { session_id: sessionId } },
+  );
+}
+
+export function getAssessmentStatus(sessionId: number | string) {
+  return apiFetch<{
+    session_id: number;
+    status: string;
+    collected_count: number;
+    auto_total: number;
+    collection_done: boolean;
+  }>(`/api/assessment/status/${sessionId}`);
+}
+
+export function uploadManualExcel(sessionId: number | string, file: File) {
+  const form = new FormData();
+  form.append("session_id", String(sessionId));
+  form.append("file", file);
+  return apiFetch<{ status: string; session_id: number; parsed_count: number }>(
+    API_ENDPOINTS.MANUAL_UPLOAD,
+    { method: "POST", body: form },
   );
 }

@@ -98,6 +98,32 @@ def run_assessment(
     }
 
 
+@router.get("/status/{session_id}")
+def get_assessment_status(session_id: int, db: Session = Depends(get_db)):
+    """자동 수집 진행 상태를 반환한다 (프론트 폴링용)."""
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    collected_count = db.query(func.count(CollectedData.data_id)).filter(
+        CollectedData.session_id == session_id
+    ).scalar()
+
+    auto_total = db.query(func.count(Checklist.check_id)).filter(
+        Checklist.diagnosis_type != "수동"
+    ).scalar()
+
+    return {
+        "session_id": session_id,
+        "status": session.status,
+        "collected_count": collected_count,
+        "auto_total": auto_total,
+        "collection_done": collected_count >= auto_total if auto_total > 0 else True,
+    }
+
+
 @router.post("/finalize")
 def finalize_assessment(session_id: int, db: Session = Depends(get_db)):
     """수동 제출 완료 후 채점을 명시적으로 트리거한다."""
