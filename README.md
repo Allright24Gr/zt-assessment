@@ -4,12 +4,15 @@
 
 ## 프로젝트 구조
 
+```
 zt-assessment/
 ├── frontend/        React + Vite 프론트엔드
 ├── backend/         FastAPI 백엔드
 ├── nmap-wrapper/    Nmap CLI 래퍼 서버 (Flask)
 ├── trivy-wrapper/   Trivy CLI 래퍼 서버 (Flask)
+├── deploy.sh        EC2 배포 스크립트
 └── docker-compose.yml
+```
 
 ## 기술 스택
 
@@ -25,78 +28,118 @@ zt-assessment/
 | 데이터 저장 | MySQL, Elasticsearch |
 | 인프라 | Docker, Docker Compose, AWS EC2 |
 
-## 로컬 개발 환경 세팅
+---
+
+## EC2 배포
+
+### 1. 코드 받기
+
+```bash
+git clone https://github.com/Allright24Gr/zt-assessment
+cd zt-assessment
+git checkout dev
+```
+
+### 2. 배포 실행
+
+EC2 퍼블릭 IP를 인자로 넘기면 끝. IP는 EC2 재시작마다 바뀌므로 매번 확인 후 입력.
+
+```bash
+./deploy.sh <EC2_퍼블릭_IP>
+# 예: ./deploy.sh 1.2.3.4
+```
+
+인자 없이 실행하면 프롬프트로 물어봄:
+
+```bash
+./deploy.sh
+# EC2 퍼블릭 IP를 입력하세요 (예: 1.2.3.4):
+```
+
+내부적으로 `VITE_API_BASE`, `CORS_ORIGINS`를 해당 IP로 세팅하고 `docker compose up -d --build` 실행.
+
+### 3. 서비스 접속 주소 (EC2)
+
+| 서비스 | 주소 |
+|---|---|
+| 프론트엔드 | `http://<EC2_IP>:8080` |
+| 백엔드 API 문서 | `http://<EC2_IP>:8000/docs` |
+| Shuffle UI | `http://<EC2_IP>:3001` |
+| Keycloak | `http://<EC2_IP>:8443` |
+| Wazuh API | `https://<EC2_IP>:55000` |
+
+### 4. Shuffle 워크플로우 연동 (자동수집 사용 시)
+
+1. `http://<EC2_IP>:3001` 에서 Shuffle UI 접속
+2. 도구별 워크플로우 4개 생성 (Keycloak, Wazuh, Nmap, Trivy)
+3. 각 워크플로우 ID를 `.env`에 입력:
+
+```env
+SHUFFLE_URL=http://shuffle-backend:5001
+SHUFFLE_API_KEY=<Shuffle에서 발급>
+SHUFFLE_WORKFLOW_KEYCLOAK=<워크플로우 ID>
+SHUFFLE_WORKFLOW_WAZUH=<워크플로우 ID>
+SHUFFLE_WORKFLOW_NMAP=<워크플로우 ID>
+SHUFFLE_WORKFLOW_TRIVY=<워크플로우 ID>
+```
+
+4. 백엔드 재시작:
+
+```bash
+docker compose restart zt-backend
+```
+
+---
+
+## 로컬 개발 환경
 
 ### 사전 준비
 
 - Docker, Docker Compose 설치
 - Git 설치
 
-### 실행 방법
+### 실행
 
+```bash
 git clone https://github.com/Allright24Gr/zt-assessment
 cd zt-assessment
 git checkout dev
-
-# 환경변수 설정
-cp .env.example .env
-# .env 파일 열어서 값 채우기
-
-# 전체 실행
 docker compose up -d
+```
 
 ### 서비스 접속 주소 (로컬)
 
-프론트엔드:    http://localhost:8080
-백엔드 API:    http://localhost:8000/docs
-Shuffle:       http://localhost:3000
-Keycloak:      http://localhost:8443
-Elasticsearch: http://localhost:9200
-Wazuh API:     https://localhost:55000
-Nmap 래퍼:    http://localhost:5000
-Trivy 래퍼:   http://localhost:5001
-
-### 단계별 실행 (메모리 절약)
-
-한 번에 전부 띄우면 메모리가 부족할 수 있다. 아래 순서로 단계별로 띄운다.
-
-# 1단계 - DB + 백엔드
-docker compose up -d mysql zt-backend
-
-# 2단계 - Keycloak
-docker compose up -d keycloak
-
-# 3단계 - Wazuh + Elasticsearch
-docker compose up -d elasticsearch wazuh
-
-# 4단계 - 나머지
-docker compose up -d shuffle nmap-wrapper trivy-wrapper zt-web
+| 서비스 | 주소 |
+|---|---|
+| 프론트엔드 | `http://localhost:8080` |
+| 백엔드 API 문서 | `http://localhost:8000/docs` |
+| Shuffle UI | `http://localhost:3001` |
+| Keycloak | `http://localhost:8443` |
+| Wazuh API | `https://localhost:55000` |
+| Nmap 래퍼 | `http://localhost:8001` |
+| Trivy 래퍼 | `http://localhost:8002` |
 
 ### 종료
 
+```bash
 docker compose down
+```
+
+---
 
 ## 브랜치 전략
 
-main    최종 배포본 (직접 push 금지)
-dev     통합 테스트 브랜치
+| 브랜치 | 용도 |
+|---|---|
+| `main` | 최종 배포본 (직접 push 금지) |
+| `dev` | 통합 테스트 브랜치 |
+| `feature/*` | 기능 개발 브랜치 |
 
-feature/backend-skeleton
-feature/keycloak-collector
-feature/wazuh-collector
-feature/nmap-trivy-wrapper
-feature/frontend-api-connect
-feature/shuffle-workflow
-feature/scoring-engine
+작업 흐름: `feature` 브랜치 → PR → `dev` 머지 → 테스트 후 `main` 머지
 
-작업 흐름: feature 브랜치 → PR → dev 머지 → 테스트 완료 후 main 머지
+---
 
 ## 환경변수
 
-.env.example 파일을 복사해서 .env 파일을 만들고 값을 채운다.
-
-cp .env.example .env
-
-.env 파일은 절대 GitHub에 올리지 않는다.
-
-# test
+`.env` 파일은 `.gitignore`에 포함되어 있어 GitHub에 올라가지 않음.
+민감 정보(DB 비밀번호, API 키 등)는 절대 코드에 하드코딩하지 않는다.
