@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
+import { API_BASE } from "../../config/api";
 import { FileText, Download, TrendingUp, AlertTriangle, AlertCircle, ArrowRight, ChevronDown, RotateCcw } from "lucide-react";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -275,6 +276,7 @@ export function Reporting() {
   const [detailPillarFilter, setDetailPillarFilter] = useState("all");
   const [detailQuestionQuery, setDetailQuestionQuery] = useState("");
   const [selectedRiskCode, setSelectedRiskCode] = useState<string | null>(null);
+  const [pdfDownloading, setPdfDownloading] = useState(false);
 
   const fallbackSession: Session = mockSessions.find((s) => s.id === Number(sessionId)) ?? mockSessions[0];
   const [session, setSession] = useState<Session>(fallbackSession);
@@ -847,12 +849,27 @@ export function Reporting() {
           <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
             <FileText className="mx-auto text-blue-500 mb-4" size={56} />
             <h2 className="mb-2">보고서 PDF 내보내기</h2>
-            <p className="text-gray-500 mb-8">진단 결과 전체를 PDF 문서로 다운로드할 수 있습니다</p>
+            <p className="text-gray-500 mb-2">진단 결과 전체를 PDF 문서로 다운로드합니다.</p>
+            <p className="text-sm text-gray-400 mb-8">
+              표지 · 필러별 점수 · 체크리스트 세부항목 · 개선 권고 순으로 구성됩니다.
+            </p>
             <div className="flex justify-center">
-              <button className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 font-medium">
+              <a
+                href={`${API_BASE}/api/report/generate?session_id=${sessionId}&fmt=pdf`}
+                download={`zt-report-${sessionId}.pdf`}
+                onClick={() => {
+                  setPdfDownloading(true);
+                  setTimeout(() => setPdfDownloading(false), 3000);
+                }}
+                className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium transition-colors ${
+                  pdfDownloading
+                    ? "bg-gray-300 text-gray-500 pointer-events-none"
+                    : "bg-blue-600 text-white hover:bg-blue-700"
+                }`}
+              >
                 <Download size={18} />
-                PDF 다운로드
-              </button>
+                {pdfDownloading ? "생성 중..." : "PDF 다운로드"}
+              </a>
             </div>
           </div>
         </div>
