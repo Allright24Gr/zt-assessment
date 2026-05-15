@@ -27,6 +27,10 @@ export const API_ENDPOINTS = {
   CHECKLIST: "/api/checklist",
   IMPROVEMENT: "/api/improvement",
   REPORT_GENERATE: "/api/report/generate",
+  AUTH_REGISTER: "/api/auth/register",
+  AUTH_LOGIN: "/api/auth/login",
+  AUTH_ME: "/api/auth/me",
+  AUTH_PROFILE: "/api/auth/profile",
 } as const;
 
 export class ApiError extends Error {
@@ -186,4 +190,63 @@ export function uploadManualExcel(sessionId: number | string, file: File) {
     API_ENDPOINTS.MANUAL_UPLOAD,
     { method: "POST", body: form },
   );
+}
+
+// ─── Auth ──────────────────────────────────────────────────────────────────
+
+export interface ProfileFields {
+  org_name?: string;
+  department?: string;
+  contact?: string;
+  org_type?: string;
+  infra_type?: string;
+  employees?: number;
+  servers?: number;
+  applications?: number;
+  note?: string;
+}
+
+export interface AuthUser {
+  user_id: number;
+  login_id: string;
+  name: string;
+  email?: string | null;
+  role: string;
+  org_id: number;
+  org_name: string;
+  profile?: ProfileFields | null;
+}
+
+export interface RegisterPayload {
+  login_id: string;
+  password: string;
+  name: string;
+  email?: string;
+  profile?: ProfileFields;
+}
+
+export function registerUser(payload: RegisterPayload) {
+  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_REGISTER, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function loginUser(login_id: string, password: string) {
+  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_LOGIN, {
+    method: "POST",
+    body: JSON.stringify({ login_id, password }),
+  });
+}
+
+export function fetchAuthMe(login_id: string) {
+  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_ME, { params: { login_id } });
+}
+
+export function updateAuthProfile(login_id: string, profile: ProfileFields) {
+  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_PROFILE, {
+    method: "PUT",
+    params: { login_id },
+    body: JSON.stringify({ profile }),
+  });
 }

@@ -32,6 +32,11 @@ class User(Base):
     role = Column(String(50), nullable=False, default="analyst")
     mfa_enabled = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
+    # 회원가입 / 로그인용
+    login_id = Column(String(100), unique=True, nullable=True)
+    password_hash = Column(String(200), nullable=True)
+    # 진단 시 자동 prefill용 사용자 프로필 (org_name/dept/employees/servers 등)
+    profile = Column(JSON, nullable=True)
 
     org = relationship("Organization", back_populates="users")
     sessions = relationship("DiagnosisSession", back_populates="manager")

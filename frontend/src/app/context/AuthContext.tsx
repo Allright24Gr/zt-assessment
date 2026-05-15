@@ -1,28 +1,45 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, ReactNode, useEffect } from "react";
+import { loginUser, registerUser, fetchAuthMe, type AuthUser, type RegisterPayload } from "../../config/api";
 
-interface User {
-  id: string;
+export interface User {
+  id: string;            // login_id
+  user_id: number;
   username: string;
   role: "admin" | "user";
   orgName?: string;
+  org_id?: number;
+  email?: string | null;
+  profile?: AuthUser["profile"];
 }
 
 interface AuthContextType {
   user: User | null;
-  login: (username: string, password: string) => boolean;
+  loading: boolean;
+  login: (login_id: string, password: string) => Promise<boolean>;
+  register: (payload: RegisterPayload) => Promise<boolean>;
   logout: () => void;
+  refresh: () => Promise<void>;
+  setUser: (u: User | null) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const STORAGE_KEY = "zt_user";
 
-const users = [
-  { id: "admin", password: "admin", role: "admin" as const, username: "관리자" },
-  { id: "user1", password: "user1", role: "user" as const, username: "박기웅", orgName: "세종대학교" },
-];
+function _toUser(u: AuthUser): User {
+  return {
+    id: u.login_id,
+    user_id: u.user_id,
+    username: u.name,
+    role: u.role === "admin" ? "admin" : "user",
+    orgName: u.org_name,
+    org_id: u.org_id,
+    email: u.email,
+    profile: u.profile,
+  };
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => {
+  const [user, setUserState] = useState<User | null>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       return stored ? (JSON.parse(stored) as User) : null;
@@ -30,30 +47,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null;
     }
   });
+  const [loading, setLoading] = useState(false);
 
-  const login = (username: string, password: string) => {
-    const foundUser = users.find((u) => u.id === username && u.password === password);
-    if (foundUser) {
-      const userObj: User = {
-        id: foundUser.id,
-        username: foundUser.username,
-        role: foundUser.role,
-        orgName: foundUser.orgName,
-      };
-      setUser(userObj);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(userObj));
-      return true;
-    }
-    return false;
+  // 페이지 새로고침 시 백엔드에서 최신 프로필 재조회
+  useEffect(() => {
+    if (!user?.id) return;
+    fetchAuthMe(user.id)
+      .then((latest) => {
+        const u = _toUser(latest);
+        setUserState(u);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
+      })
+      .catch(() => {
+        // 백엔드에 없으면 로그아웃 처리
+        setUserState(null);
+        localStorage.removeItem(STORAGE_KEY);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setUser = (u: User | null) => {
+    setUserState(u);
+    if (u) localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
+    else localStorage.removeItem(STORAGE_KEY);
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem(STORAGE_KEY);
+  const login = async (login_id: string, password: string) => {
+    setLoading(true);
+    try {
+      const res = await loginUser(login_id, password);
+      setUser(_toUser(res));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const register = async (payload: RegisterPayload) => {
+    setLoading(true);
+    try {
+      const res = await registerUser(payload);
+      setUser(_toUser(res));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logout = () => setUser(null);
+
+  const refresh = async () => {
+    if (!user?.id) return;
+    try {
+      const latest = await fetchAuthMe(user.id);
+      setUser(_toUser(latest));
+    } catch {
+      // ignore
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, refresh, setUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -10,6 +10,10 @@ MIGRATIONS = [
     # (테이블, 컬럼, 컬럼 타입)
     ("DiagnosisSession", "selected_tools", "JSON NULL"),
     ("DiagnosisSession", "extra",          "JSON NULL"),
+    # 회원가입 / 로그인용
+    ("User",             "login_id",       "VARCHAR(100) NULL UNIQUE"),
+    ("User",             "password_hash",  "VARCHAR(200) NULL"),
+    ("User",             "profile",        "JSON NULL"),
 ]
 
 # 한글 ENUM은 charset 미스매치 시 'Data truncated' 에러를 자주 일으킴.

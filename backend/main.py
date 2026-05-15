@@ -5,7 +5,7 @@ import os
 
 load_dotenv()
 
-from routers import assessment, score, improvement, report, manual, checklist
+from routers import assessment, score, improvement, report, manual, checklist, auth
 
 app = FastAPI(title="ZT Assessment API", version="1.0.0")
 
@@ -25,6 +25,7 @@ app.include_router(improvement.router,prefix="/api/improvement",tags=["improveme
 app.include_router(report.router,     prefix="/api/report",     tags=["report"])
 app.include_router(manual.router,     prefix="/api/manual",     tags=["manual"])
 app.include_router(checklist.router,  prefix="/api/checklist",  tags=["checklist"])
+app.include_router(auth.router,       prefix="/api/auth",       tags=["auth"])
 
 
 @app.get("/health")

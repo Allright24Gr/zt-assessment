@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, Link } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { Shield, AlertCircle } from "lucide-react";
 
@@ -21,11 +21,12 @@ export function Login() {
     }
   }, [user, navigate]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
-    if (login(username, password)) {
+    const ok = await login(username, password);
+    if (ok) {
       navigate("/");
     } else {
       setError("아이디 또는 비밀번호가 올바르지 않습니다.");
@@ -103,6 +104,12 @@ export function Login() {
               </button>
             ))}
           </div>
+          <p className="text-center mt-4 text-sm text-gray-500">
+            계정이 없으신가요?{" "}
+            <Link to="/signup" className="text-blue-600 hover:underline">
+              회원가입
+            </Link>
+          </p>
         </div>
       </div>
     </div>

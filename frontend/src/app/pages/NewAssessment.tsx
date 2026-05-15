@@ -1,9 +1,10 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { Building2, Upload, CheckCircle2, FileText, X, Wrench, Info } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
+import { useAuth } from "../context/AuthContext";
 
 const TOOLS = [
   {
@@ -37,8 +38,10 @@ const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azu
 
 export function NewAssessment() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState(1);
+  const [prefillNotice, setPrefillNotice] = useState(false);
   const [formData, setFormData] = useState({
     orgName: "",
     manager: "",
@@ -52,6 +55,37 @@ export function NewAssessment() {
     applications: "",
     note: "",
   });
+
+  // 로그인 사용자 프로필이 있으면 폼을 자동 채움. 사용자가 임시저장한 draft가
+  // 있으면 draft가 우선이며, draft가 없을 때만 프로필을 끌어옴.
+  useEffect(() => {
+    if (!user) return;
+    let drafted = false;
+    try {
+      drafted = !!localStorage.getItem("zt_new_assessment_draft");
+    } catch { /* ignore */ }
+    if (drafted) return;
+
+    const p = user.profile || {};
+    const next = {
+      orgName:      p.org_name      ?? user.orgName ?? "",
+      manager:      user.username   ?? "",
+      department:   p.department    ?? "",
+      email:        user.email      ?? "",
+      contact:      p.contact       ?? "",
+      orgType:      p.org_type      ?? "기업",
+      infraType:    p.infra_type    ?? "온프레미스",
+      employees:    p.employees     != null ? String(p.employees)    : "",
+      servers:      p.servers       != null ? String(p.servers)      : "",
+      applications: p.applications  != null ? String(p.applications) : "",
+      note:         p.note          ?? "",
+    };
+    setFormData(next);
+    if (p.org_name || p.department || p.contact || p.org_type ||
+        p.infra_type || p.employees || p.servers || p.applications || p.note) {
+      setPrefillNotice(true);
+    }
+  }, [user]);
   const [pillarScope, setPillarScope] = useState<Record<string, boolean>>(
     Object.fromEntries(PILLARS.map((p) => [p.key, true]))
   );
@@ -169,6 +203,13 @@ export function NewAssessment() {
               <Building2 className="text-blue-600" size={24} />
               <h2>Step 1: 기업 환경 입력</h2>
             </div>
+
+            {prefillNotice && (
+              <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900">
+                <Info size={16} className="mt-0.5 shrink-0" />
+                <span>가입 시 등록한 진단 프로필이 자동으로 입력되었습니다. 필요 시 수정해주세요.</span>
+              </div>
+            )}
 
             {/* 기관 정보 */}
             <div>
