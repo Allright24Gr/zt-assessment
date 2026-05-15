@@ -255,18 +255,70 @@ def run_assessment(
 
 @router.get("/status/{session_id}")
 def get_assessment_status(session_id: int, db: Session = Depends(get_db)):
-    """자동 수집 진행 상태를 반환한다 (프론트 폴링용)."""
+    """자동 수집 진행 상태를 반환한다 (프론트 폴링용).
+
+    도구별 / 필러별 진행률까지 포함하여 InProgress 페이지의 시각화에 그대로 사용 가능.
+    """
     session = _get_session_or_404(db, session_id)
     tools = _selected_tools_set(session)
-    auto_total = _expected_auto_count(db, tools)
 
+    # 도구별 mapping에서 expected item_id 모으기
+    tool_item_ids: dict[str, set[str]] = {}
+    for tool in tools:
+        mapping_fn = _TOOL_DISPATCH.get(tool, (None, False))[0]
+        if mapping_fn is None:
+            continue
+        try:
+            tool_item_ids[tool] = {item_id for _fn, item_id, _m in mapping_fn()}
+        except Exception as exc:
+            logger.warning("[status] %s mapping failed: %s", tool, exc)
+            tool_item_ids[tool] = set()
+
+    all_item_ids = set().union(*tool_item_ids.values()) if tool_item_ids else set()
+    auto_total = 0
+    expected_checks: list[Checklist] = []
+    if all_item_ids:
+        expected_checks = db.query(Checklist).filter(
+            Checklist.item_id.in_(all_item_ids)
+        ).all()
+        auto_total = len(expected_checks)
+
+    # 실제 수집된 데이터 (도구별/check_id별)
+    collected_rows = []
     if tools:
-        collected_count = db.query(func.count(CollectedData.data_id)).filter(
+        collected_rows = db.query(CollectedData).filter(
             CollectedData.session_id == session_id,
             CollectedData.tool.in_(tools),
-        ).scalar() or 0
-    else:
-        collected_count = 0
+        ).all()
+    collected_check_ids = {r.check_id for r in collected_rows}
+    collected_by_tool: dict[str, int] = {}
+    for r in collected_rows:
+        collected_by_tool[r.tool] = collected_by_tool.get(r.tool, 0) + 1
+
+    # 도구별 진행률
+    tool_progress = []
+    for tool in sorted(tools):
+        expected = len(tool_item_ids.get(tool, set()))
+        collected = collected_by_tool.get(tool, 0)
+        tool_progress.append({
+            "tool":      tool,
+            "collected": collected,
+            "expected":  expected,
+        })
+
+    # 필러별 진행률 (check_id 기준)
+    pillar_expected: dict[str, int] = {}
+    pillar_collected: dict[str, int] = {}
+    for cl in expected_checks:
+        pillar_expected[cl.pillar] = pillar_expected.get(cl.pillar, 0) + 1
+        if cl.check_id in collected_check_ids:
+            pillar_collected[cl.pillar] = pillar_collected.get(cl.pillar, 0) + 1
+    pillar_progress = [
+        {"pillar": p, "collected": pillar_collected.get(p, 0), "expected": exp}
+        for p, exp in pillar_expected.items()
+    ]
+
+    collected_count = len(collected_check_ids)
 
     return {
         "session_id":      session_id,
@@ -275,6 +327,8 @@ def get_assessment_status(session_id: int, db: Session = Depends(get_db)):
         "collected_count": collected_count,
         "auto_total":      auto_total,
         "collection_done": auto_total == 0 or collected_count >= auto_total,
+        "tool_progress":   tool_progress,
+        "pillar_progress": pillar_progress,
     }
 
 

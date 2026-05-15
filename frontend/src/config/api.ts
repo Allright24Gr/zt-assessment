@@ -163,15 +163,19 @@ export function finalizeAssessment(sessionId: number | string) {
   );
 }
 
+export interface AssessmentStatusResponse {
+  session_id: number;
+  status: string;
+  selected_tools: string[];
+  collected_count: number;
+  auto_total: number;
+  collection_done: boolean;
+  tool_progress: Array<{ tool: string; collected: number; expected: number }>;
+  pillar_progress: Array<{ pillar: string; collected: number; expected: number }>;
+}
+
 export function getAssessmentStatus(sessionId: number | string) {
-  return apiFetch<{
-    session_id: number;
-    status: string;
-    selected_tools: string[];
-    collected_count: number;
-    auto_total: number;
-    collection_done: boolean;
-  }>(`/api/assessment/status/${sessionId}`);
+  return apiFetch<AssessmentStatusResponse>(`/api/assessment/status/${sessionId}`);
 }
 
 export function uploadManualExcel(sessionId: number | string, file: File) {
