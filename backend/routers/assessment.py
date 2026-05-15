@@ -61,11 +61,27 @@ def _selected_tools_set(session: DiagnosisSession) -> set[str]:
 
 
 def _expected_auto_count(db: Session, tools: set[str]) -> int:
-    """선택된 자동수집 도구 항목 수를 반환. 비어있으면 0."""
+    """선택된 도구의 collector 매핑에 등록된 item_id 중 DB에 실재하는 항목 수.
+
+    DB의 tool 컬럼 기준이 아니라 실제 dispatch mapping 기반으로 계산해야
+    collector가 처리하지 않는 항목까지 expected에 포함되는 불일치를 피한다.
+    """
     if not tools:
         return 0
+    item_ids: set[str] = set()
+    for tool in tools:
+        mapping_fn = _TOOL_DISPATCH.get(tool, (None, False))[0]
+        if mapping_fn is None:
+            continue
+        try:
+            for _fn, item_id, _maturity in mapping_fn():
+                item_ids.add(item_id)
+        except Exception as exc:
+            logger.warning("[expected_count] %s mapping failed: %s", tool, exc)
+    if not item_ids:
+        return 0
     return db.query(func.count(Checklist.check_id)).filter(
-        Checklist.tool.in_(tools)
+        Checklist.item_id.in_(item_ids)
     ).scalar() or 0
 
 
