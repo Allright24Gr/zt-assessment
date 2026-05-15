@@ -12,6 +12,14 @@ MIGRATIONS = [
     ("DiagnosisSession", "extra",          "JSON NULL"),
 ]
 
+# 한글 ENUM은 charset 미스매치 시 'Data truncated' 에러를 자주 일으킴.
+# VARCHAR로 변환하여 안정성 확보.
+ENUM_TO_VARCHAR = [
+    ("DiagnosisSession", "status", "VARCHAR(20) NOT NULL DEFAULT '진행 중'"),
+    ("DiagnosisResult",  "result", "VARCHAR(10) NOT NULL"),
+    ("ImprovementGuide", "term",   "VARCHAR(10) NOT NULL"),
+]
+
 
 def column_exists(conn, table: str, column: str) -> bool:
     row = conn.execute(text("""
@@ -21,13 +29,31 @@ def column_exists(conn, table: str, column: str) -> bool:
     return bool(row)
 
 
+def column_type(conn, table: str, column: str) -> str:
+    row = conn.execute(text("""
+        SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = :c
+    """), {"t": table, "c": column}).scalar()
+    return (row or "").lower()
+
+
 def run():
     with engine.begin() as conn:
+        # 1) 새 컬럼 추가
         for table, column, coltype in MIGRATIONS:
             if column_exists(conn, table, column):
                 print(f"[migrate] {table}.{column} 이미 존재 — 건너뜀")
                 continue
             sql = f"ALTER TABLE `{table}` ADD COLUMN `{column}` {coltype}"
+            print(f"[migrate] {sql}")
+            conn.execute(text(sql))
+
+        # 2) ENUM → VARCHAR 변환 (한글 charset 문제 해결)
+        for table, column, coltype in ENUM_TO_VARCHAR:
+            current = column_type(conn, table, column)
+            if not current.startswith("enum"):
+                continue
+            sql = f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` {coltype}"
             print(f"[migrate] {sql}")
             conn.execute(text(sql))
 

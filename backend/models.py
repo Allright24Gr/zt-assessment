@@ -43,11 +43,7 @@ class DiagnosisSession(Base):
     session_id = Column(Integer, primary_key=True, autoincrement=True)
     org_id = Column(Integer, ForeignKey("Organization.org_id"), nullable=False)
     user_id = Column(Integer, ForeignKey("User.user_id"), nullable=False)
-    status = Column(
-        Enum("진행 중", "완료", "오류", name="session_status"),
-        nullable=False,
-        default="진행 중",
-    )
+    status = Column(String(20), nullable=False, default="진행 중")
     level = Column(String(20), nullable=True)
     total_score = Column(Float, nullable=True)
     started_at = Column(DateTime, server_default=func.now())
@@ -135,10 +131,7 @@ class DiagnosisResult(Base):
     result_id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(Integer, ForeignKey("DiagnosisSession.session_id"), nullable=False)
     check_id = Column(Integer, ForeignKey("Checklist.check_id"), nullable=False)
-    result = Column(
-        Enum("충족", "부분충족", "미충족", "평가불가", name="diagnosis_result"),
-        nullable=False,
-    )
+    result = Column(String(10), nullable=False)
     score = Column(Float, nullable=True)
     recommendation = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
@@ -177,10 +170,7 @@ class ImprovementGuide(Base):
         Enum("Critical", "High", "Medium", "Low", name="priority_level"),
         nullable=False,
     )
-    term = Column(
-        Enum("단기", "중기", "장기", name="improvement_term"),
-        nullable=False,
-    )
+    term = Column(String(10), nullable=False)
     duration = Column(String(100), nullable=True)
     difficulty = Column(String(50), nullable=True)
     owner = Column(String(100), nullable=True)
