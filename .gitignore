@@ -11,7 +11,12 @@ localtunnel.err.log
 .env
 .env.*
 !.env.example
+
+# Claude Code 로컬 설정 + 에이전트 정의 (팀에 공유 안 함)
 .claude/
+
+# 코드 리뷰 분배용 로컬 문서 (수기로 팀원에게 전달, repo에 안 올림)
+review/
 
 # 환경변수
 .env
