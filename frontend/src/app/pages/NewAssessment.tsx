@@ -410,7 +410,9 @@ export function NewAssessment() {
             </div>
 
             <div>
-              <label className="block mb-2">증적 자료 업로드</label>
+              <label className="block mb-2">
+                증적 자료 업로드 <span className="text-gray-400 text-sm font-normal">(선택)</span>
+              </label>
               <input
                 ref={fileInputRef}
                 type="file"

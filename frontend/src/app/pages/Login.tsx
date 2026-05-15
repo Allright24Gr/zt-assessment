@@ -1,17 +1,22 @@
 import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router";
 import { useAuth } from "../context/AuthContext";
-import { Shield, AlertCircle } from "lucide-react";
+import { Shield, AlertCircle, X, Mail } from "lucide-react";
 
 const DEMO_ACCOUNTS = [
   { label: "관리자", id: "admin", role: "관리자" },
   { label: "박기웅 (세종대학교)", id: "user1", role: "일반 사용자" },
 ];
 
+type RecoveryMode = null | "id" | "password";
+
 export function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [recovery, setRecovery] = useState<RecoveryMode>(null);
+  const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [recoverySent, setRecoverySent] = useState(false);
   const { user, login } = useAuth();
   const navigate = useNavigate();
 
@@ -36,6 +41,25 @@ export function Login() {
   const handleDemoLogin = (id: string) => {
     setUsername(id);
     setPassword(id);
+  };
+
+  const openRecovery = (mode: RecoveryMode) => {
+    setRecovery(mode);
+    setRecoveryEmail("");
+    setRecoverySent(false);
+  };
+
+  const closeRecovery = () => {
+    setRecovery(null);
+    setRecoveryEmail("");
+    setRecoverySent(false);
+  };
+
+  const submitRecovery = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryEmail.trim())) return;
+    // 데모 빌드 — 실제 메일 발송 미구현. UI만 동작.
+    setRecoverySent(true);
   };
 
   return (
@@ -87,6 +111,24 @@ export function Login() {
           >
             로그인
           </button>
+
+          <div className="flex items-center justify-center gap-4 text-xs text-gray-500">
+            <button
+              type="button"
+              onClick={() => openRecovery("id")}
+              className="hover:text-blue-600 hover:underline"
+            >
+              아이디 찾기
+            </button>
+            <span className="text-gray-300">|</span>
+            <button
+              type="button"
+              onClick={() => openRecovery("password")}
+              className="hover:text-blue-600 hover:underline"
+            >
+              비밀번호 찾기
+            </button>
+          </div>
         </form>
 
         <div className="mt-8 pt-6 border-t border-gray-200">
@@ -112,6 +154,79 @@ export function Login() {
           </p>
         </div>
       </div>
+
+      {recovery && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={closeRecovery}
+        >
+          <div
+            className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={closeRecovery}
+              className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
+              aria-label="닫기"
+            >
+              <X size={18} />
+            </button>
+            <div className="flex items-center gap-2 mb-3">
+              <Mail size={18} className="text-blue-600" />
+              <h2 className="text-base font-semibold text-gray-900">
+                {recovery === "id" ? "아이디 찾기" : "비밀번호 찾기"}
+              </h2>
+            </div>
+            {!recoverySent ? (
+              <>
+                <p className="text-sm text-gray-600 mb-4">
+                  가입 시 등록한 이메일을 입력해주세요.
+                  {recovery === "id"
+                    ? " 아이디 안내 메일을 발송합니다."
+                    : " 비밀번호 재설정 링크를 발송합니다."}
+                </p>
+                <form onSubmit={submitRecovery} className="space-y-3">
+                  <input
+                    type="email"
+                    value={recoveryEmail}
+                    onChange={(e) => setRecoveryEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="user@example.com"
+                    required
+                  />
+                  <button
+                    type="submit"
+                    className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                  >
+                    인증 메일 발송
+                  </button>
+                </form>
+                <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">
+                  * 데모 빌드입니다. 실제 메일 발송은 구현되어 있지 않으며,
+                  가입 시 입력한 이메일로 안내가 발송된다는 흐름만 시뮬레이션합니다.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-gray-700 mb-2">
+                  <span className="font-semibold">{recoveryEmail}</span> 으로 안내 메일을 발송했습니다.
+                </p>
+                <p className="text-xs text-gray-500 mb-4">
+                  메일이 도착하지 않으면 스팸함을 확인하거나 시스템 관리자에게 문의해주세요.
+                </p>
+                <button
+                  type="button"
+                  onClick={closeRecovery}
+                  className="w-full bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200 text-sm font-medium"
+                >
+                  닫기
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

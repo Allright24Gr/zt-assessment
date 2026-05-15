@@ -190,9 +190,9 @@ export function History() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-200 text-left bg-gray-50">
-                <th className="pb-3 px-4 whitespace-nowrap text-sm font-medium text-gray-500">선택</th>
+                <th className="py-3 px-4 whitespace-nowrap text-sm font-medium text-gray-500">선택</th>
                 {(["org", "date", "manager"] as SortKey[]).map((key) => (
-                  <th key={key} className="pb-3 px-4">
+                  <th key={key} className="py-3 px-4">
                     <button
                       onClick={() => toggleSort(key)}
                       className="flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-gray-800"
@@ -202,13 +202,13 @@ export function History() {
                     </button>
                   </th>
                 ))}
-                <th className="pb-3 px-4 text-sm font-medium text-gray-500">성숙도 등급</th>
-                <th className="pb-3 px-4 text-sm font-medium text-gray-500">점수</th>
-                <th className="pb-3 px-4 text-sm font-medium text-gray-500">상태</th>
+                <th className="py-3 px-4 text-sm font-medium text-gray-500">성숙도 등급</th>
+                <th className="py-3 px-4 text-sm font-medium text-gray-500">점수</th>
+                <th className="py-3 px-4 text-sm font-medium text-gray-500">상태</th>
                 {user?.role === "admin" && (
-                  <th className="pb-3 px-4 text-sm font-medium text-gray-500">오류</th>
+                  <th className="py-3 px-4 text-sm font-medium text-gray-500">오류</th>
                 )}
-                <th className="pb-3 px-4 text-sm font-medium text-gray-500">작업</th>
+                <th className="py-3 px-4 text-sm font-medium text-gray-500">작업</th>
               </tr>
             </thead>
             <tbody>

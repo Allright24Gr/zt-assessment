@@ -168,11 +168,41 @@ export function InProgress() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── 진행률 계산 (실제 데이터) ───────────────────────────────────────────────
-  const progress = useMemo(() => {
+  // ── 진행률 계산 ─────────────────────────────────────────────────────────────
+  // backend 실제 진행률
+  const realProgress = useMemo(() => {
     if (!status || status.auto_total === 0) return status?.collection_done ? 100 : 0;
     return Math.min(100, Math.round((status.collected_count / status.auto_total) * 100));
   }, [status]);
+
+  // 시연용 부드러운 진행 — 페이지 진입 후 최소 SMOOTH_TOTAL_MS에 걸쳐 0→99% 램프.
+  // backend가 더 느리면 backend를 따라가고, 더 빠르면 램프가 캡으로 작용.
+  const SMOOTH_TOTAL_MS = 90_000;
+  const [mountedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(t);
+  }, []);
+  const elapsedMs = now - mountedAt;
+  const smoothCap = Math.min(99, Math.floor((elapsedMs / SMOOTH_TOTAL_MS) * 100));
+  // 실제로 backend가 완료(realProgress===100 && collection_done)이고 시연시간도 다 지나야 100
+  const collectionDone = status?.collection_done ?? false;
+  const progress = collectionDone && elapsedMs >= SMOOTH_TOTAL_MS
+    ? 100
+    : Math.min(realProgress, smoothCap);
+
+  // 예상 남은 시간 (mm:ss)
+  const remainingMs = progress >= 100
+    ? 0
+    : Math.max(0, SMOOTH_TOTAL_MS - elapsedMs);
+  const remainingLabel = (() => {
+    if (progress >= 100) return "완료";
+    const totalSec = Math.ceil(remainingMs / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return m > 0 ? `약 ${m}분 ${s}초 남음` : `약 ${s}초 남음`;
+  })();
 
   const pillarProgressMap = useMemo(() => {
     const map = new Map<string, { collected: number; expected: number }>();
@@ -204,7 +234,6 @@ export function InProgress() {
     })
   ), [status]);
 
-  const collectionDone = status?.collection_done ?? false;
   const activePillarIndex = pillars.findIndex((p) => p.progress > 0 && p.progress < 100);
   const safeActivePillarIndex = activePillarIndex >= 0
     ? activePillarIndex
@@ -277,8 +306,9 @@ export function InProgress() {
   }, [logs]);
 
   // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만)
+  // 시연용 부드러운 진행을 위해 backend 완료 + smooth 진행률 100% 모두 만족해야 finalize.
   useEffect(() => {
-    if (!sid || !collectionDone || finalized || finalizing || manualCount > 0) return;
+    if (!sid || !collectionDone || progress < 100 || finalized || finalizing || manualCount > 0) return;
     setFinalizing(true);
     finalizeAssessment(sid)
       .then(() => {
@@ -291,7 +321,7 @@ export function InProgress() {
         toast.error("결과 확정 중 오류가 발생했습니다.");
       })
       .finally(() => setFinalizing(false));
-  }, [sid, collectionDone, manualCount, finalized, finalizing, navigate]);
+  }, [sid, collectionDone, progress, manualCount, finalized, finalizing, navigate]);
 
   // ── Excel 업로드 핸들러 ──────────────────────────────────────────────────────
   const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -342,9 +372,9 @@ export function InProgress() {
           </p>
         </div>
         <div className={`flex items-center gap-2 ${
-          collectionDone ? "text-green-600" : "text-blue-600"
+          progress >= 100 ? "text-green-600" : "text-blue-600"
         }`}>
-          {collectionDone ? <CheckCircle size={18} /> : <Loader2 size={18} className="animate-spin" />}
+          {progress >= 100 ? <CheckCircle size={18} /> : <Loader2 size={18} className="animate-spin" />}
           <span className="text-sm font-medium">{progress}% 완료</span>
         </div>
       </div>
@@ -359,7 +389,7 @@ export function InProgress() {
         </div>
         <div className="w-full bg-gray-200 rounded-full h-3">
           <div
-            className={`h-3 rounded-full transition-all duration-500 ${collectionDone ? "bg-green-500" : "bg-blue-600"}`}
+            className={`h-3 rounded-full transition-all duration-500 ${progress >= 100 ? "bg-green-500" : "bg-blue-600"}`}
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -369,8 +399,8 @@ export function InProgress() {
               ? status.selected_tools.map((t) => t.toUpperCase()).join(" · ")
               : "없음"}
           </span>
-          <span className={collectionDone ? "font-semibold text-green-600" : "font-semibold text-gray-700"}>
-            {collectionDone ? "수집 완료" : "수집 중..."}
+          <span className={progress >= 100 ? "font-semibold text-green-600" : "font-semibold text-blue-700"}>
+            {progress >= 100 ? "수집 완료" : remainingLabel}
           </span>
         </div>
       </div>
