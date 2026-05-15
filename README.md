@@ -143,3 +143,29 @@ docker compose down
 
 `.env` 파일은 `.gitignore`에 포함되어 있어 GitHub에 올라가지 않음.
 민감 정보(DB 비밀번호, API 키 등)는 절대 코드에 하드코딩하지 않는다.
+
+### 실측 진단 시 진단 대상 변경
+
+기본값(`.env.example`)은 docker-compose 자체 컨테이너를 가리키므로 **시연/데모용**.
+실제 운영 환경을 진단하려면 다음 값을 진단 대상 시스템으로 바꾼 뒤 백엔드 재시작:
+
+```env
+KEYCLOAK_URL=https://keycloak.운영도메인:8443
+KEYCLOAK_ADMIN_USER=...
+KEYCLOAK_ADMIN_PASS=...
+WAZUH_API_URL=https://wazuh.운영도메인:55000
+WAZUH_API_USER=...
+WAZUH_API_PASS=...
+WAZUH_INDEXER_URL=https://wazuh-indexer.운영도메인:9200
+NMAP_TARGET=10.0.0.0/24                  # 진단 대상 네트워크
+TRIVY_TARGET=registry.운영도메인/app:latest  # 진단 대상 이미지/경로
+```
+
+각 도구는 진단 시작 시 가용성 프리체크를 거치며, 도구가 응답하지 않으면 해당 도구의
+모든 항목이 "평가불가"로 일괄 처리된다. 자동수집 항목 수: keycloak 64 + wazuh 122 +
+nmap 14 + trivy 11 = 211개 (collector 함수 docstring에서 자동 매핑).
+
+### 데모 데이터
+
+`python backend/scripts/seed_demo.py` 실행 시 "데모_조직" 1건이 사전 시드된다.
+해당 조직의 결과는 UI에서 "데모" 배지로 구분된다.

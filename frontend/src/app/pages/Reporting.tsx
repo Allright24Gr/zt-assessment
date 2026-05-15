@@ -239,6 +239,7 @@ export function Reporting() {
 
   const fallbackSession: Session = mockSessions.find((s) => s.id === Number(sessionId)) ?? mockSessions[0];
   const [session, setSession] = useState<Session>(fallbackSession);
+  const [isDemo, setIsDemo] = useState(false);
   const [currentScores, setCurrentScores] = useState(DEFAULT_SCORES);
   const [checklistDetails, setChecklistDetails] = useState<ChecklistDetail[]>(fallbackSession.checklistDetails);
   const [improvements, setImprovements] = useState<Improvement[]>(mockImprovements);
@@ -268,6 +269,7 @@ export function Reporting() {
           })),
           checklistDetails: [],
         });
+        setIsDemo(Boolean(data.session.is_demo));
 
         const scores = PILLARS.map((p, i) => {
           const match = data.pillar_scores.find((ps) =>
@@ -334,6 +336,11 @@ export function Reporting() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
+      {isDemo && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          <span className="font-semibold">데모 데이터</span> — 실제 진단 결과가 아닙니다. 시연용 사전 시드된 결과입니다.
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

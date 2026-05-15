@@ -65,6 +65,7 @@ export interface AssessmentSession {
   errors: AssessmentError[];
   extra?: Record<string, unknown>;
   checklist_details?: ChecklistItemResult[];
+  is_demo?: boolean;
 }
 
 export interface AssessmentRunRequest {

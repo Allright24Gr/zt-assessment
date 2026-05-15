@@ -244,7 +244,16 @@ export function History() {
                           )}
                         </div>
                       </td>
-                      <td className="py-3 px-4 font-medium">{session.org}</td>
+                      <td className="py-3 px-4 font-medium">
+                        <span className="inline-flex items-center gap-1.5">
+                          {session.org}
+                          {session.is_demo && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                              데모
+                            </span>
+                          )}
+                        </span>
+                      </td>
                       <td className="py-3 px-4 text-gray-600">{session.date}</td>
                       <td className="py-3 px-4 text-gray-600">{session.manager}</td>
                       <td className="py-3 px-4">

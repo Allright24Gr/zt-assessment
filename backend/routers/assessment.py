@@ -23,6 +23,9 @@ SHUFFLE_API_KEY = os.getenv("SHUFFLE_API_KEY", "")
 SELF_BASE_URL   = os.getenv("SELF_BASE_URL", "http://zt-backend:8000")
 INTERNAL_TOKEN  = os.getenv("INTERNAL_API_TOKEN", "")
 
+# seed_demo가 만드는 데모 조직의 정확한 이름. 결과/이력 응답에 is_demo 플래그로 노출.
+DEMO_ORG_NAME = "데모_조직"
+
 # 도구별 개별 워크플로우 ID (Shuffle UI에서 워크플로우 만든 후 입력)
 SHUFFLE_WF = {
     "keycloak": os.getenv("SHUFFLE_WORKFLOW_KEYCLOAK", ""),
@@ -445,6 +448,7 @@ def get_result(session_id: int, db: Session = Depends(get_db)):
             "score":   session.total_score,
             "errors":  _build_session_errors(db, session_id),
             "extra":   session.extra or {},
+            "is_demo": bool(org and org.name == DEMO_ORG_NAME),
         },
         "pillar_scores":     pillar_scores,
         "overall_score":     session.total_score or 0.0,
@@ -479,9 +483,10 @@ def get_history(
     for s in sessions:
         if s.status == "완료":
             completed_count += 1
+        org_obj = orgs.get(s.org_id)
         items.append({
             "id":      s.session_id,
-            "org":     orgs.get(s.org_id).name if orgs.get(s.org_id) else "",
+            "org":     org_obj.name if org_obj else "",
             "org_id":  s.org_id,
             "date":    s.started_at.isoformat() if s.started_at else "",
             "manager": users.get(s.user_id).name if users.get(s.user_id) else "",
@@ -490,6 +495,7 @@ def get_history(
             "status":  s.status,
             "score":   s.total_score,
             "errors":  _build_session_errors(db, s.session_id) if s.status == "완료" else [],
+            "is_demo": bool(org_obj and org_obj.name == DEMO_ORG_NAME),
         })
 
     return {"sessions": items, "total": len(items), "completed_count": completed_count}
@@ -798,12 +804,157 @@ def _tr_mapping():
     ]
 
 
-_TOOL_DISPATCH = {
-    "keycloak": (_kc_mapping, True),   # 함수가 (item_id, maturity) 인자를 받음
-    "wazuh":    (_wz_mapping, True),
-    "nmap":     (_nm_mapping, False),  # 인자 없이 호출
-    "trivy":    (_tr_mapping, False),
+# ──────────────────────────────────────────────────────────────────────────────
+# Auto-discovery: collector 모듈의 collect_* 함수 docstring에서 item_id 추출
+# 명시 매핑(_kc_mapping 등)에 이미 등록된 함수/item_id는 자동 추가에서 제외한다.
+# ──────────────────────────────────────────────────────────────────────────────
+
+import importlib
+import re as _re
+
+_MATURITY_BY_LEVEL = {1: "기존", 2: "초기", 3: "향상", 4: "최적화"}
+_DOC_ITEM_ID_RE = _re.compile(r"\s*(\d+\.\d+\.\d+\.\d+_\d+)\b")
+
+
+def _maturity_from_item_id(item_id: str) -> Optional[str]:
+    head = item_id.split("_", 1)[0]
+    parts = head.split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        return _MATURITY_BY_LEVEL.get(int(parts[3]))
+    except ValueError:
+        return None
+
+
+def _autodiscover(module_name: str, base: list) -> list:
+    """기존 explicit mapping(base)에 docstring 기반 자동 매핑을 합쳐서 반환."""
+    try:
+        mod = importlib.import_module(module_name)
+    except Exception as exc:
+        logger.warning("[autodiscover] %s import failed: %s", module_name, exc)
+        return base
+
+    base_fns = {fn.__name__ for fn, _, _ in base}
+    base_iids = {iid for _, iid, _ in base}
+    extra: list = []
+    for name in dir(mod):
+        if not name.startswith("collect_") or name in base_fns:
+            continue
+        fn = getattr(mod, name, None)
+        if not callable(fn):
+            continue
+        doc = (fn.__doc__ or "")
+        m = _DOC_ITEM_ID_RE.match(doc)
+        if not m:
+            continue
+        item_id = m.group(1)
+        if item_id in base_iids:
+            continue  # 명시 매핑이 우선
+        maturity = _maturity_from_item_id(item_id)
+        if not maturity:
+            continue
+        extra.append((fn, item_id, maturity))
+    return base + extra
+
+
+_TOOL_MODULE = {
+    "keycloak": "collectors.keycloak_collector",
+    "wazuh":    "collectors.wazuh_collector",
+    "nmap":     "collectors.nmap_collector",
+    "trivy":    "collectors.trivy_collector",
 }
+
+# 명시 매핑 함수 캐시(원본 함수)
+_BASE_MAPPING_FNS = {
+    "keycloak": _kc_mapping,
+    "wazuh":    _wz_mapping,
+    "nmap":     _nm_mapping,
+    "trivy":    _tr_mapping,
+}
+
+
+def _full_mapping(tool: str) -> list:
+    base_fn = _BASE_MAPPING_FNS.get(tool)
+    if base_fn is None:
+        return []
+    try:
+        base = base_fn()
+    except Exception as exc:
+        logger.warning("[mapping] %s base load failed: %s", tool, exc)
+        base = []
+    module_name = _TOOL_MODULE.get(tool)
+    if not module_name:
+        return base
+    return _autodiscover(module_name, base)
+
+
+# 외부 노출용: 기존 _TOOL_DISPATCH 구조 유지 (mapping_fn, takes_args)
+_TOOL_DISPATCH = {
+    "keycloak": (lambda: _full_mapping("keycloak"), True),
+    "wazuh":    (lambda: _full_mapping("wazuh"),    True),
+    "nmap":     (lambda: _full_mapping("nmap"),     False),
+    "trivy":    (lambda: _full_mapping("trivy"),    False),
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 도구 가용성 프리체크 — 외부 도구가 응답하지 않으면 collector 호출 스킵하고
+# 해당 도구의 모든 매핑을 '평가불가'로 일괄 처리한다.
+# ──────────────────────────────────────────────────────────────────────────────
+
+import socket
+from urllib.parse import urlparse
+
+
+def _probe_tcp(url_or_hostport: str, timeout: float = 2.0) -> Optional[str]:
+    """URL 또는 host:port를 TCP connect로 확인. 성공 시 None, 실패 시 에러 메시지."""
+    try:
+        if "://" in url_or_hostport:
+            parsed = urlparse(url_or_hostport)
+            host = parsed.hostname
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        else:
+            host, _, port_s = url_or_hostport.partition(":")
+            port = int(port_s) if port_s else 80
+        if not host:
+            return "host 정보 없음"
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+def _tool_health(tool: str) -> Optional[str]:
+    """도구 가용성 체크. None=정상, str=에러 메시지."""
+    if tool == "keycloak":
+        url = os.getenv("KEYCLOAK_URL", "http://keycloak:8080")
+        return _probe_tcp(url)
+    if tool == "wazuh":
+        url = os.getenv("WAZUH_API_URL", "https://wazuh:55000")
+        return _probe_tcp(url)
+    if tool == "nmap":
+        url = os.getenv("NMAP_WRAPPER_URL", "http://localhost:8001")
+        return _probe_tcp(url)
+    if tool == "trivy":
+        url = os.getenv("TRIVY_WRAPPER_URL", "http://localhost:8002")
+        return _probe_tcp(url)
+    return f"unknown tool: {tool}"
+
+
+def _unavailable_result(tool: str, item_id: str, maturity: str, error_msg: str) -> dict:
+    return {
+        "item_id":      item_id,
+        "maturity":     maturity,
+        "tool":         tool,
+        "result":       "평가불가",
+        "metric_key":   "tool_unavailable",
+        "metric_value": 0.0,
+        "threshold":    1.0,
+        "raw_json":     {},
+        "error":        error_msg,
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _safe_call(fn, item_id: str, maturity: str, takes_args: bool, tool_name: str) -> dict:
@@ -811,22 +962,15 @@ def _safe_call(fn, item_id: str, maturity: str, takes_args: bool, tool_name: str
         return fn(item_id, maturity) if takes_args else fn()
     except Exception as exc:
         logger.warning("[collector] %s(%s) failed: %s", tool_name, item_id, exc)
-        return {
-            "item_id":      item_id,
-            "maturity":     maturity,
-            "tool":         tool_name,
-            "result":       "평가불가",
-            "metric_key":   "error",
-            "metric_value": 0.0,
-            "threshold":    1.0,
-            "raw_json":     {},
-            "error":        str(exc),
-            "collected_at": datetime.now(timezone.utc).isoformat(),
-        }
+        return _unavailable_result(tool_name, item_id, maturity, str(exc))
 
 
 def _run_collectors(session_id: int, tools: list[str]):
-    """선택된 도구들로 collector 실행 후 결과를 DB에 직접 저장 (httpx 자기호출 없음)."""
+    """선택된 도구들로 collector 실행 후 결과를 DB에 직접 저장 (httpx 자기호출 없음).
+
+    각 도구는 호출 전 _tool_health로 가용성을 확인한다. 도구가 닫혀있으면
+    그 도구의 모든 매핑을 '평가불가'로 일괄 표시하고 함수 호출은 스킵한다.
+    """
     if not tools:
         return
 
@@ -840,6 +984,15 @@ def _run_collectors(session_id: int, tools: list[str]):
         except Exception as exc:
             logger.warning("[collector] %s mapping load failed: %s", tool, exc)
             continue
+
+        health_err = _tool_health(tool)
+        if health_err:
+            logger.info("[collector] %s unavailable (%s) → %d items 평가불가 처리",
+                        tool, health_err, len(mapping))
+            for _fn, item_id, maturity in mapping:
+                results.append(_unavailable_result(tool, item_id, maturity, health_err))
+            continue
+
         for fn, item_id, maturity in mapping:
             results.append(_safe_call(fn, item_id, maturity, takes_args, tool))
 
