@@ -23,6 +23,9 @@ export function InProgress() {
   const [autoRunning, setAutoRunning] = useState(false);
   const [collectionDone, setCollectionDone] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [collectedCount, setCollectedCount] = useState(0);
+  const [autoTotal, setAutoTotal] = useState(0);
+  const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -51,6 +54,9 @@ export function InProgress() {
     const check = () => {
       getAssessmentStatus(sid)
         .then((s) => {
+          setCollectedCount(s.collected_count);
+          setAutoTotal(s.auto_total);
+          setSelectedTools(s.selected_tools ?? []);
           if (s.collection_done) {
             setCollectionDone(true);
             setAutoRunning(false);
@@ -139,10 +145,28 @@ export function InProgress() {
         )}
       </div>
 
-      {/* 자동수집 상태 */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-medium text-gray-700">자동 수집 상태</span>
+      {/* 병행 진행 안내 */}
+      {manualCount > 0 && (autoRunning || collectionDone) && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-sm text-indigo-900">
+          <strong>두 작업이 동시에 진행됩니다.</strong>
+          <span className="ml-1 text-indigo-700">
+            아래 <strong>① 자동 수집</strong>이 백그라운드에서 도는 동안
+            <strong> ② Excel 수동 항목</strong>을 작성·업로드해주세요.
+          </span>
+        </div>
+      )}
+
+      {/* ① 자동수집 상태 */}
+      <div className={`rounded-xl border p-5 transition-colors ${
+        collectionDone   ? "bg-green-50 border-green-200" :
+        autoRunning      ? "bg-blue-50 border-blue-200" :
+                           "bg-white border-gray-200"
+      }`}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-white border-2 border-blue-500 text-blue-600 text-xs font-bold">①</span>
+            <span className="text-sm font-semibold text-gray-800">자동 수집</span>
+          </div>
           {collectionDone ? (
             <span className="flex items-center gap-1 text-sm font-semibold text-green-600">
               <CheckCircle size={14} /> 완료
@@ -155,12 +179,34 @@ export function InProgress() {
             <span className="text-sm text-gray-400">사용 안 함</span>
           )}
         </div>
-        <p className="text-xs text-gray-400 mt-1">
+
+        {(autoRunning || collectionDone) && autoTotal > 0 && (
+          <>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs text-gray-500">
+                {selectedTools.length > 0 && (
+                  <>도구: {selectedTools.map((t) => t.toUpperCase()).join(" · ")}</>
+                )}
+              </span>
+              <span className="text-xs font-semibold text-gray-700">
+                {collectedCount} / {autoTotal} 항목
+              </span>
+            </div>
+            <div className="w-full bg-white/70 rounded-full h-2 overflow-hidden">
+              <div
+                className={`h-2 rounded-full transition-all duration-500 ${collectionDone ? "bg-green-500" : "bg-blue-500"}`}
+                style={{ width: `${Math.min(100, Math.round((collectedCount / Math.max(autoTotal, 1)) * 100))}%` }}
+              />
+            </div>
+          </>
+        )}
+
+        <p className="text-xs text-gray-500 mt-3">
           {autoRunning
-            ? "선택하신 도구의 항목이 백그라운드에서 자동 수집됩니다."
+            ? "선택하신 보안 도구가 백그라운드에서 진단 항목을 수집하고 있습니다. 이 작업은 Excel 업로드와 무관하게 동시에 진행됩니다."
             : collectionDone
-            ? "선택한 도구의 모든 항목이 수집되었습니다."
-            : "자동 수집할 도구를 선택하지 않으셨습니다."}
+            ? "선택한 도구의 모든 항목이 수집되었습니다. Excel 업로드 후 결과를 확인할 수 있습니다."
+            : "자동 수집할 도구를 선택하지 않으셨습니다. Excel 업로드만으로 진단이 완료됩니다."}
         </p>
       </div>
 
@@ -185,11 +231,13 @@ export function InProgress() {
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100 bg-blue-50">
             <h2 className="text-sm font-semibold text-blue-800 flex items-center gap-2">
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-white border-2 border-blue-500 text-blue-600 text-xs font-bold">②</span>
               <Upload size={16} />
-              수동 진단 항목 Excel 업로드
+              수동 진단 — Excel 업로드
             </h2>
             <p className="text-xs text-blue-600 mt-1">
               자동 수집이 불가한 <strong>{manualCount}개</strong> 항목은 Excel로 일괄 제출합니다.
+              {autoRunning && " (자동 수집과 동시 진행 가능)"}
             </p>
           </div>
 

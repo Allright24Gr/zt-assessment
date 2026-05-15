@@ -167,6 +167,7 @@ export function getAssessmentStatus(sessionId: number | string) {
   return apiFetch<{
     session_id: number;
     status: string;
+    selected_tools: string[];
     collected_count: number;
     auto_total: number;
     collection_done: boolean;
