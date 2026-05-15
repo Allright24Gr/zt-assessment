@@ -18,10 +18,7 @@ const STORAGE_KEY = "zt_user";
 
 const users = [
   { id: "admin", password: "admin", role: "admin" as const, username: "관리자" },
-  { id: "user1", password: "user1", role: "user" as const, username: "김철수", orgName: "ABC 기업" },
-  { id: "user2", password: "user2", role: "user" as const, username: "이영희", orgName: "XYZ 금융" },
-  { id: "user3", password: "user3", role: "user" as const, username: "박민준", orgName: "DEF 공공기관" },
-  { id: "user4", password: "user4", role: "user" as const, username: "최수아", orgName: "GHI 의료기관" },
+  { id: "user1", password: "user1", role: "user" as const, username: "박기웅", orgName: "세종대학교" },
 ];
 
 export function AuthProvider({ children }: { children: ReactNode }) {

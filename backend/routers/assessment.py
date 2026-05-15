@@ -925,20 +925,81 @@ def _probe_tcp(url_or_hostport: str, timeout: float = 2.0) -> Optional[str]:
         return f"{type(exc).__name__}: {exc}"
 
 
-def _tool_health(tool: str) -> Optional[str]:
-    """도구 가용성 체크. None=정상, str=에러 메시지."""
+# docker-compose 번들 환경의 placeholder 값들. 사용자가 .env를 운영 환경으로
+# 덮어쓰지 않으면 collector는 의미 없는 데이터만 긁기 때문에 미연결로 간주한다.
+# ZTA_FORCE_REAL_COLLECTION=true 설정 시 이 검사는 건너뛴다.
+_PLACEHOLDER_HOSTS = {"keycloak", "wazuh", "localhost", "127.0.0.1"}
+_PLACEHOLDER_TARGETS = {"127.0.0.1", "localhost", "", ".", "nginx:latest"}
+
+
+def _is_placeholder_url(url: str) -> bool:
+    if not url:
+        return True
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        return True
+    return host in _PLACEHOLDER_HOSTS
+
+
+def _tool_configured(tool: str) -> Optional[str]:
+    """진단 대상이 실제로 설정됐는지 확인. None=정상, str=미설정 사유."""
+    if os.getenv("ZTA_FORCE_REAL_COLLECTION", "").lower() == "true":
+        return None  # 강제 우회
+
     if tool == "keycloak":
-        url = os.getenv("KEYCLOAK_URL", "http://keycloak:8080")
-        return _probe_tcp(url)
+        url = os.getenv("KEYCLOAK_URL", "")
+        admin_user = os.getenv("KEYCLOAK_ADMIN_USER", "")
+        admin_pass = os.getenv("KEYCLOAK_ADMIN_PASS", "")
+        if _is_placeholder_url(url):
+            return "Keycloak 미연결: KEYCLOAK_URL이 번들 placeholder. .env에 운영 IDP 주소 설정 필요"
+        if not admin_user or not admin_pass:
+            return "Keycloak 미연결: KEYCLOAK_ADMIN_USER/PASS 미설정"
+        return None
+
     if tool == "wazuh":
-        url = os.getenv("WAZUH_API_URL", "https://wazuh:55000")
-        return _probe_tcp(url)
+        url = os.getenv("WAZUH_API_URL", "")
+        api_user = os.getenv("WAZUH_API_USER", "")
+        api_pass = os.getenv("WAZUH_API_PASS", "")
+        if _is_placeholder_url(url):
+            return "Wazuh 미연결: WAZUH_API_URL이 번들 placeholder. .env에 운영 SIEM 주소 설정 필요"
+        if not api_user or not api_pass:
+            return "Wazuh 미연결: WAZUH_API_USER/PASS 미설정"
+        return None
+
     if tool == "nmap":
-        url = os.getenv("NMAP_WRAPPER_URL", "http://localhost:8001")
-        return _probe_tcp(url)
+        target = os.getenv("NMAP_TARGET", "").strip()
+        if target in _PLACEHOLDER_TARGETS:
+            return f"Nmap 미연결: NMAP_TARGET이 placeholder('{target or 'empty'}'). .env에 진단 대상 네트워크/호스트 설정 필요"
+        return None
+
     if tool == "trivy":
-        url = os.getenv("TRIVY_WRAPPER_URL", "http://localhost:8002")
-        return _probe_tcp(url)
+        target = os.getenv("TRIVY_TARGET", "").strip()
+        if target in _PLACEHOLDER_TARGETS:
+            return f"Trivy 미연결: TRIVY_TARGET이 placeholder('{target or 'empty'}'). .env에 진단 대상 이미지/경로 설정 필요"
+        return None
+
+    return f"unknown tool: {tool}"
+
+
+def _tool_health(tool: str) -> Optional[str]:
+    """도구 가용성 + 설정 체크. None=정상, str=에러 메시지.
+
+    1) 진단 대상이 설정됐는지(_tool_configured) — placeholder/기본값이면 미연결.
+    2) 설정됐다면 실제 TCP 연결 가능 여부 확인.
+    """
+    config_err = _tool_configured(tool)
+    if config_err:
+        return config_err
+
+    if tool == "keycloak":
+        return _probe_tcp(os.getenv("KEYCLOAK_URL", "http://keycloak:8080"))
+    if tool == "wazuh":
+        return _probe_tcp(os.getenv("WAZUH_API_URL", "https://wazuh:55000"))
+    if tool == "nmap":
+        return _probe_tcp(os.getenv("NMAP_WRAPPER_URL", "http://localhost:8001"))
+    if tool == "trivy":
+        return _probe_tcp(os.getenv("TRIVY_WRAPPER_URL", "http://localhost:8002"))
     return f"unknown tool: {tool}"
 
 

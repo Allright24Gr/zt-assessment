@@ -5,9 +5,7 @@ import { Shield, AlertCircle } from "lucide-react";
 
 const DEMO_ACCOUNTS = [
   { label: "관리자", id: "admin", role: "관리자" },
-  { label: "김철수 (ABC 기업)", id: "user1", role: "일반 사용자" },
-  { label: "이영희 (XYZ 금융)", id: "user2", role: "일반 사용자" },
-  { label: "박민수 (DEF 공공기관)", id: "user3", role: "일반 사용자" },
+  { label: "박기웅 (세종대학교)", id: "user1", role: "일반 사용자" },
 ];
 
 export function Login() {
