@@ -78,13 +78,12 @@ export function Dashboard() {
           })
           .catch((err) => console.warn("[dashboard] score summary:", err));
 
-        // 같은 조직의 score trend 가져오기 (가능하면 첫 세션의 org_id 추출)
-        const orgId = data.sessions[0]?.user_id;  // 백엔드 history는 org_id를 안 주므로
-        // org_id 모르면 trend 조회 생략하고 history 자체로 trend 구성
+        // 같은 조직의 score trend 가져오기 (백엔드 /history가 org_id 포함)
+        const orgId = data.sessions[0]?.org_id;
         if (orgId !== undefined) {
           getScoreTrend(orgId)
             .then(setTrendPoints)
-            .catch(() => {});
+            .catch((err) => console.warn("[dashboard] score trend:", err));
         }
       })
       .catch((err) => {

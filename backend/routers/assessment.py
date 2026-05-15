@@ -244,10 +244,13 @@ def get_assessment_status(session_id: int, db: Session = Depends(get_db)):
     tools = _selected_tools_set(session)
     auto_total = _expected_auto_count(db, tools)
 
-    collected_count = db.query(func.count(CollectedData.data_id)).filter(
-        CollectedData.session_id == session_id,
-        CollectedData.tool.in_(tools) if tools else False,
-    ).scalar() if tools else 0
+    if tools:
+        collected_count = db.query(func.count(CollectedData.data_id)).filter(
+            CollectedData.session_id == session_id,
+            CollectedData.tool.in_(tools),
+        ).scalar() or 0
+    else:
+        collected_count = 0
 
     return {
         "session_id":      session_id,
@@ -363,6 +366,7 @@ def get_result(session_id: int, db: Session = Depends(get_db)):
         "session": {
             "id":      session.session_id,
             "org":     org.name if org else "",
+            "org_id":  session.org_id,
             "date":    session.started_at.isoformat() if session.started_at else "",
             "manager": user.name if user else "",
             "user_id": session.user_id,
@@ -408,6 +412,7 @@ def get_history(
         items.append({
             "id":      s.session_id,
             "org":     orgs.get(s.org_id).name if orgs.get(s.org_id) else "",
+            "org_id":  s.org_id,
             "date":    s.started_at.isoformat() if s.started_at else "",
             "manager": users.get(s.user_id).name if users.get(s.user_id) else "",
             "user_id": s.user_id,

@@ -55,6 +55,7 @@ export interface ChecklistItemResult {
 export interface AssessmentSession {
   id: number | string;
   org: string;
+  org_id?: number;
   date: string;
   manager: string;
   user_id?: number | string;
