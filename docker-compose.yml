@@ -85,10 +85,14 @@ services:
     networks:
       - zt-network
 
+  # ── Shuffle SOAR ───────────────────────────────────────────────────────────
+  # 기본 `docker compose up`에는 포함되지 않음 (profiles).
+  # Shuffle 워크플로우 연동이 필요하면:  docker compose --profile shuffle up -d
   shuffle-backend:
     image: ghcr.io/shuffle/shuffle-backend:latest
     container_name: shuffle-backend
     restart: unless-stopped
+    profiles: ["shuffle"]
     depends_on:
       - shuffle-database
     environment:
@@ -109,6 +113,7 @@ services:
     image: ghcr.io/shuffle/shuffle-frontend:latest
     container_name: shuffle-frontend
     restart: unless-stopped
+    profiles: ["shuffle"]
     depends_on:
       - shuffle-backend
     environment:
@@ -119,11 +124,18 @@ services:
       - zt-network
 
   shuffle-database:
-    image: fjogeleit/shuffle-datastore:latest
+    image: opensearchproject/opensearch:2.11.0
     container_name: shuffle-database
     restart: unless-stopped
+    profiles: ["shuffle"]
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "DISABLE_INSTALL_DEMO_CONFIG=true"
+      - "DISABLE_SECURITY_PLUGIN=true"
     volumes:
-      - shuffle-database:/etc/datastore
+      - shuffle-database:/usr/share/opensearch/data
     networks:
       - zt-network
 
