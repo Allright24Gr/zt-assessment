@@ -7,13 +7,28 @@ from typing import List, Optional
 from datetime import datetime, timezone
 from pathlib import Path
 import io
+import os
+import uuid
+import logging
 import openpyxl
 
 from database import get_db
 from models import DiagnosisSession, Checklist, DiagnosisResult, Evidence, CollectedData, User
 from routers.auth import get_current_user, assert_session_access
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# P1-7: 증적 파일 업로드 설정
+EVIDENCE_STORAGE_DIR = os.getenv("EVIDENCE_STORAGE_DIR", "/var/lib/zt-assessment/evidence")
+MAX_EVIDENCE_SIZE_MB = int(os.getenv("MAX_EVIDENCE_SIZE_MB", "10"))
+_ALLOWED_EVIDENCE_MIMES = {
+    "application/pdf":  "pdf",
+    "image/png":        "png",
+    "image/jpeg":       "jpg",
+    "image/gif":        "gif",
+    "image/webp":       "webp",
+}
 
 MATURITY_NUM = {"기존": 1, "초기": 2, "향상": 3, "최적화": 4}
 VALID_RESULTS = {"충족", "부분충족", "미충족", "평가불가"}
@@ -382,3 +397,166 @@ def get_manual_items(
         "total": len(manual_items),
         "submitted_count": len([i for i in manual_items if i.check_id in submitted]),
     }
+
+
+# ─── P1-7: 수동 증적 파일 업로드 / 다운로드 ────────────────────────────────────
+
+
+def _resolve_check_id(db: Session, check_id_raw) -> Optional[int]:
+    """check_id 가 숫자(PK) 또는 item_id 문자열로 올 수 있도록 둘 다 지원."""
+    if check_id_raw is None:
+        return None
+    if isinstance(check_id_raw, int):
+        return check_id_raw
+    s = str(check_id_raw).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    cl = db.query(Checklist).filter(Checklist.item_id == s).first()
+    return cl.check_id if cl else None
+
+
+@router.post("/upload-evidence")
+async def upload_evidence(
+    session_id: int = Form(...),
+    check_id: str = Form(...),
+    file: UploadFile = File(...),
+    note: str = Form(""),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """진단 항목별 증적 파일 업로드 (PDF/이미지). 세션 권한 검증 후 로컬 디스크 저장."""
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
+    resolved_check_id = _resolve_check_id(db, check_id)
+    if resolved_check_id is None:
+        raise HTTPException(status_code=400, detail="check_id 가 유효하지 않습니다.")
+    checklist = db.query(Checklist).filter(Checklist.check_id == resolved_check_id).first()
+    if not checklist:
+        raise HTTPException(status_code=404, detail="체크리스트 항목을 찾을 수 없습니다.")
+
+    mime = (file.content_type or "").lower()
+    if mime not in _ALLOWED_EVIDENCE_MIMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"허용되지 않는 파일 형식입니다. (허용: {', '.join(sorted(_ALLOWED_EVIDENCE_MIMES))})",
+        )
+
+    max_bytes = MAX_EVIDENCE_SIZE_MB * 1024 * 1024
+    content = await file.read()
+    file_size = len(content)
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다.")
+    if file_size > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"파일 크기가 너무 큽니다. (최대 {MAX_EVIDENCE_SIZE_MB}MB)",
+        )
+
+    ext = _ALLOWED_EVIDENCE_MIMES[mime]
+    target_dir = Path(EVIDENCE_STORAGE_DIR) / str(session_id) / str(resolved_check_id)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error("[evidence] storage dir mkdir failed: %s", exc)
+        raise HTTPException(status_code=500, detail="증적 저장소 초기화에 실패했습니다.")
+
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    target_path = target_dir / filename
+    try:
+        with open(target_path, "wb") as fp:
+            fp.write(content)
+    except OSError as exc:
+        logger.error("[evidence] write failed: %s", exc)
+        raise HTTPException(status_code=500, detail="증적 파일 저장에 실패했습니다.")
+
+    original_filename = (file.filename or "")[:255] or None
+    note_str = (note or "").strip() or None
+
+    existing = db.query(Evidence).filter(
+        Evidence.session_id == session_id,
+        Evidence.check_id == resolved_check_id,
+    ).first()
+
+    old_file_path: Optional[str] = None
+    if existing:
+        old_file_path = existing.file_path
+        existing.source = "수동업로드"
+        existing.observed = note_str
+        existing.file_path = str(target_path)
+        existing.mime_type = mime
+        existing.file_size = file_size
+        existing.original_filename = original_filename
+        evidence = existing
+    else:
+        evidence = Evidence(
+            session_id=session_id,
+            check_id=resolved_check_id,
+            source="수동업로드",
+            observed=note_str,
+            location="",
+            reason="",
+            impact=None,
+            file_path=str(target_path),
+            mime_type=mime,
+            file_size=file_size,
+            original_filename=original_filename,
+        )
+        db.add(evidence)
+
+    db.commit()
+    db.refresh(evidence)
+
+    # 이전 파일이 있었다면 best-effort 삭제 (실패 무시 — 메타는 이미 갱신).
+    if old_file_path and old_file_path != str(target_path):
+        try:
+            Path(old_file_path).unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("[evidence] previous file unlink failed: %s", exc)
+
+    return {
+        "status":      "ok",
+        "evidence_id": evidence.evidence_id,
+        "file_path":   evidence.file_path,
+        "file_size":   evidence.file_size,
+        "mime_type":   evidence.mime_type,
+        "original_filename": evidence.original_filename,
+    }
+
+
+@router.get("/evidence/{evidence_id}")
+def download_evidence(
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """증적 파일 다운로드. 세션 권한 검증."""
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if not evidence:
+        raise HTTPException(status_code=404, detail="증적을 찾을 수 없습니다.")
+    if not evidence.file_path:
+        raise HTTPException(status_code=404, detail="이 증적에는 첨부 파일이 없습니다.")
+
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == evidence.session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
+    path = Path(evidence.file_path)
+    if not path.is_file():
+        logger.warning("[evidence] file missing on disk: %s", evidence.file_path)
+        raise HTTPException(status_code=410, detail="증적 파일이 디스크에서 사라졌습니다.")
+
+    return FileResponse(
+        path=str(path),
+        media_type=evidence.mime_type or "application/octet-stream",
+        filename=evidence.original_filename or path.name,
+    )

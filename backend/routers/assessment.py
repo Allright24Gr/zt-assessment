@@ -13,6 +13,7 @@ from database import SessionLocal, get_db
 from models import (
     DiagnosisSession, Checklist, CollectedData,
     DiagnosisResult, MaturityScore, ScoreHistory, Organization, User,
+    SharedResult,
 )
 from scoring.engine import score_session, determine_maturity_level
 from routers.auth import (
@@ -26,6 +27,7 @@ from routers.validators import (
     validate_https_url,
     validate_cred_field,
     validate_entra_tenant_id,
+    validate_okta_domain,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,8 +48,10 @@ SHUFFLE_WF = {
     "nmap":     os.getenv("SHUFFLE_WORKFLOW_NMAP",     ""),
     "trivy":    os.getenv("SHUFFLE_WORKFLOW_TRIVY",    ""),
     "entra":    os.getenv("SHUFFLE_WORKFLOW_ENTRA",    ""),
+    "okta":     os.getenv("SHUFFLE_WORKFLOW_OKTA",     ""),
+    "splunk":   os.getenv("SHUFFLE_WORKFLOW_SPLUNK",   ""),
 }
-ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy", "entra")
+ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy", "entra", "okta", "splunk")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -99,6 +103,21 @@ def _mask_creds(extra: dict) -> dict:
         if masked.get("client_secret"):
             masked["client_secret"] = "***"
         safe["entra_creds"] = masked
+    # okta_creds: api_token 마스킹 (domain 은 식별자라 노출 가능)
+    oc = safe.get("okta_creds")
+    if isinstance(oc, dict):
+        masked = dict(oc)
+        if masked.get("api_token"):
+            masked["api_token"] = "***"
+        safe["okta_creds"] = masked
+    # splunk_creds: password / token 마스킹 (url/user 는 식별자)
+    sc = safe.get("splunk_creds")
+    if isinstance(sc, dict):
+        masked = dict(sc)
+        for pw_field in ("password", "token"):
+            if masked.get(pw_field):
+                masked[pw_field] = "***"
+        safe["splunk_creds"] = masked
     return safe
 
 
@@ -115,6 +134,8 @@ def _store_session_secrets(
     kc_creds: dict,
     wz_creds: dict,
     entra_creds: dict = None,
+    okta_creds: dict = None,
+    splunk_creds: dict = None,
 ) -> None:
     """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
     with _session_creds_lock:
@@ -122,6 +143,8 @@ def _store_session_secrets(
             "keycloak": dict(kc_creds or {}),
             "wazuh":    dict(wz_creds or {}),
             "entra":    dict(entra_creds or {}),
+            "okta":     dict(okta_creds or {}),
+            "splunk":   dict(splunk_creds or {}),
         }
 
 
@@ -253,23 +276,27 @@ class AssessmentRunRequest(BaseModel):
     wazuh_creds: Optional[dict] = None
     # 예: {"tenant_id": "<guid or domain>", "client_id": "...", "client_secret": "..."}
     entra_creds: Optional[dict] = None
+    # 예: {"domain": "dev-12345.okta.com", "api_token": "<SSWS token>"}
+    okta_creds: Optional[dict] = None
+    # 예: {"url": "https://splunk.example.com:8089", "user": "...", "password": "..."}
+    splunk_creds: Optional[dict] = None
 
 
 # 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑. 신규 도구 자동화가 생기면 여기에 추가.
 _IDP_TOOL_OF = {
     "keycloak": "keycloak",
     "entra":    "entra",
-    # "okta": "okta",  # collector 추가 시 활성
+    "okta":     "okta",
     # "ldap": "ldap",
     # "none" / 미선택 → IdP 자동 도구 전체 비활성 (전부 수동 폴백)
 }
 _SIEM_TOOL_OF = {
-    "wazuh": "wazuh",
-    # "splunk":  "splunk",
+    "wazuh":  "wazuh",
+    "splunk": "splunk",
     # "elastic": "elastic",
 }
-_IDP_AUTO_TOOLS = {"keycloak", "entra"}
-_SIEM_AUTO_TOOLS = {"wazuh"}
+_IDP_AUTO_TOOLS = {"keycloak", "entra", "okta"}
+_SIEM_AUTO_TOOLS = {"wazuh", "splunk"}
 
 
 def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) -> dict:
@@ -371,6 +398,29 @@ def run_assessment(
             en_in["client_secret"] = validate_cred_field(
                 en_in.get("client_secret") or "", "entra_creds.client_secret", max_len=200
             )
+
+        ok_in = dict(req.okta_creds or {}) if req.okta_creds else {}
+        if ok_in:
+            ok_in["domain"] = validate_okta_domain(
+                ok_in.get("domain") or "", "okta_creds.domain"
+            )
+            ok_in["api_token"] = validate_cred_field(
+                ok_in.get("api_token") or "", "okta_creds.api_token", max_len=200
+            )
+
+        sp_in = dict(req.splunk_creds or {}) if req.splunk_creds else {}
+        if sp_in:
+            sp_in["url"] = validate_https_url(sp_in.get("url") or "", "splunk_creds.url")
+            sp_in["user"] = validate_cred_field(
+                sp_in.get("user") or "", "splunk_creds.user"
+            )
+            sp_in["password"] = validate_cred_field(
+                sp_in.get("password") or "", "splunk_creds.password", max_len=200
+            )
+            if sp_in.get("token"):
+                sp_in["token"] = validate_cred_field(
+                    sp_in.get("token") or "", "splunk_creds.token", max_len=200
+                )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -415,6 +465,10 @@ def run_assessment(
     wz_meta = {k: v for k, v in wz_in.items() if k in ("url", "api_user") and v}
     # entra: client_secret 은 DB에 저장하지 않는다. tenant_id/client_id 만 extra 에 남김.
     en_meta = {k: v for k, v in en_in.items() if k in ("tenant_id", "client_id") and v}
+    # okta: api_token 은 DB 저장 금지. domain 만 extra 에 남김.
+    ok_meta = {k: v for k, v in ok_in.items() if k in ("domain",) and v}
+    # splunk: password/token 은 DB 저장 금지. url/user 만 extra 에 남김.
+    sp_meta = {k: v for k, v in sp_in.items() if k in ("url", "user") and v}
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -427,6 +481,8 @@ def run_assessment(
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
         "entra_creds":    en_meta,
+        "okta_creds":     ok_meta,
+        "splunk_creds":   sp_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
     }
@@ -444,7 +500,7 @@ def run_assessment(
     db.refresh(session)
 
     # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
-    _store_session_secrets(session.session_id, kc_in, wz_in, en_in)
+    _store_session_secrets(session.session_id, kc_in, wz_in, en_in, ok_in, sp_in)
 
     # Shuffle 경로 우선, 미설정 시 직접 collector 실행
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
@@ -1046,6 +1102,62 @@ def _entra_mapping():
     ]
 
 
+def _okta_mapping():
+    from collectors.okta_collector import (
+        collect_user_role_ratio, collect_idp_inventory, collect_idp_registered,
+        collect_active_idp_multi, collect_mfa_required, collect_otp_flow,
+        collect_webauthn_status, collect_conditional_auth, collect_session_policy,
+        collect_stepup_auth, collect_realm_count, collect_icam_inventory,
+        collect_authz_clients, collect_rbac_policy, collect_password_policy,
+    )
+    return [
+        (collect_user_role_ratio,   "1.1.1.2_1", "초기"),
+        (collect_idp_inventory,     "1.1.1.3_1", "향상"),
+        (collect_idp_registered,    "1.1.2.1_1", "기존"),
+        (collect_active_idp_multi,  "1.1.2.2_1", "초기"),
+        (collect_mfa_required,      "1.2.1.1_1", "기존"),
+        (collect_otp_flow,          "1.2.1.2_1", "초기"),
+        (collect_webauthn_status,   "1.2.1.2_2", "초기"),
+        (collect_conditional_auth,  "1.2.1.3_1", "향상"),
+        (collect_session_policy,    "1.2.2.1_1", "기존"),
+        (collect_stepup_auth,       "1.2.2.2_1", "초기"),
+        (collect_realm_count,       "1.3.1.1_1", "기존"),
+        (collect_icam_inventory,    "1.3.1.2_1", "초기"),
+        (collect_authz_clients,     "1.4.1.1_3", "기존"),
+        (collect_rbac_policy,       "1.4.1.2_1", "초기"),
+        (collect_password_policy,   "1.4.2.2_1", "초기"),
+    ]
+
+
+def _splunk_mapping():
+    from collectors.splunk_collector import (
+        collect_auth_failure_alerts, collect_active_response_auth,
+        collect_high_risk_alerts, collect_behavior_alerts, collect_activity_rules,
+        collect_privilege_change_alerts, collect_policy_violation_alerts,
+        collect_os_inventory, collect_agent_registration,
+        collect_segment_policy_alerts, collect_lateral_movement_alerts,
+        collect_ids_alerts, collect_realtime_threat_alerts,
+        collect_dlp_alerts, collect_threat_detection_alerts,
+    )
+    return [
+        (collect_auth_failure_alerts,     "1.1.1.3_2", "향상"),
+        (collect_active_response_auth,    "1.2.1.4_1", "최적화"),
+        (collect_high_risk_alerts,        "1.3.1.4_2", "최적화"),
+        (collect_behavior_alerts,         "1.3.2.3_1", "향상"),
+        (collect_activity_rules,          "1.4.1.1_1", "기존"),
+        (collect_privilege_change_alerts, "1.4.2.3_2", "향상"),
+        (collect_policy_violation_alerts, "2.1.1.2_2", "초기"),
+        (collect_os_inventory,            "2.2.1.1_1", "기존"),
+        (collect_agent_registration,      "2.3.1.1_2", "기존"),
+        (collect_segment_policy_alerts,   "3.1.2.1_2", "초기"),
+        (collect_lateral_movement_alerts, "3.4.1.1_2", "초기"),
+        (collect_ids_alerts,              "4.3.1.3_2", "향상"),
+        (collect_realtime_threat_alerts,  "4.4.1.1_2", "기존"),
+        (collect_dlp_alerts,              "5.1.1.4_1", "최적화"),
+        (collect_threat_detection_alerts, "5.2.1.4_2", "최적화"),
+    ]
+
+
 def _tr_mapping():
     from collectors.trivy_collector import (
         collect_image_scan, collect_cicd_scan_ratio, collect_integrity_check,
@@ -1128,6 +1240,8 @@ _TOOL_MODULE = {
     "nmap":     "collectors.nmap_collector",
     "trivy":    "collectors.trivy_collector",
     "entra":    "collectors.entra_collector",
+    "okta":     "collectors.okta_collector",
+    "splunk":   "collectors.splunk_collector",
 }
 
 # 명시 매핑 함수 캐시(원본 함수)
@@ -1137,6 +1251,8 @@ _BASE_MAPPING_FNS = {
     "nmap":     _nm_mapping,
     "trivy":    _tr_mapping,
     "entra":    _entra_mapping,
+    "okta":     _okta_mapping,
+    "splunk":   _splunk_mapping,
 }
 
 
@@ -1162,6 +1278,8 @@ _TOOL_DISPATCH = {
     "nmap":     (lambda: _full_mapping("nmap"),     False),
     "trivy":    (lambda: _full_mapping("trivy"),    False),
     "entra":    (lambda: _full_mapping("entra"),    True),
+    "okta":     (lambda: _full_mapping("okta"),     True),
+    "splunk":   (lambda: _full_mapping("splunk"),   True),
 }
 
 
@@ -1266,6 +1384,40 @@ def _tool_configured(tool: str) -> Optional[str]:
             return "Entra 미연결: ENTRA_TENANT_ID/CLIENT_ID/CLIENT_SECRET 미설정"
         return None
 
+    if tool == "okta":
+        try:
+            from collectors import okta_collector as _ok
+            if _ok._session_creds and _ok._session_creds.get("domain") and _ok._session_creds.get("api_token"):
+                return None
+        except Exception:
+            pass
+        domain = os.getenv("OKTA_DOMAIN", "")
+        token = os.getenv("OKTA_API_TOKEN", "")
+        if not domain:
+            return "Okta 미연결: OKTA_DOMAIN 미설정"
+        if not token:
+            return "Okta 미연결: OKTA_API_TOKEN 미설정"
+        return None
+
+    if tool == "splunk":
+        try:
+            from collectors import splunk_collector as _sp
+            if _sp._session_creds and _sp._session_creds.get("url"):
+                creds = _sp._session_creds
+                if creds.get("token") or (creds.get("user") and creds.get("password")):
+                    return None
+        except Exception:
+            pass
+        url = os.getenv("SPLUNK_URL", "")
+        user = os.getenv("SPLUNK_USER", "")
+        pw = os.getenv("SPLUNK_PASSWORD", "")
+        token = os.getenv("SPLUNK_TOKEN", "")
+        if not url:
+            return "Splunk 미연결: SPLUNK_URL 미설정"
+        if not (token or (user and pw)):
+            return "Splunk 미연결: SPLUNK_TOKEN 또는 SPLUNK_USER/SPLUNK_PASSWORD 미설정"
+        return None
+
     return f"unknown tool: {tool}"
 
 
@@ -1290,6 +1442,34 @@ def _tool_health(tool: str) -> Optional[str]:
     if tool == "entra":
         # Microsoft Graph 도달성 확인. 인증 토큰은 collector 호출 시 발급된다.
         return _probe_tcp("https://login.microsoftonline.com")
+    if tool == "okta":
+        # session-creds 또는 env 의 domain 으로 TCP 도달성 확인.
+        domain = ""
+        try:
+            from collectors import okta_collector as _ok
+            if _ok._session_creds and _ok._session_creds.get("domain"):
+                domain = str(_ok._session_creds["domain"])
+        except Exception:
+            pass
+        domain = domain or os.getenv("OKTA_DOMAIN", "")
+        if not domain:
+            return "Okta 미연결: OKTA_DOMAIN 미설정"
+        host = domain
+        if "://" not in host:
+            host = f"https://{host}"
+        return _probe_tcp(host)
+    if tool == "splunk":
+        url = ""
+        try:
+            from collectors import splunk_collector as _sp
+            if _sp._session_creds and _sp._session_creds.get("url"):
+                url = str(_sp._session_creds["url"])
+        except Exception:
+            pass
+        url = url or os.getenv("SPLUNK_URL", "")
+        if not url:
+            return "Splunk 미연결: SPLUNK_URL 미설정"
+        return _probe_tcp(url)
     return f"unknown tool: {tool}"
 
 
@@ -1309,11 +1489,44 @@ def _unavailable_result(tool: str, item_id: str, maturity: str, error_msg: str) 
 
 
 def _safe_call(fn, item_id: str, maturity: str, takes_args: bool, tool_name: str) -> dict:
+    """collector 호출 + 일시적 에러 시 지수 백오프 재시도 (P1-12).
+
+    재시도 횟수: ZTA_COLLECTOR_RETRY (기본 3). 1차 시도 + (N-1) 회 재시도.
+    백오프: 1s, 2s, 4s ... (2 ** attempt 초)
+    영구 에러로 판단되는 메시지(401/403/unauthorized/forbidden/invalid)는 즉시 중단.
+    """
+    import time  # 모듈 최상단 import 와 충돌 없이 명시 (테스트 친화).
+
     try:
-        return fn(item_id, maturity) if takes_args else fn()
-    except Exception as exc:
-        logger.warning("[collector] %s(%s) failed: %s", tool_name, item_id, exc)
-        return _unavailable_result(tool_name, item_id, maturity, str(exc))
+        max_attempts = max(1, int(os.getenv("ZTA_COLLECTOR_RETRY", "3")))
+    except ValueError:
+        max_attempts = 3
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_attempts):
+        try:
+            return fn(item_id, maturity) if takes_args else fn()
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            # 영구 에러(권한/형식) 는 재시도 무의미.
+            if any(k in msg for k in ("401", "403", "unauthorized", "forbidden", "invalid")):
+                break
+            if attempt < max_attempts - 1:
+                backoff = 2 ** attempt
+                logger.info(
+                    "[collector] %s(%s) attempt %d/%d failed: %s — retry in %ds",
+                    tool_name, item_id, attempt + 1, max_attempts, exc, backoff,
+                )
+                time.sleep(backoff)
+    logger.warning(
+        "[collector] %s(%s) failed after retries: %s",
+        tool_name, item_id, last_exc,
+    )
+    return _unavailable_result(
+        tool_name, item_id, maturity,
+        str(last_exc) if last_exc else "unknown error",
+    )
 
 
 # 동시 세션이 nmap/trivy의 모듈-전역 _current_target을 덮어쓰지 않도록 직렬화.
@@ -1341,6 +1554,8 @@ def _run_collectors(session_id: int, tools: list[str]):
     keycloak_creds: dict = {}
     wazuh_creds: dict = {}
     entra_creds: dict = {}
+    okta_creds: dict = {}
+    splunk_creds: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -1360,6 +1575,12 @@ def _run_collectors(session_id: int, tools: list[str]):
             en_meta = sess.extra.get("entra_creds") or {}
             if isinstance(en_meta, dict):
                 entra_creds = {k: v for k, v in en_meta.items() if v}
+            ok_meta = sess.extra.get("okta_creds") or {}
+            if isinstance(ok_meta, dict):
+                okta_creds = {k: v for k, v in ok_meta.items() if v}
+            sp_meta = sess.extra.get("splunk_creds") or {}
+            if isinstance(sp_meta, dict):
+                splunk_creds = {k: v for k, v in sp_meta.items() if v}
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
@@ -1370,6 +1591,8 @@ def _run_collectors(session_id: int, tools: list[str]):
     kc_secret = secrets_blob.get("keycloak") if isinstance(secrets_blob, dict) else None
     wz_secret = secrets_blob.get("wazuh") if isinstance(secrets_blob, dict) else None
     en_secret = secrets_blob.get("entra") if isinstance(secrets_blob, dict) else None
+    ok_secret = secrets_blob.get("okta") if isinstance(secrets_blob, dict) else None
+    sp_secret = secrets_blob.get("splunk") if isinstance(secrets_blob, dict) else None
     if isinstance(kc_secret, dict):
         for k, v in kc_secret.items():
             if v:
@@ -1382,6 +1605,14 @@ def _run_collectors(session_id: int, tools: list[str]):
         for k, v in en_secret.items():
             if v:
                 entra_creds[k] = v
+    if isinstance(ok_secret, dict):
+        for k, v in ok_secret.items():
+            if v:
+                okta_creds[k] = v
+    if isinstance(sp_secret, dict):
+        for k, v in sp_secret.items():
+            if v:
+                splunk_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -1417,12 +1648,22 @@ def _run_collectors(session_id: int, tools: list[str]):
                     from collectors import entra_collector as _ec
                     explicit_creds = entra_creds or None
                     _ec.set_session_creds(explicit_creds)
+                elif tool == "okta":
+                    from collectors import okta_collector as _ok
+                    explicit_creds = okta_creds or None
+                    _ok.set_session_creds(explicit_creds)
+                elif tool == "splunk":
+                    from collectors import splunk_collector as _sp
+                    explicit_creds = splunk_creds or None
+                    _sp.set_session_creds(explicit_creds)
 
                 # 가용성 체크:
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
                 # - keycloak/wazuh: 사용자가 URL을 직접 줬으면 그 URL TCP probe만 확인
                 #   (placeholder 가드는 .env 디폴트값에만 의미가 있으므로 우회).
                 # - entra: tenant/client/secret 모두 있으면 Microsoft Graph 도달성만 확인.
+                # - okta: domain + api_token 모두 있으면 domain TCP probe.
+                # - splunk: url + (token 또는 user/password) 있으면 url TCP probe.
                 if tool in ("nmap", "trivy") and explicit_target:
                     wrapper_env = "NMAP_WRAPPER_URL" if tool == "nmap" else "TRIVY_WRAPPER_URL"
                     health_err = _probe_tcp(os.getenv(wrapper_env, ""))
@@ -1431,6 +1672,17 @@ def _run_collectors(session_id: int, tools: list[str]):
                 elif tool == "entra" and explicit_creds and explicit_creds.get("tenant_id") \
                         and explicit_creds.get("client_id") and explicit_creds.get("client_secret"):
                     health_err = _probe_tcp("https://login.microsoftonline.com")
+                elif tool == "okta" and explicit_creds and explicit_creds.get("domain") \
+                        and explicit_creds.get("api_token"):
+                    host = str(explicit_creds["domain"])
+                    if "://" not in host:
+                        host = f"https://{host}"
+                    health_err = _probe_tcp(host)
+                elif tool == "splunk" and explicit_creds and explicit_creds.get("url") \
+                        and (explicit_creds.get("token") or (
+                            explicit_creds.get("user") and explicit_creds.get("password")
+                        )):
+                    health_err = _probe_tcp(explicit_creds["url"])
                 else:
                     health_err = _tool_health(tool)
 
@@ -1470,6 +1722,16 @@ def _run_collectors(session_id: int, tools: list[str]):
                 _ec.set_session_creds(None)
             except Exception:
                 pass
+            try:
+                from collectors import okta_collector as _ok
+                _ok.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import splunk_collector as _sp
+                _sp.set_session_creds(None)
+            except Exception:
+                pass
 
         if not results:
             return
@@ -1490,3 +1752,321 @@ def _run_collectors(session_id: int, tools: list[str]):
             logger.error("[collector] DB write failed: %s", exc)
         finally:
             db.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# P1-8: 진단 세션 비교 endpoint
+# ──────────────────────────────────────────────────────────────────────────────
+
+# DiagnosisResult.result 의 ordinal 매핑. 평가불가는 None 으로 두어 비교 제외.
+_RESULT_ORDINAL: dict[str, Optional[int]] = {
+    "미충족":   0,
+    "부분충족": 1,
+    "충족":     2,
+    "평가불가": None,
+}
+
+
+def _result_ord(v: Optional[str]) -> Optional[int]:
+    if v is None:
+        return None
+    return _RESULT_ORDINAL.get(v, None)
+
+
+def _session_pillar_scores(db: Session, session_id: int) -> dict[str, float]:
+    rows = db.query(MaturityScore).filter(MaturityScore.session_id == session_id).all()
+    return {m.pillar: round(m.score, 4) for m in rows}
+
+
+@router.get("/compare")
+def compare_sessions(
+    from_id: int,
+    to_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """두 세션의 항목별 result 차이 + 점수 변화 반환 (P1-8)."""
+    if from_id == to_id:
+        raise HTTPException(status_code=400, detail="from_id 와 to_id 는 달라야 합니다.")
+
+    from_session = _get_session_or_404(db, from_id)
+    to_session   = _get_session_or_404(db, to_id)
+    assert_session_access(current_user, from_session)
+    assert_session_access(current_user, to_session)
+
+    from_meta = {
+        "session_id": from_session.session_id,
+        "date":       from_session.started_at.isoformat() if from_session.started_at else "",
+        "score":      from_session.total_score,
+        "level":      from_session.level or determine_maturity_level(from_session.total_score or 0.0),
+    }
+    to_meta = {
+        "session_id": to_session.session_id,
+        "date":       to_session.started_at.isoformat() if to_session.started_at else "",
+        "score":      to_session.total_score,
+        "level":      to_session.level or determine_maturity_level(to_session.total_score or 0.0),
+    }
+
+    score_delta = round(
+        (to_session.total_score or 0.0) - (from_session.total_score or 0.0), 4
+    )
+    level_changed = (from_meta["level"] or "") != (to_meta["level"] or "")
+
+    from_pillars = _session_pillar_scores(db, from_id)
+    to_pillars   = _session_pillar_scores(db, to_id)
+    pillar_changes = []
+    for pillar in sorted(set(from_pillars) | set(to_pillars)):
+        f = from_pillars.get(pillar)
+        t = to_pillars.get(pillar)
+        pillar_changes.append({
+            "pillar":     pillar,
+            "from_score": f,
+            "to_score":   t,
+            "delta":      round((t or 0.0) - (f or 0.0), 4) if (f is not None or t is not None) else 0.0,
+        })
+
+    from_rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == from_id)
+        .all()
+    )
+    to_rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == to_id)
+        .all()
+    )
+
+    from_map: dict = {cl.item_id: (dr, cl) for dr, cl in from_rows}
+    to_map:   dict = {cl.item_id: (dr, cl) for dr, cl in to_rows}
+
+    improved: list[dict] = []
+    regressed: list[dict] = []
+    unchanged_cnt = 0
+    new_in_to: list[dict] = []
+
+    for item_id, (to_dr, to_cl) in to_map.items():
+        if item_id not in from_map:
+            new_in_to.append({
+                "item_id":   item_id,
+                "item_name": to_cl.item_name,
+                "pillar":    to_cl.pillar,
+                "to":        to_dr.result,
+            })
+            continue
+        from_dr, _from_cl = from_map[item_id]
+        f_ord = _result_ord(from_dr.result)
+        t_ord = _result_ord(to_dr.result)
+        # 평가불가 ↔ 다른 값은 unchanged (의미 변화 없음).
+        if f_ord is None or t_ord is None:
+            unchanged_cnt += 1
+            continue
+        if t_ord > f_ord:
+            improved.append({
+                "item_id":   item_id,
+                "item_name": to_cl.item_name,
+                "pillar":    to_cl.pillar,
+                "from":      from_dr.result,
+                "to":        to_dr.result,
+            })
+        elif t_ord < f_ord:
+            regressed.append({
+                "item_id":   item_id,
+                "item_name": to_cl.item_name,
+                "pillar":    to_cl.pillar,
+                "from":      from_dr.result,
+                "to":        to_dr.result,
+            })
+        else:
+            unchanged_cnt += 1
+
+    return {
+        "from": from_meta,
+        "to":   to_meta,
+        "score_delta":    score_delta,
+        "level_changed":  level_changed,
+        "pillar_changes": pillar_changes,
+        "item_changes": {
+            "improved":  improved,
+            "regressed": regressed,
+            "unchanged": unchanged_cnt,
+            "new_in_to": new_in_to,
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# P1-11: 외부 공유 링크
+# ──────────────────────────────────────────────────────────────────────────────
+
+import secrets as _secrets
+import hashlib as _hashlib
+from datetime import timedelta as _timedelta
+
+
+def _hash_share_token(raw_token: str) -> str:
+    return _hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _build_result_payload(db: Session, session: DiagnosisSession) -> dict:
+    """/result 와 동일 구조 — 공유 endpoint 용 헬퍼."""
+    session_id = session.session_id
+    org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
+    user = db.query(User).filter(User.user_id == session.user_id).first()
+
+    maturity_rows = db.query(MaturityScore).filter(
+        MaturityScore.session_id == session_id
+    ).all()
+    pillar_scores = [
+        {
+            "pillar":   m.pillar,
+            "score":    round(m.score, 4),
+            "level":    determine_maturity_level(m.score),
+            "pass_cnt": m.pass_cnt,
+            "fail_cnt": m.fail_cnt,
+            "na_cnt":   m.na_cnt,
+        }
+        for m in maturity_rows
+    ]
+
+    results = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    checklist_results = [
+        {
+            "id":             cl.item_id,
+            "pillar":         cl.pillar,
+            "category":       cl.category,
+            "item":           cl.item_name,
+            "maturity":       cl.maturity,
+            "maturity_score": cl.maturity_score,
+            "diagnosis_type": cl.diagnosis_type,
+            "tool":           cl.tool,
+            "result":         dr.result,
+            "score":          dr.score or 0.0,
+            "evidence":       cl.evidence or "",
+            "criteria":       cl.criteria or "",
+            "fields":         cl.fields or "",
+            "logic":          cl.logic or "",
+            "exceptions":     cl.exceptions or "",
+            "recommendation": dr.recommendation or "",
+        }
+        for dr, cl in results
+    ]
+    return {
+        "session": {
+            "id":      session.session_id,
+            "org":     org.name if org else "",
+            "org_id":  session.org_id,
+            "date":    session.started_at.isoformat() if session.started_at else "",
+            "manager": user.name if user else "",
+            "user_id": session.user_id,
+            "level":   session.level or "",
+            "status":  session.status,
+            "score":   session.total_score,
+            "errors":  _build_session_errors(db, session_id),
+            "extra":   _mask_creds(session.extra or {}),
+            "is_demo": bool(org and org.name == DEMO_ORG_NAME),
+        },
+        "pillar_scores":     pillar_scores,
+        "overall_score":     session.total_score or 0.0,
+        "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
+        "checklist_results": checklist_results,
+    }
+
+
+@router.post("/share/{session_id}")
+def create_share_link(
+    session_id: int,
+    expires_days: int = 7,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """진단 결과 공유 토큰 발급 (기본 7일 만료). 본인/admin만 발급 가능."""
+    session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
+
+    # 발급 권한: 세션 소유자 본인 또는 admin
+    if current_user.role != "admin" and session.user_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="공유 링크 발급 권한이 없습니다.")
+
+    if expires_days < 1 or expires_days > 90:
+        raise HTTPException(status_code=400, detail="만료 기간은 1~90일 사이여야 합니다.")
+
+    raw_token = _secrets.token_urlsafe(32)
+    token_hash = _hash_share_token(raw_token)
+    expires_at = datetime.now(timezone.utc) + _timedelta(days=expires_days)
+
+    share = SharedResult(
+        session_id=session_id,
+        token_hash=token_hash,
+        created_by_user_id=current_user.user_id,
+        expires_at=expires_at,
+    )
+    db.add(share)
+    db.commit()
+    db.refresh(share)
+
+    return {
+        "status":     "ok",
+        "share_id":   share.share_id,
+        "token":      raw_token,
+        "expires_at": share.expires_at.isoformat() if share.expires_at else None,
+    }
+
+
+@router.get("/shared/{token}")
+def get_shared_result(token: str, db: Session = Depends(get_db)):
+    """토큰으로 진단 결과 조회. 인증 불필요(공유 링크), 만료/취소 검사."""
+    if not token or len(token) < 8:
+        raise HTTPException(status_code=400, detail="유효한 토큰이 아닙니다.")
+    token_hash = _hash_share_token(token)
+    share = db.query(SharedResult).filter(SharedResult.token_hash == token_hash).first()
+    if not share:
+        raise HTTPException(status_code=404, detail="공유 링크를 찾을 수 없습니다.")
+    if share.revoked_at is not None:
+        raise HTTPException(status_code=410, detail="이 공유 링크는 취소되었습니다.")
+
+    now = datetime.now(timezone.utc)
+    # MySQL DATETIME 은 tz 가 naive 로 돌아오므로 비교 위해 정규화.
+    exp = share.expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp is None or exp < now:
+        raise HTTPException(status_code=410, detail="만료된 공유 링크입니다.")
+
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == share.session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    payload = _build_result_payload(db, session)
+    payload["shared"] = {
+        "share_id":   share.share_id,
+        "expires_at": share.expires_at.isoformat() if share.expires_at else None,
+    }
+    return payload
+
+
+@router.delete("/share/{share_id}")
+def revoke_share_link(
+    share_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """공유 토큰 취소. 발급자 또는 admin."""
+    share = db.query(SharedResult).filter(SharedResult.share_id == share_id).first()
+    if not share:
+        raise HTTPException(status_code=404, detail="공유 링크를 찾을 수 없습니다.")
+    if current_user.role != "admin" and share.created_by_user_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="공유 링크 취소 권한이 없습니다.")
+    if share.revoked_at is not None:
+        return {"status": "ok", "share_id": share.share_id, "already_revoked": True}
+    share.revoked_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"status": "ok", "share_id": share.share_id}

@@ -276,6 +276,9 @@ class RegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     email: Optional[str] = None
     profile: Optional[ProfileFields] = None
+    # P0-5: 약관·개인정보 처리방침 동의 (정보통신망법·개인정보보호법 의무)
+    tos_agreed: bool = False
+    privacy_agreed: bool = False
 
     @field_validator("password")
     @classmethod
@@ -298,6 +301,10 @@ class UserResponse(BaseModel):
     org_id: int
     org_name: str
     profile: Optional[dict] = None
+
+
+# AuthEnvelope: login/register/refresh 가 반환하는 envelope. 별도 BaseModel 없이 dict 응답.
+# 형태: { "user": UserResponse, "tokens": TokenPair }
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -335,17 +342,59 @@ def _resolve_user_or_401(db: Session, login_id: Optional[str]) -> User:
 
 
 def get_current_user(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     x_login_id: Optional[str] = Header(None, alias="X-Login-Id"),
     db: Session = Depends(get_db),
 ) -> User:
-    """FastAPI 의존성 — 다른 router 들이 보호 엔드포인트에서 import 해 쓴다.
+    """FastAPI 의존성 — 보호 엔드포인트 인증 진입점.
 
-    사용 예:
-        from routers.auth import get_current_user
-        @router.get("/protected")
-        def view(current_user: User = Depends(get_current_user)): ...
+    우선순위:
+      1. Authorization: Bearer <JWT>  (P0-1 권장)
+      2. X-Login-Id 헤더 (간이 호환. 추후 deprecation 예정)
+
+    JWT 검증 실패 시 X-Login-Id로 fallback 하지 않고 401 반환 (혼선 방지).
     """
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        payload = _decode_token(token)
+        if payload.get("kind") != "access":
+            raise HTTPException(status_code=401, detail="access 토큰이 아닙니다.")
+        login_id = payload.get("sub")
+        return _resolve_user_or_401(db, login_id)
     return _resolve_user_or_401(db, x_login_id)
+
+
+# ─── JWT 토큰 응답 + refresh 엔드포인트 (P0-1) ────────────────────────────────
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "Bearer"
+    expires_in: int  # access_token 만료까지 남은 초
+
+
+def _issue_token_pair(user: User) -> TokenPair:
+    return TokenPair(
+        access_token=_create_token(user, "access", JWT_ACCESS_TTL),
+        refresh_token=_create_token(user, "refresh", JWT_REFRESH_TTL),
+        expires_in=int(JWT_ACCESS_TTL.total_seconds()),
+    )
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=TokenPair)
+def refresh_token(req: RefreshRequest, db: Session = Depends(get_db)):
+    """refresh_token으로 새 access(+refresh) 발급. 만료/무효 시 401."""
+    payload = _decode_token(req.refresh_token)
+    if payload.get("kind") != "refresh":
+        raise HTTPException(status_code=401, detail="refresh 토큰이 아닙니다.")
+    user = db.query(User).filter(User.login_id == payload.get("sub")).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="사용자가 존재하지 않습니다.")
+    return _issue_token_pair(user)
 
 
 def assert_session_access(user: User, session_obj) -> None:
@@ -389,9 +438,20 @@ def _to_response(u: User, org: Optional[Organization]) -> UserResponse:
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.post("/register", response_model=UserResponse)
-def register(req: RegisterRequest, db: Session = Depends(get_db)):
+@router.post("/register")
+def register(req: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    # P0-5: 약관·방침 동의 필수
+    if not (req.tos_agreed and req.privacy_agreed):
+        raise HTTPException(
+            status_code=400,
+            detail="이용약관과 개인정보 처리방침에 동의해야 가입할 수 있습니다.",
+        )
+
     if db.query(User).filter(User.login_id == req.login_id).first():
+        ip, ua = _client_meta(request)
+        _audit_db(db, "register_fail", login_id=req.login_id,
+                  source_ip=ip, user_agent=ua, success=False,
+                  detail={"reason": "duplicate_login_id"})
         raise HTTPException(status_code=409, detail="이미 사용 중인 아이디입니다.")
 
     profile_dict = req.profile.model_dump(exclude_none=True) if req.profile else {}
@@ -425,6 +485,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == email).first():
         email = f"{req.login_id}+{secrets.token_hex(3)}@local"
 
+    now = datetime.now(timezone.utc)
     user = User(
         org_id=org.org_id,
         name=req.name,
@@ -433,30 +494,44 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
         login_id=req.login_id,
         password_hash=_hash_password(req.password),
         profile=profile_dict or None,
+        tos_agreed_at=now,
+        privacy_agreed_at=now,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+    ip, ua = _client_meta(request)
     audit_logger.info("[auth] register login_id=%s org=%s", req.login_id, org_name)
-    return _to_response(user, org)
+    _audit_db(db, "register", user=user, source_ip=ip, user_agent=ua,
+              detail={"org_name": org_name})
+    return {
+        "user":   _to_response(user, org).model_dump(),
+        "tokens": _issue_token_pair(user).model_dump(),
+    }
 
 
-@router.post("/login", response_model=UserResponse)
-def login(req: LoginRequest, db: Session = Depends(get_db)):
-    _check_lock(req.login_id)
+@router.post("/login")
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    ip, ua = _client_meta(request)
+    _check_lock(req.login_id, source_ip=ip)
 
     user = db.query(User).filter(User.login_id == req.login_id).first()
     if not user or not user.password_hash:
-        _record_login_failure(req.login_id)
+        _record_login_failure(req.login_id, source_ip=ip)
         audit_logger.info("[auth] login fail login_id=%s reason=no_user", req.login_id)
+        _audit_db(db, "login_fail", login_id=req.login_id, source_ip=ip, user_agent=ua,
+                  success=False, detail={"reason": "no_user"})
         raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
     if not _verify_password(req.password, user.password_hash):
-        _record_login_failure(req.login_id)
+        _record_login_failure(req.login_id, source_ip=ip)
         audit_logger.info("[auth] login fail login_id=%s reason=bad_password", req.login_id)
+        _audit_db(db, "login_fail", user=user, source_ip=ip, user_agent=ua,
+                  success=False, detail={"reason": "bad_password"})
         raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
 
-    _record_login_success(req.login_id)
+    _record_login_success(req.login_id, source_ip=ip)
     audit_logger.info("[auth] login ok login_id=%s user_id=%s", req.login_id, user.user_id)
+    _audit_db(db, "login_ok", user=user, source_ip=ip, user_agent=ua)
 
     # PBKDF2 lazy upgrade: 저장된 라운드가 현재 권장치 미만이면 새 해시로 재저장.
     if _stored_iters(user.password_hash) < PBKDF2_ITERS:
@@ -469,6 +544,12 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         except Exception as exc:
             db.rollback()
             logger.warning("[auth] lazy upgrade 실패 login_id=%s: %s", req.login_id, exc)
+
+    org = db.query(Organization).filter(Organization.org_id == user.org_id).first()
+    return {
+        "user":   _to_response(user, org).model_dump(),
+        "tokens": _issue_token_pair(user).model_dump(),
+    }
 
     org = db.query(Organization).filter(Organization.org_id == user.org_id).first()
     return _to_response(user, org)
@@ -643,3 +724,97 @@ def reset_password(req: PasswordResetConfirm, db: Session = Depends(get_db)):
     _record_login_success(user.login_id or "")  # 잠금 카운터 리셋 — 사용자가 정상 복귀 가능
     audit_logger.info("[auth] password reset completed login_id=%s", user.login_id)
     return {"status": "ok", "message": "비밀번호가 재설정되었습니다."}
+
+
+# ─── 회원 탈퇴 (P0-6) ─────────────────────────────────────────────────────────
+# 본인 인증(current_password) 후 User 행 + 본인 진단 세션 + 자식 데이터 cascade 삭제.
+# 개인 조직("{login_id}_개인") 이면 Organization 도 함께 삭제. 공유 조직이면 보존.
+# 이메일 발송은 best-effort.
+
+class AccountDeleteRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+
+
+@router.delete("/me")
+def delete_account(
+    req: AccountDeleteRequest,
+    request: Request,
+    x_login_id: Optional[str] = Header(None, alias="X-Login-Id"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    """회원 탈퇴 — 본인 비밀번호 재확인 후 즉시 삭제 (P0-6).
+
+    삭제 대상:
+      - 본인이 만든 DiagnosisSession + 자식(CollectedData/Evidence/DiagnosisResult/MaturityScore/ScoreHistory)
+      - PasswordResetToken, AuthAuditLog 의 user_id 는 ON DELETE SET NULL (기록 보존)
+      - User 행
+      - 개인 조직(이름이 "{login_id}_개인")이면 Organization 도 함께
+    """
+    # 인증: JWT Bearer 우선, X-Login-Id fallback
+    if authorization and authorization.lower().startswith("bearer "):
+        payload = _decode_token(authorization.split(" ", 1)[1].strip())
+        if payload.get("kind") != "access":
+            raise HTTPException(status_code=401, detail="access 토큰이 아닙니다.")
+        login_id = payload.get("sub")
+    else:
+        login_id = x_login_id
+    user = _resolve_user_or_401(db, login_id)
+    if not user.password_hash or not _verify_password(req.current_password, user.password_hash):
+        audit_logger.warning("[auth] delete-account fail login_id=%s reason=bad_password", login_id)
+        raise HTTPException(status_code=401, detail="비밀번호가 일치하지 않습니다.")
+
+    ip, ua = _client_meta(request)
+    user_id_snapshot = user.user_id
+    login_id_snapshot = user.login_id
+    email_snapshot = user.email
+    name_snapshot = user.name
+    org_id_snapshot = user.org_id
+
+    # 본인이 만든 세션 + 자식 cascade
+    from sqlalchemy import text as _sql_text
+    from models import (
+        DiagnosisSession as _DS, CollectedData as _CD, Evidence as _EV,
+        DiagnosisResult as _DR, MaturityScore as _MS, ScoreHistory as _SH,
+    )
+    sids = [s.session_id for s in db.query(_DS).filter(_DS.user_id == user_id_snapshot).all()]
+    if sids:
+        for model in (_CD, _EV, _DR, _MS, _SH):
+            db.query(model).filter(model.session_id.in_(sids)).delete(synchronize_session=False)
+        db.query(_DS).filter(_DS.session_id.in_(sids)).delete(synchronize_session=False)
+
+    # 개인 조직이면 Organization 도 삭제
+    delete_org = False
+    org = db.query(Organization).filter(Organization.org_id == org_id_snapshot).first()
+    if org and org.name == f"{login_id_snapshot}_개인":
+        # 같은 조직 다른 사용자가 없을 때만 삭제
+        other_users = db.query(User).filter(
+            User.org_id == org_id_snapshot, User.user_id != user_id_snapshot
+        ).count()
+        if other_users == 0:
+            delete_org = True
+
+    db.delete(user)
+    if delete_org and org:
+        db.delete(org)
+    db.commit()
+
+    audit_logger.info(
+        "[auth] account deleted login_id=%s user_id=%s sessions=%d org_deleted=%s",
+        login_id_snapshot, user_id_snapshot, len(sids), delete_org,
+    )
+    _audit_db(db, "account_deleted", login_id=login_id_snapshot,
+              source_ip=ip, user_agent=ua,
+              detail={"sessions_deleted": len(sids), "org_deleted": delete_org})
+
+    # 탈퇴 확인 메일 — best-effort
+    try:
+        if email_snapshot and not email_snapshot.endswith("@local"):
+            from services.email_sender import send_email
+            send_email(email_snapshot, "[Readyz-T] 회원 탈퇴 처리 안내", "account_deleted", {
+                "user_name": name_snapshot,
+            })
+    except Exception as exc:
+        audit_logger.warning("[auth] delete email failed login_id=%s err=%s", login_id_snapshot, exc)
+
+    return {"status": "ok", "message": "회원 탈퇴가 처리되었습니다."}

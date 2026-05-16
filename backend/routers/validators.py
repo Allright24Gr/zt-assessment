@@ -117,3 +117,38 @@ def validate_entra_tenant_id(value: str, field_name: str = "entra_creds.tenant_i
     if _ENTRA_TENANT_DOMAIN_RE.match(value) and "." in value:
         return value
     raise ValueError(f"{field_name}: GUID 또는 도메인 형식이어야 합니다")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Okta domain
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Okta domain: <subdomain>.okta.com / .oktapreview.com / .okta-emea.com 또는 일반 호스트.
+# https:// 접두를 떼고 호스트만 검증. 셸 메타문자/공백 차단.
+_OKTA_DOMAIN_RE = re.compile(
+    r"^[a-zA-Z0-9](?:[a-zA-Z0-9\-\.]{0,253}[a-zA-Z0-9])?$"
+)
+
+
+def validate_okta_domain(value: str, field_name: str = "okta_creds.domain") -> str:
+    """Okta 도메인 또는 URL 입력 모두 허용 (URL이면 host 추출). 빈 값은 통과."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if any(c in value for c in _SHELL_METAS + " "):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자 포함")
+    # https:// 접두 허용 — host 만 추출해서 검증.
+    candidate = value
+    if candidate.startswith("https://") or candidate.startswith("http://"):
+        try:
+            p = urlparse(candidate)
+        except Exception:
+            raise ValueError(f"{field_name}: URL 파싱 실패")
+        candidate = p.hostname or ""
+        if not candidate:
+            raise ValueError(f"{field_name}: 호스트 누락")
+    if not _OKTA_DOMAIN_RE.match(candidate):
+        raise ValueError(f"{field_name}: 도메인 형식이어야 합니다")
+    if "." not in candidate:
+        raise ValueError(f"{field_name}: 도메인에 점(.)이 포함되어야 합니다")
+    return value
