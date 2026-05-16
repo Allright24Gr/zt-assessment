@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   Clock,
+  GitCompare,
   TrendingUp,
 } from "lucide-react";
 import {
@@ -67,6 +68,7 @@ function toApiSession(s: typeof mockSessions[0]): AssessmentSession {
 
 export function History() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [selectedSessions, setSelectedSessions] = useState<number[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -177,6 +179,25 @@ export function History() {
           {selectedSessions.length > 0 && (
             <div className="ml-auto flex items-center gap-2">
               <span className="text-sm text-blue-600 font-medium">{selectedSessions.length}개 선택됨</span>
+              {selectedSessions.length === 2 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const [a, b] = selectedSessions;
+                    // 날짜순으로 from=오래된, to=최신
+                    const sa = sessions.find((s) => Number(s.id) === a);
+                    const sb = sessions.find((s) => Number(s.id) === b);
+                    const fromId = (sa && sb && sa.date <= sb.date) ? a : b;
+                    const toId = fromId === a ? b : a;
+                    navigate(`/compare?from=${fromId}&to=${toId}`);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-xs font-medium"
+                  title="선택한 2개 진단의 차이를 비교합니다"
+                >
+                  <GitCompare size={12} />
+                  비교 모드
+                </button>
+              )}
               <button
                 onClick={() => setSelectedSessions([])}
                 className="text-xs text-gray-400 hover:text-gray-600 underline"

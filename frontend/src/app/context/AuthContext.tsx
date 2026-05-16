@@ -1,5 +1,15 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from "react";
-import { loginUser, registerUser, fetchAuthMe, type AuthUser, type RegisterPayload } from "../../config/api";
+import {
+  loginUser,
+  registerUser,
+  fetchAuthMe,
+  setStoredTokens,
+  getStoredAccessToken,
+  getStoredRefreshToken,
+  type AuthUser,
+  type RegisterPayload,
+} from "../../config/api";
+import type { AuthEnvelope } from "../../types/api";
 
 export interface User {
   id: string;            // login_id
@@ -15,6 +25,8 @@ export interface User {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
+  accessToken: string | null;
+  refreshToken: string | null;
   login: (login_id: string, password: string) => Promise<boolean>;
   register: (payload: RegisterPayload) => Promise<boolean>;
   logout: () => void;
@@ -25,7 +37,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const STORAGE_KEY = "zt_user";
 
-function _toUser(u: AuthUser): User {
+function _toUser(u: AuthUser | AuthEnvelope["user"]): User {
   return {
     id: u.login_id,
     user_id: u.user_id,
@@ -34,7 +46,8 @@ function _toUser(u: AuthUser): User {
     orgName: u.org_name,
     org_id: u.org_id,
     email: u.email,
-    profile: u.profile,
+    // profile은 AuthUser와 AuthEnvelope.user 형식이 다를 수 있으므로 보수적으로 캐스팅
+    profile: (u as AuthUser).profile as AuthUser["profile"] | undefined,
   };
 }
 
@@ -55,6 +68,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
   const [loading, setLoading] = useState(false);
 
+  // 토큰은 localStorage("zt_tokens")에 영속 (시연 우선 — 별도 키 분리는 추후)
+  const [tokens, setTokensState] = useState<{ access: string | null; refresh: string | null }>(
+    () => ({
+      access: getStoredAccessToken(),
+      refresh: getStoredRefreshToken(),
+    }),
+  );
+
   // 페이지 새로고침 시 백엔드에서 최신 프로필 재조회
   useEffect(() => {
     if (!user?.id) return;
@@ -67,6 +88,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         // 백엔드에 없으면 로그아웃 처리
         setUserState(null);
+        setStoredTokens(null);
+        setTokensState({ access: null, refresh: null });
         localStorage.removeItem(STORAGE_KEY);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,11 +101,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     else localStorage.removeItem(STORAGE_KEY);
   };
 
+  const _persistEnvelope = (env: AuthEnvelope) => {
+    const u = _toUser(env.user);
+    setUser(u);
+    setStoredTokens(env.tokens);
+    setTokensState({ access: env.tokens.access_token, refresh: env.tokens.refresh_token });
+  };
+
   const login = async (login_id: string, password: string) => {
     setLoading(true);
     try {
       const res = await loginUser(login_id, password);
-      setUser(_toUser(res));
+      _persistEnvelope(res);
       return true;
     } catch {
       return false;
@@ -95,7 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     try {
       const res = await registerUser(payload);
-      setUser(_toUser(res));
+      _persistEnvelope(res);
       return true;
     } catch {
       return false;
@@ -104,7 +134,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const logout = () => setUser(null);
+  const logout = () => {
+    setUser(null);
+    setStoredTokens(null);
+    setTokensState({ access: null, refresh: null });
+  };
 
   const refresh = async () => {
     if (!user?.id) return;
@@ -117,7 +151,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refresh, setUser }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        accessToken: tokens.access,
+        refreshToken: tokens.refresh,
+        login,
+        register,
+        logout,
+        refresh,
+        setUser,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

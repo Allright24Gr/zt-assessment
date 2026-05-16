@@ -7,15 +7,17 @@ import {
 } from "recharts";
 import {
   AlertTriangle, CheckCircle, Clock, Database, Download,
-  Loader2, Server, Shield, Upload,
+  Loader2, Paperclip, Server, Shield, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import {
-  getAssessmentStatus, finalizeAssessment, getManualItems, uploadManualExcel,
+  getAssessmentStatus, finalizeAssessment, getManualItems, uploadManualExcel, uploadEvidence,
+  evidenceDownloadUrl, ApiError,
   type AssessmentStatusResponse,
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
+import type { ManualItemDetail } from "../../types/api";
 
 const TOOL_NAMES = ["Keycloak", "Wazuh", "Nmap", "Trivy"] as const;
 const TOOL_KEY_MAP: Record<string, typeof TOOL_NAMES[number]> = {
@@ -154,6 +156,12 @@ export function InProgress() {
   // 백엔드 상태
   const [status, setStatus] = useState<AssessmentStatusResponse | null>(null);
   const [manualCount, setManualCount] = useState(0);
+  const [manualItems, setManualItems] = useState<ManualItemDetail[]>([]);
+
+  // 증적 업로드 상태 (P1-7)
+  const [evidenceShow, setEvidenceShow] = useState(false);
+  const [evidenceUploading, setEvidenceUploading] = useState<Record<number, boolean>>({});
+  const [uploadedEvidence, setUploadedEvidence] = useState<Record<number, { id: number; name: string }>>({});
 
   // UI
   const [logs, setLogs] = useState<LogEntry[]>(INITIAL_LOGS);
@@ -262,9 +270,53 @@ export function InProgress() {
   useEffect(() => {
     if (!sid) return;
     getManualItems(sid, excludedTools)
-      .then((res) => setManualCount(res.items.length))
+      .then((res) => {
+        setManualCount(res.items.length);
+        setManualItems(res.items);
+      })
       .catch((err) => console.warn("[in-progress] manual items:", err));
   }, [sid, excludedTools]);
+
+  // 항목별 증적 파일 업로드 핸들러 (P1-7)
+  const handleEvidenceUpload = async (
+    checkId: number,
+    file: File,
+  ) => {
+    if (!sid) return;
+    // 클라이언트 검증: 10MB 제한
+    const MAX_BYTES = 10 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      toast.error("증적 파일은 10MB 이하만 업로드 가능합니다.");
+      return;
+    }
+    // 클라이언트 검증: 허용 타입 (pdf/image)
+    const isPdf = file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf";
+    const isImage = file.type.startsWith("image/");
+    if (!isPdf && !isImage) {
+      toast.error("PDF 또는 이미지 파일만 업로드 가능합니다.");
+      return;
+    }
+    setEvidenceUploading((prev) => ({ ...prev, [checkId]: true }));
+    try {
+      const res = await uploadEvidence(sid, checkId, file);
+      setUploadedEvidence((prev) => ({
+        ...prev,
+        [checkId]: { id: res.evidence_id, name: res.filename },
+      }));
+      toast.success(`증적이 업로드되었습니다: ${res.filename}`);
+    } catch (err) {
+      console.warn("[in-progress] evidence upload:", err);
+      if (err instanceof ApiError) {
+        if (err.status === 413) toast.error("파일 크기가 너무 큽니다.");
+        else if (err.status === 415) toast.error("지원하지 않는 파일 형식입니다.");
+        else toast.error("증적 업로드에 실패했습니다.");
+      } else {
+        toast.error("증적 업로드에 실패했습니다.");
+      }
+    } finally {
+      setEvidenceUploading((prev) => ({ ...prev, [checkId]: false }));
+    }
+  };
 
   // 백엔드 폴링 (즉시 + 3초 간격)
   useEffect(() => {
@@ -674,6 +726,87 @@ export function InProgress() {
               </label>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 항목별 증적 파일 업로드 (P1-7) */}
+      {manualCount > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setEvidenceShow((v) => !v)}
+            className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50 hover:bg-gray-100 transition-colors"
+          >
+            <span className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+              <Paperclip size={16} className="text-blue-600" />
+              수동 항목별 증적 파일 업로드 (선택)
+              <span className="ml-1 text-xs text-gray-500 font-normal">
+                — Excel 외에 항목별 PDF/이미지 증적을 첨부할 수 있습니다.
+              </span>
+            </span>
+            <span className="text-xs text-gray-500">{evidenceShow ? "접기" : "펼치기"}</span>
+          </button>
+          {evidenceShow && (
+            <div className="p-5 space-y-2 max-h-[480px] overflow-y-auto">
+              {manualItems.map((item) => {
+                const uploading = !!evidenceUploading[item.check_id];
+                const uploaded = uploadedEvidence[item.check_id];
+                return (
+                  <div
+                    key={item.check_id}
+                    className="flex items-center gap-3 px-3 py-2 border border-gray-200 rounded-lg hover:bg-gray-50"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-800 truncate">
+                        {item.item_id} · {item.item_name}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {item.pillar} · {item.category}
+                      </p>
+                      {uploaded && (
+                        <a
+                          href={evidenceDownloadUrl(uploaded.id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 mt-1 text-xs text-blue-600 hover:underline"
+                        >
+                          <Paperclip size={11} />
+                          {uploaded.name}
+                        </a>
+                      )}
+                    </div>
+                    <label
+                      className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg cursor-pointer ${
+                        uploading
+                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                          : "bg-white border border-gray-300 text-gray-700 hover:bg-blue-50 hover:border-blue-300"
+                      }`}
+                    >
+                      {uploading ? (
+                        <><Loader2 size={12} className="animate-spin" /> 업로드 중</>
+                      ) : (
+                        <><Paperclip size={12} /> {uploaded ? "교체" : "파일 첨부"}</>
+                      )}
+                      <input
+                        type="file"
+                        accept=".pdf,image/*"
+                        className="hidden"
+                        disabled={uploading}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) handleEvidenceUpload(item.check_id, f);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+                );
+              })}
+              {manualItems.length === 0 && (
+                <p className="text-sm text-gray-400 text-center py-4">수동 항목이 없습니다.</p>
+              )}
+            </div>
+          )}
         </div>
       )}
 

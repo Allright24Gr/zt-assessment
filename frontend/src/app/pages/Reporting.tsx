@@ -1,8 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
-import { API_BASE } from "../../config/api";
-import { FileText, Download, TrendingUp, AlertTriangle, AlertCircle, ArrowRight, ChevronDown, RotateCcw } from "lucide-react";
+import {
+  API_BASE,
+  createAssessmentShare,
+  listAssessmentShares,
+  revokeAssessmentShare,
+  ApiError,
+} from "../../config/api";
+import {
+  FileText, Download, TrendingUp, AlertTriangle, AlertCircle, ArrowRight, ChevronDown, RotateCcw,
+  Share2, Copy, X, Loader2, Trash2,
+} from "lucide-react";
+import type { AssessmentShareListItem } from "../../types/api";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, Legend,
@@ -237,6 +247,14 @@ export function Reporting() {
   const [selectedRiskCode, setSelectedRiskCode] = useState<string | null>(null);
   const [pdfDownloading, setPdfDownloading] = useState(false);
 
+  // 공유 링크 모달 (P1-11)
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareExpiresDays, setShareExpiresDays] = useState(30);
+  const [shareList, setShareList] = useState<AssessmentShareListItem[]>([]);
+  const [shareCreating, setShareCreating] = useState(false);
+  const [lastShareUrl, setLastShareUrl] = useState<string | null>(null);
+  const shareCloseBtnRef = useRef<HTMLButtonElement>(null);
+
   const fallbackSession: Session = mockSessions.find((s) => s.id === Number(sessionId)) ?? mockSessions[0];
   const [session, setSession] = useState<Session>(fallbackSession);
   const [isDemo, setIsDemo] = useState(false);
@@ -296,6 +314,71 @@ export function Reporting() {
         setUsedFallback(true);
       });
   }, [sessionId]);
+
+  // 공유 모달 — ESC 닫기 + 토큰 목록 로드
+  useEffect(() => {
+    if (!shareOpen || !sessionId) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !shareCreating) setShareOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const t = window.setTimeout(() => shareCloseBtnRef.current?.focus(), 0);
+
+    listAssessmentShares(sessionId)
+      .then((items) => setShareList(items))
+      .catch((err) => {
+        // 백엔드가 list endpoint 없는 경우도 대응 — 단순화: 무시
+        console.warn("[reporting] share list failed:", err);
+      });
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.clearTimeout(t);
+    };
+  }, [shareOpen, sessionId, shareCreating]);
+
+  const handleCreateShare = async () => {
+    if (!sessionId) return;
+    setShareCreating(true);
+    try {
+      const res = await createAssessmentShare(sessionId, shareExpiresDays);
+      const url = res.share_url ?? `${window.location.origin}/shared/${res.token}`;
+      setLastShareUrl(url);
+      toast.success("공유 링크가 발급되었습니다.");
+      // 목록 갱신
+      listAssessmentShares(sessionId).then((items) => setShareList(items)).catch(() => {});
+    } catch (err) {
+      console.warn("[reporting] create share:", err);
+      if (err instanceof ApiError && err.status === 403) {
+        toast.error("공유 권한이 없습니다.");
+      } else {
+        toast.error("공유 링크 발급에 실패했습니다.");
+      }
+    } finally {
+      setShareCreating(false);
+    }
+  };
+
+  const handleRevokeShare = async (shareId: number) => {
+    if (!sessionId) return;
+    try {
+      await revokeAssessmentShare(shareId);
+      toast.success("공유가 취소되었습니다.");
+      setShareList((prev) => prev.filter((s) => s.share_id !== shareId));
+    } catch (err) {
+      console.warn("[reporting] revoke share:", err);
+      toast.error("공유 취소에 실패했습니다.");
+    }
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("링크가 클립보드에 복사되었습니다.");
+    } catch {
+      toast.error("복사에 실패했습니다. 직접 선택해서 복사해주세요.");
+    }
+  };
 
   const normalizedQuestionQuery = detailQuestionQuery.trim().toLowerCase();
   const filteredChecklistDetails = checklistDetails.filter((detail) => {
@@ -394,13 +477,24 @@ export function Reporting() {
             {session.org} — {session.manager} ({session.date})
           </p>
         </div>
-        <Link
-          to="/new-assessment"
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-        >
-          <RotateCcw size={20} />
-          재진단 시작
-        </Link>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShareOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 border border-blue-200 text-blue-700 bg-white rounded-lg hover:bg-blue-50"
+            title="공유 링크 발급"
+          >
+            <Share2 size={18} />
+            공유
+          </button>
+          <Link
+            to="/new-assessment"
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            <RotateCcw size={20} />
+            재진단 시작
+          </Link>
+        </div>
       </div>
 
       {/* 이 진단 결과의 출처 — 자동/자가 비율 배지 */}
@@ -956,6 +1050,146 @@ export function Reporting() {
                 {pdfDownloading ? "생성 중..." : "PDF 다운로드"}
               </a>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 공유 링크 모달 (P1-11) */}
+      {shareOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => !shareCreating && setShareOpen(false)}
+          aria-hidden="true"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="share-modal-title"
+            className="relative bg-white rounded-xl shadow-2xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => !shareCreating && setShareOpen(false)}
+              className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
+              aria-label="닫기"
+              ref={shareCloseBtnRef}
+            >
+              <X size={18} />
+            </button>
+            <div className="flex items-center gap-2 mb-3">
+              <Share2 size={18} className="text-blue-600" aria-hidden="true" />
+              <h2 id="share-modal-title" className="text-base font-semibold text-gray-900">
+                결과 공유 링크
+              </h2>
+            </div>
+            <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+              읽기 전용 공유 링크를 발급합니다. 만료 후에는 자동으로 비활성화되며,
+              언제든지 수동 취소할 수 있습니다.
+            </p>
+
+            <div className="mb-4">
+              <label className="block text-xs text-gray-700 mb-1.5">만료 기간</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[7, 30, 90].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setShareExpiresDays(d)}
+                    className={`px-3 py-2 rounded-lg text-sm font-medium border ${
+                      shareExpiresDays === d
+                        ? "border-blue-500 bg-blue-50 text-blue-700"
+                        : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    {d}일
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleCreateShare}
+              disabled={shareCreating}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {shareCreating ? (
+                <><Loader2 size={14} className="animate-spin" /> 발급 중...</>
+              ) : (
+                <><Share2 size={14} /> 새 공유 링크 발급</>
+              )}
+            </button>
+
+            {lastShareUrl && (
+              <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+                <p className="text-xs font-semibold text-green-800 mb-2">발급된 링크</p>
+                <div className="flex items-center gap-2 bg-white rounded border border-green-200 px-2 py-1.5">
+                  <code className="text-xs text-gray-700 truncate flex-1">{lastShareUrl}</code>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(lastShareUrl)}
+                    className="shrink-0 p-1 text-gray-500 hover:text-blue-600"
+                    title="복사"
+                  >
+                    <Copy size={14} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {shareList.length > 0 && (
+              <div className="mt-5 border-t border-gray-100 pt-4">
+                <p className="text-xs font-semibold text-gray-700 mb-2">
+                  활성 공유 링크 ({shareList.length}개)
+                </p>
+                <ul className="space-y-1.5 max-h-40 overflow-y-auto">
+                  {shareList.map((s) => {
+                    const url = `${window.location.origin}/shared/${s.token}`;
+                    const expired = new Date(s.expires_at).getTime() < Date.now();
+                    return (
+                      <li
+                        key={s.share_id}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded border ${
+                          expired || s.revoked
+                            ? "border-gray-200 bg-gray-50 opacity-60"
+                            : "border-gray-200 bg-white"
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-mono text-gray-600 truncate">{s.token}</p>
+                          <p className="text-[10px] text-gray-400">
+                            만료: {new Date(s.expires_at).toLocaleDateString("ko-KR")}
+                            {expired && <span className="ml-1 text-red-500">(만료됨)</span>}
+                            {s.revoked && <span className="ml-1 text-gray-500">(취소됨)</span>}
+                          </p>
+                        </div>
+                        {!expired && !s.revoked && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(url)}
+                              className="shrink-0 p-1 text-gray-500 hover:text-blue-600"
+                              title="복사"
+                            >
+                              <Copy size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeShare(s.share_id)}
+                              className="shrink-0 p-1 text-gray-500 hover:text-red-600"
+                              title="취소"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
           </div>
         </div>
       )}

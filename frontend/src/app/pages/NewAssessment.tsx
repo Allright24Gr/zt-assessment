@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
-import type { ScanTargets, KeycloakCreds, WazuhCreds, EntraCreds, IdpType, SiemType } from "../../types/api";
+import type { ScanTargets, KeycloakCreds, WazuhCreds, EntraCreds, OktaCreds, SplunkCreds, IdpType, SiemType } from "../../types/api";
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
 const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"];
@@ -14,7 +14,7 @@ const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azu
 const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported: boolean }> = [
   { key: "keycloak", label: "Keycloak",                desc: "오픈소스 IAM/SSO",        supported: true  },
   { key: "entra",    label: "MS Entra ID (Azure AD)",  desc: "Microsoft 클라우드 IdP",   supported: true  },
-  { key: "okta",     label: "Okta",                    desc: "SaaS IdP",                supported: false },
+  { key: "okta",     label: "Okta",                    desc: "SaaS IdP",                supported: true  },
   { key: "ldap",     label: "자체 LDAP / AD",          desc: "온프레미스 디렉터리",      supported: false },
   { key: "none",     label: "사용 안 함 / 기타",       desc: "수동 진단으로 폴백",       supported: false },
 ];
@@ -22,7 +22,7 @@ const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported:
 // 사전 프로파일링 — 보안 정보 관리(SIEM) 선택지
 const SIEM_OPTIONS: Array<{ key: SiemType; label: string; desc: string; supported: boolean }> = [
   { key: "wazuh",   label: "Wazuh",        desc: "오픈소스 SIEM/XDR",  supported: true  },
-  { key: "splunk",  label: "Splunk",       desc: "상용 SIEM",          supported: false },
+  { key: "splunk",  label: "Splunk",       desc: "상용 SIEM",          supported: true  },
   { key: "elastic", label: "Elastic SIEM", desc: "Elastic Stack",      supported: false },
   { key: "none",    label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백", supported: false },
 ];
@@ -93,7 +93,9 @@ export function NewAssessment() {
   const toolScope: Record<string, boolean> = {
     keycloak: profileSelect.idp_type === "keycloak",
     entra:    profileSelect.idp_type === "entra",
+    okta:     profileSelect.idp_type === "okta",
     wazuh:    profileSelect.siem_type === "wazuh",
+    splunk:   profileSelect.siem_type === "splunk",
     nmap:     externalScanTools.nmap,
     trivy:    externalScanTools.trivy,
   };
@@ -117,6 +119,14 @@ export function NewAssessment() {
   // Entra ID 자격 카드 입력값 (신규)
   const [entraCreds, setEntraCreds] = useState<{ tenant_id: string; client_id: string; client_secret: string }>({
     tenant_id: "", client_id: "", client_secret: "",
+  });
+  // Okta 자격 카드 입력값 (P0/P1 기타)
+  const [oktaCreds, setOktaCreds] = useState<{ domain: string; api_token: string }>({
+    domain: "", api_token: "",
+  });
+  // Splunk 자격 카드 입력값 (P0/P1 기타)
+  const [splunkCreds, setSplunkCreds] = useState<{ url: string; user: string; password: string }>({
+    url: "", user: "", password: "",
   });
 
   const togglePillar = (key: string) => {
@@ -203,6 +213,23 @@ export function NewAssessment() {
     }
     const hasEntra = Object.keys(entraPayload).length > 0;
 
+    // Okta 자격: 실 스캔 모드 + IdP=okta + 입력값이 있을 때만 전송
+    const oktaPayload: OktaCreds = {};
+    if (isLive && toolScope.okta) {
+      if (oktaCreds.domain.trim())    oktaPayload.domain    = oktaCreds.domain.trim();
+      if (oktaCreds.api_token)         oktaPayload.api_token = oktaCreds.api_token;
+    }
+    const hasOkta = Object.keys(oktaPayload).length > 0;
+
+    // Splunk 자격: 실 스캔 모드 + SIEM=splunk + 입력값이 있을 때만 전송
+    const splunkPayload: SplunkCreds = {};
+    if (isLive && toolScope.splunk) {
+      if (splunkCreds.url.trim())  splunkPayload.url      = splunkCreds.url.trim();
+      if (splunkCreds.user.trim()) splunkPayload.user     = splunkCreds.user.trim();
+      if (splunkCreds.password)    splunkPayload.password = splunkCreds.password;
+    }
+    const hasSplunk = Object.keys(splunkPayload).length > 0;
+
     runAssessment({
       org_name: formData.orgName,
       manager: formData.manager,
@@ -222,6 +249,8 @@ export function NewAssessment() {
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),
       ...(hasEntra ? { entra_creds: entraPayload } : {}),
+      ...(hasOkta ? { okta_creds: oktaPayload } : {}),
+      ...(hasSplunk ? { splunk_creds: splunkPayload } : {}),
     })
       .then((res) =>
         navigate(`/in-progress/${res.session_id}`, {
@@ -253,6 +282,8 @@ export function NewAssessment() {
           keycloakCreds: { url: keycloakCreds.url, admin_user: keycloakCreds.admin_user },
           wazuhCreds:    { url: wazuhCreds.url,    api_user:   wazuhCreds.api_user   },
           entraCreds:    { tenant_id: entraCreds.tenant_id, client_id: entraCreds.client_id },
+          oktaCreds:     { domain: oktaCreds.domain },
+          splunkCreds:   { url: splunkCreds.url, user: splunkCreds.user },
         }),
       );
       toast.success("입력한 내용이 임시저장되었습니다. (비밀번호는 저장되지 않습니다)");
@@ -486,8 +517,8 @@ export function NewAssessment() {
               </div>
 
               {/* 폴백 안내 */}
-              {(profileSelect.idp_type === "okta" || profileSelect.idp_type === "ldap" || profileSelect.idp_type === "none" ||
-                profileSelect.siem_type === "splunk" || profileSelect.siem_type === "elastic" || profileSelect.siem_type === "none") && (
+              {(profileSelect.idp_type === "ldap" || profileSelect.idp_type === "none" ||
+                profileSelect.siem_type === "elastic" || profileSelect.siem_type === "none") && (
                 <div className="mt-4 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
                   <Info size={14} className="mt-0.5 shrink-0" />
                   <span>
@@ -713,8 +744,8 @@ export function NewAssessment() {
               </div>
             )}
 
-            {/* IdP / SIEM 연결 카드 (작업 E-fe + Entra 신규) */}
-            {(toolScope.keycloak || toolScope.entra || toolScope.wazuh) && (
+            {/* IdP / SIEM 연결 카드 (작업 E-fe + Entra/Okta/Splunk) */}
+            {(toolScope.keycloak || toolScope.entra || toolScope.okta || toolScope.wazuh || toolScope.splunk) && (
               <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <KeyRound size={16} className="text-blue-600" />
@@ -813,6 +844,81 @@ export function NewAssessment() {
                           Microsoft Entra admin center → App registrations → API permissions에
                           <strong className="text-gray-700"> Directory.Read.All, Policy.Read.All, AuditLog.Read.All</strong> 권한 부여 필요
                         </p>
+                      </div>
+                    </div>
+                  )}
+                  {/* Okta 카드 */}
+                  {toolScope.okta && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Okta</span>
+                        <span className="text-[10px] text-gray-400">SaaS IdP</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={oktaCreds.domain}
+                          onChange={(e) => setOktaCreds({ ...oktaCreds, domain: e.target.value })}
+                          placeholder="dev-12345.okta.com"
+                          disabled={!isLive}
+                          aria-label="Okta 도메인"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={oktaCreds.api_token}
+                          onChange={(e) => setOktaCreds({ ...oktaCreds, api_token: e.target.value })}
+                          placeholder="API Token"
+                          disabled={!isLive}
+                          aria-label="Okta API Token"
+                        />
+                        <p className="text-[11px] text-gray-500 leading-relaxed">
+                          Okta Admin Console → Security → API → Tokens 에서 발급한
+                          <strong className="text-gray-700"> Read-only API Token</strong> 필요
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  {/* Splunk 카드 */}
+                  {toolScope.splunk && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Splunk</span>
+                        <span className="text-[10px] text-gray-400">상용 SIEM</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={splunkCreds.url}
+                          onChange={(e) => setSplunkCreds({ ...splunkCreds, url: e.target.value })}
+                          placeholder="https://splunk.example.com:8089"
+                          disabled={!isLive}
+                          aria-label="Splunk URL"
+                        />
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={splunkCreds.user}
+                          onChange={(e) => setSplunkCreds({ ...splunkCreds, user: e.target.value })}
+                          placeholder="admin"
+                          disabled={!isLive}
+                          aria-label="Splunk 사용자"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={splunkCreds.password}
+                          onChange={(e) => setSplunkCreds({ ...splunkCreds, password: e.target.value })}
+                          placeholder="비밀번호"
+                          disabled={!isLive}
+                          aria-label="Splunk 비밀번호"
+                        />
                       </div>
                     </div>
                   )}

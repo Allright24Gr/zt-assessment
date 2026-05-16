@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { Settings as SettingsIcon, Bell, Target, User, Save, Lock, X, Loader2, KeyRound } from "lucide-react";
+import { Settings as SettingsIcon, Bell, Target, User, Save, Lock, X, Loader2, KeyRound, AlertTriangle, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { useAuth } from "../context/AuthContext";
-import { updateAuthProfile, changePassword, ApiError, type ProfileFields } from "../../config/api";
+import { updateAuthProfile, changePassword, deleteAccount, ApiError, type ProfileFields } from "../../config/api";
 
 const STORAGE_KEY = "zt_settings";
 
@@ -61,7 +61,7 @@ function profileFromUser(p?: ProfileFields | null): ProfileFormState {
 }
 
 export function Settings() {
-  const { user, setUser } = useAuth();
+  const { user, setUser, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [targetScores, setTargetScores] = useState(DEFAULT_SETTINGS.targetScores);
@@ -83,6 +83,14 @@ export function Settings() {
   const [pwSaving, setPwSaving] = useState(false);
   const pwFirstInputRef = useRef<HTMLInputElement>(null);
   const pwLastButtonRef = useRef<HTMLButtonElement>(null);
+
+  // 회원 탈퇴 모달 (P0-6)
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const deleteInputRef = useRef<HTMLInputElement>(null);
+  const deleteLastButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setProfileForm(profileFromUser(user?.profile));
@@ -136,6 +144,36 @@ export function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pwModalOpen, pwSaving]);
 
+  // 회원 탈퇴 모달 — ESC 닫기 + autoFocus + focus trap (P0-6)
+  useEffect(() => {
+    if (!deleteOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !deleting) {
+        closeDeleteModal();
+      }
+      if (e.key === "Tab") {
+        const first = deleteInputRef.current;
+        const last = deleteLastButtonRef.current;
+        if (!first || !last) return;
+        const active = document.activeElement;
+        if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const t = window.setTimeout(() => deleteInputRef.current?.focus(), 0);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deleteOpen, deleting]);
+
   // Dashboard "지금 변경" 진입 시 자동 오픈 (작업 N)
   useEffect(() => {
     const state = location.state as { openPasswordModal?: boolean } | null;
@@ -153,6 +191,43 @@ export function Settings() {
     setPwNew("");
     setPwConfirm("");
     setPwError("");
+  };
+
+  const closeDeleteModal = () => {
+    setDeleteOpen(false);
+    setDeletePassword("");
+    setDeleteError("");
+  };
+
+  const submitDeleteAccount = async () => {
+    if (!deletePassword) {
+      setDeleteError("현재 비밀번호를 입력해주세요.");
+      return;
+    }
+    setDeleteError("");
+    setDeleting(true);
+    try {
+      await deleteAccount(deletePassword);
+      toast.success("탈퇴가 완료되었습니다.");
+      // 토큰·세션 정리 후 로그인으로
+      logout();
+      navigate("/login", { replace: true });
+    } catch (err) {
+      console.warn("[settings] delete account:", err);
+      if (err instanceof ApiError) {
+        if (err.status === 401 || err.status === 403) {
+          setDeleteError("비밀번호가 일치하지 않습니다.");
+        } else if (err.status === 423 || err.status === 429) {
+          setDeleteError("로그인 잠금 상태입니다. 잠시 후 다시 시도하세요.");
+        } else {
+          setDeleteError("탈퇴 처리 중 오류가 발생했습니다.");
+        }
+      } else {
+        setDeleteError("탈퇴 처리 중 오류가 발생했습니다.");
+      }
+    } finally {
+      setDeleting(false);
+    }
   };
 
   // 비밀번호 정책: 8자 이상 + 영문+숫자 혼합
@@ -644,6 +719,32 @@ export function Settings() {
         </button>
       </div>
 
+      {/* 위험 영역 — 회원 탈퇴 (P0-6) */}
+      {user && (
+        <div className="bg-white rounded-lg border-2 border-red-300 p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <AlertTriangle className="text-red-600" size={20} />
+            <h2 className="text-red-700">위험 영역</h2>
+          </div>
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h3 className="font-semibold text-gray-900">회원 탈퇴</h3>
+              <p className="text-sm text-gray-600 mt-1">
+                진단 결과 · 세션 · 증적이 즉시 삭제됩니다. <strong className="text-red-700">복구할 수 없습니다.</strong>
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDeleteOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-medium shrink-0"
+            >
+              <Trash2 size={14} />
+              회원 탈퇴
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 비밀번호 재확인 모달 */}
       {confirmOpen && (
         <div
@@ -815,6 +916,98 @@ export function Settings() {
                   disabled={pwSaving}
                 >
                   {pwSaving ? <><Loader2 size={14} className="animate-spin" /> 변경 중...</> : "변경"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 회원 탈퇴 확인 모달 (P0-6) */}
+      {deleteOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => !deleting && closeDeleteModal()}
+          aria-hidden="true"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-account-title"
+            className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border-2 border-red-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => !deleting && closeDeleteModal()}
+              className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
+              aria-label="닫기"
+            >
+              <X size={18} />
+            </button>
+            <div className="flex items-center gap-2 mb-3">
+              <AlertTriangle size={20} className="text-red-600" aria-hidden="true" />
+              <h2 id="delete-account-title" className="text-base font-semibold text-red-700">
+                회원 탈퇴 확인
+              </h2>
+            </div>
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 leading-relaxed">
+              <p className="font-semibold mb-1">아래 항목이 즉시 삭제됩니다.</p>
+              <ul className="list-disc list-inside space-y-0.5">
+                <li>진단 세션 · 결과 · 점수 이력</li>
+                <li>업로드한 증적 파일</li>
+                <li>계정 정보 및 진단 프로필</li>
+              </ul>
+              <p className="mt-2 font-semibold">복구할 수 없습니다.</p>
+            </div>
+            <form
+              onSubmit={(e) => { e.preventDefault(); submitDeleteAccount(); }}
+              className="space-y-3"
+            >
+              <div>
+                <label htmlFor="delete-pw" className="block text-xs text-gray-700 mb-1">
+                  현재 비밀번호 확인
+                </label>
+                <input
+                  ref={deleteInputRef}
+                  id="delete-pw"
+                  type="password"
+                  autoComplete="current-password"
+                  value={deletePassword}
+                  onChange={(e) => setDeletePassword(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                  placeholder="현재 비밀번호"
+                  disabled={deleting}
+                  required
+                />
+              </div>
+              {deleteError && (
+                <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+                  {deleteError}
+                </p>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => !deleting && closeDeleteModal()}
+                  className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200 text-sm font-medium"
+                  disabled={deleting}
+                >
+                  취소
+                </button>
+                <button
+                  ref={deleteLastButtonRef}
+                  type="submit"
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium text-white ${
+                    deleting ? "bg-red-300 cursor-not-allowed" : "bg-red-600 hover:bg-red-700"
+                  }`}
+                  disabled={deleting}
+                >
+                  {deleting ? (
+                    <><Loader2 size={14} className="animate-spin" /> 탈퇴 처리 중...</>
+                  ) : (
+                    <><Trash2 size={14} /> 탈퇴</>
+                  )}
                 </button>
               </div>
             </form>

@@ -8,7 +8,7 @@ const DEMO_ACCOUNTS = [
   { label: "박기웅 (세종대학교)", id: "user1", role: "일반 사용자" },
 ];
 
-type RecoveryMode = null | "id" | "password";
+type RecoveryMode = null | "id";
 
 export function Login() {
   const [username, setUsername] = useState("");
@@ -153,13 +153,12 @@ export function Login() {
               아이디 찾기
             </button>
             <span className="text-gray-300">|</span>
-            <button
-              type="button"
-              onClick={() => openRecovery("password")}
+            <Link
+              to="/auth/request-password-reset"
               className="hover:text-blue-600 hover:underline"
             >
               비밀번호 찾기
-            </button>
+            </Link>
           </div>
         </form>
 
@@ -211,16 +210,13 @@ export function Login() {
             <div className="flex items-center gap-2 mb-3">
               <Mail size={18} className="text-blue-600" aria-hidden="true" />
               <h2 id="recovery-modal-title" className="text-base font-semibold text-gray-900">
-                {recovery === "id" ? "아이디 찾기" : "비밀번호 찾기"}
+                아이디 찾기
               </h2>
             </div>
             {!recoverySent ? (
               <>
                 <p className="text-sm text-gray-600 mb-4">
-                  가입 시 등록한 이메일을 입력해주세요.
-                  {recovery === "id"
-                    ? " 아이디 안내 메일을 발송합니다."
-                    : " 비밀번호 재설정 링크를 발송합니다."}
+                  가입 시 등록한 이메일을 입력해주세요. 아이디 안내 메일을 발송합니다.
                 </p>
                 <form onSubmit={submitRecovery} className="space-y-3">
                   <input

@@ -1,16 +1,22 @@
 import type {
+  AssessmentCompareResponse,
   AssessmentHistoryResponse,
   AssessmentResultResponse,
   AssessmentRunRequest,
   AssessmentRunResponse,
+  AssessmentShareCreateResponse,
+  AssessmentShareListItem,
+  AuthEnvelope,
   ChecklistResponse,
   ImprovementResponse,
+  ManualEvidenceUploadResponse,
   ManualItemsFullResponse,
   ManualSubmitRequest,
   ManualSubmitResponse,
   ReportGenerateResponse,
   ScoreSummaryResponse,
   ScoreTrendResponse,
+  TokenPair,
 } from "../types/api";
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
@@ -20,10 +26,12 @@ export const API_ENDPOINTS = {
   ASSESSMENT_WEBHOOK: "/api/assessment/webhook",
   ASSESSMENT_RESULT: "/api/assessment/result",
   ASSESSMENT_HISTORY: "/api/assessment/history",
+  ASSESSMENT_COMPARE: "/api/assessment/compare",
   SCORE_SUMMARY: "/api/score/summary",
   SCORE_TREND: "/api/score/trend",
   MANUAL_SUBMIT: "/api/manual/submit",
   MANUAL_UPLOAD: "/api/manual/upload",
+  MANUAL_UPLOAD_EVIDENCE: "/api/manual/upload-evidence",
   CHECKLIST: "/api/checklist",
   IMPROVEMENT: "/api/improvement",
   REPORT_GENERATE: "/api/report/generate",
@@ -32,6 +40,10 @@ export const API_ENDPOINTS = {
   AUTH_ME: "/api/auth/me",
   AUTH_PROFILE: "/api/auth/profile",
   AUTH_CHANGE_PASSWORD: "/api/auth/change-password",
+  AUTH_REFRESH: "/api/auth/refresh",
+  AUTH_REQUEST_PASSWORD_RESET: "/api/auth/request-password-reset",
+  AUTH_RESET_PASSWORD: "/api/auth/reset-password",
+  AUTH_DELETE_ME: "/api/auth/me",
 } as const;
 
 export class ApiError extends Error {
@@ -76,12 +88,24 @@ async function parseResponse(response: Response) {
   return response.text();
 }
 
-// 인증 헤더 자동 첨부 — backend의 보호 엔드포인트가 X-Login-Id를 요구한다.
-// 로그인 전(register/login)에는 헤더 없이 호출. headers에 명시적으로 다른 값이 있으면 그쪽 우선.
+// 인증 헤더 자동 첨부 — 보호 엔드포인트에 Authorization: Bearer + 호환용 X-Login-Id 첨부.
+// 로그인 전(register/login/refresh/password-reset/공유 결과)에는 헤더 없이 호출.
 const PUBLIC_ENDPOINTS = new Set<string>([
   API_ENDPOINTS.AUTH_REGISTER,
   API_ENDPOINTS.AUTH_LOGIN,
+  API_ENDPOINTS.AUTH_REFRESH,
+  API_ENDPOINTS.AUTH_REQUEST_PASSWORD_RESET,
+  API_ENDPOINTS.AUTH_RESET_PASSWORD,
 ]);
+// 시작 경로 매칭(공유 결과 조회 등)
+const PUBLIC_ENDPOINT_PREFIXES = ["/api/assessment/shared/"];
+
+function isPublicEndpoint(endpoint: string): boolean {
+  if (PUBLIC_ENDPOINTS.has(endpoint)) return true;
+  return PUBLIC_ENDPOINT_PREFIXES.some((p) => endpoint.startsWith(p));
+}
+
+const TOKENS_STORAGE_KEY = "zt_tokens";
 
 function _getLoginIdFromStorage(): string | null {
   try {
@@ -94,19 +118,88 @@ function _getLoginIdFromStorage(): string | null {
   }
 }
 
+function _getTokensFromStorage(): TokenPair | null {
+  try {
+    const raw = localStorage.getItem(TOKENS_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as TokenPair;
+  } catch {
+    return null;
+  }
+}
+
+function _setTokensInStorage(tokens: TokenPair | null) {
+  try {
+    if (tokens) localStorage.setItem(TOKENS_STORAGE_KEY, JSON.stringify(tokens));
+    else localStorage.removeItem(TOKENS_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getStoredAccessToken(): string | null {
+  return _getTokensFromStorage()?.access_token ?? null;
+}
+
+export function getStoredRefreshToken(): string | null {
+  return _getTokensFromStorage()?.refresh_token ?? null;
+}
+
+export function setStoredTokens(tokens: TokenPair | null) {
+  _setTokensInStorage(tokens);
+}
+
+/**
+ * 단일 refresh in-flight 가드: 동시 다발 401 시 단 한 번만 refresh 호출.
+ */
+let _refreshInFlight: Promise<TokenPair | null> | null = null;
+
+async function _tryRefreshAccessToken(): Promise<TokenPair | null> {
+  if (_refreshInFlight) return _refreshInFlight;
+  const refreshToken = getStoredRefreshToken();
+  if (!refreshToken) return null;
+  _refreshInFlight = (async () => {
+    try {
+      const url = buildUrl(API_ENDPOINTS.AUTH_REFRESH);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!res.ok) return null;
+      const payload = (await res.json()) as TokenPair;
+      _setTokensInStorage(payload);
+      return payload;
+    } catch {
+      return null;
+    } finally {
+      _refreshInFlight = null;
+    }
+  })();
+  return _refreshInFlight;
+}
+
+interface InternalFetchOptions extends RequestInit {
+  params?: QueryParams;
+  _retry?: boolean;
+}
+
 export async function apiFetch<T>(
   endpoint: string,
-  options: RequestInit & { params?: QueryParams } = {},
+  options: InternalFetchOptions = {},
 ): Promise<T> {
-  const { params, headers, body, ...requestOptions } = options;
+  const { params, headers, body, _retry, ...requestOptions } = options;
 
-  // 헤더 병합 순서: Content-Type → 자동 X-Login-Id → 호출자가 명시한 headers (override 가능)
   const mergedHeaders: Record<string, string> = {
     ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
   };
-  if (!PUBLIC_ENDPOINTS.has(endpoint)) {
+
+  if (!isPublicEndpoint(endpoint)) {
+    // 호환성: X-Login-Id 와 Authorization 둘 다 첨부 (백엔드가 둘 다 지원)
     const loginId = _getLoginIdFromStorage();
     if (loginId) mergedHeaders["X-Login-Id"] = loginId;
+    const accessToken = getStoredAccessToken();
+    if (accessToken) mergedHeaders["Authorization"] = `Bearer ${accessToken}`;
   }
   Object.assign(mergedHeaders, headers as Record<string, string> | undefined);
 
@@ -115,6 +208,15 @@ export async function apiFetch<T>(
     headers: mergedHeaders,
     body,
   });
+
+  // 401 → refresh 한 번 시도 후 재시도
+  if (response.status === 401 && !_retry && !isPublicEndpoint(endpoint)) {
+    const newTokens = await _tryRefreshAccessToken();
+    if (newTokens) {
+      return apiFetch<T>(endpoint, { ...options, _retry: true });
+    }
+  }
+
   const payload = await parseResponse(response);
 
   if (!response.ok) {
@@ -143,6 +245,12 @@ export function getAssessmentResult(sessionId?: number | string) {
 export function getAssessmentHistory(orgName?: string) {
   return apiFetch<AssessmentHistoryResponse>(API_ENDPOINTS.ASSESSMENT_HISTORY, {
     params: orgName ? { org_name: orgName } : undefined,
+  });
+}
+
+export function getAssessmentCompare(fromId: number | string, toId: number | string) {
+  return apiFetch<AssessmentCompareResponse>(API_ENDPOINTS.ASSESSMENT_COMPARE, {
+    params: { from_id: fromId, to_id: toId },
   });
 }
 
@@ -219,7 +327,59 @@ export function uploadManualExcel(sessionId: number | string, file: File) {
   );
 }
 
-// ─── Auth ──────────────────────────────────────────────────────────────────
+// ─── Evidence 업로드 (P1-7) ───────────────────────────────────────────────────
+export function uploadEvidence(
+  sessionId: number | string,
+  checkId: number | string,
+  file: File,
+  note?: string,
+) {
+  const form = new FormData();
+  form.append("session_id", String(sessionId));
+  form.append("check_id", String(checkId));
+  form.append("file", file);
+  if (note) form.append("note", note);
+  return apiFetch<ManualEvidenceUploadResponse>(
+    API_ENDPOINTS.MANUAL_UPLOAD_EVIDENCE,
+    { method: "POST", body: form },
+  );
+}
+
+export function evidenceDownloadUrl(evidenceId: number | string) {
+  return `${API_BASE}/api/manual/evidence/${evidenceId}`;
+}
+
+// ─── 공유 링크 (P1-11) ─────────────────────────────────────────────────────────
+export function createAssessmentShare(sessionId: number | string, expiresDays: number) {
+  return apiFetch<AssessmentShareCreateResponse>(
+    `/api/assessment/share/${sessionId}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ expires_days: expiresDays }),
+    },
+  );
+}
+
+export function listAssessmentShares(sessionId: number | string) {
+  return apiFetch<AssessmentShareListItem[]>(
+    `/api/assessment/share/${sessionId}`,
+  );
+}
+
+export function revokeAssessmentShare(shareId: number | string) {
+  return apiFetch<{ status: string }>(
+    `/api/assessment/share/${shareId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function getSharedAssessment(token: string) {
+  return apiFetch<AssessmentResultResponse & { shared?: { expires_at?: string; org?: string } }>(
+    `/api/assessment/shared/${token}`,
+  );
+}
+
+// ─── Auth ──────────────────────────────────────────────────────────────
 
 export interface ProfileFields {
   org_name?: string;
@@ -250,17 +410,22 @@ export interface RegisterPayload {
   name: string;
   email?: string;
   profile?: ProfileFields;
+  // P0-5: 약관 동의 필수
+  tos_agreed: boolean;
+  privacy_agreed: boolean;
+  marketing_agreed?: boolean;
 }
 
+// 새 응답 envelope: { user, tokens }
 export function registerUser(payload: RegisterPayload) {
-  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_REGISTER, {
+  return apiFetch<AuthEnvelope>(API_ENDPOINTS.AUTH_REGISTER, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export function loginUser(login_id: string, password: string) {
-  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_LOGIN, {
+  return apiFetch<AuthEnvelope>(API_ENDPOINTS.AUTH_LOGIN, {
     method: "POST",
     body: JSON.stringify({ login_id, password }),
   });
@@ -295,6 +460,45 @@ export function changePassword(
       method: "POST",
       headers: { "X-Login-Id": login_id },
       body: JSON.stringify({ current_password, new_password }),
+    },
+  );
+}
+
+// ─── 비밀번호 재설정 / 회원 탈퇴 (P0-2, P0-6) ───────────────────────────────────
+
+export function refreshAccessToken(refresh_token: string) {
+  return apiFetch<TokenPair>(API_ENDPOINTS.AUTH_REFRESH, {
+    method: "POST",
+    body: JSON.stringify({ refresh_token }),
+  });
+}
+
+export function requestPasswordReset(login_id: string) {
+  return apiFetch<{ status: string }>(
+    API_ENDPOINTS.AUTH_REQUEST_PASSWORD_RESET,
+    {
+      method: "POST",
+      body: JSON.stringify({ login_id }),
+    },
+  );
+}
+
+export function resetPassword(token: string, new_password: string) {
+  return apiFetch<{ status: string }>(
+    API_ENDPOINTS.AUTH_RESET_PASSWORD,
+    {
+      method: "POST",
+      body: JSON.stringify({ token, new_password }),
+    },
+  );
+}
+
+export function deleteAccount(current_password: string) {
+  return apiFetch<{ status: string }>(
+    API_ENDPOINTS.AUTH_DELETE_ME,
+    {
+      method: "DELETE",
+      body: JSON.stringify({ current_password }),
     },
   );
 }
