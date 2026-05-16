@@ -90,3 +90,30 @@ def validate_cred_field(value: str, field_name: str, max_len: int = 100) -> str:
     if len(value) > max_len:
         raise ValueError(f"{field_name}: {max_len}자 이내여야 합니다 ({len(value)}자 입력)")
     return value
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Entra ID tenant_id
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Entra tenant_id: GUID(UUID) 형식 또는 *.onmicrosoft.com / 커스텀 도메인 모두 허용.
+_ENTRA_TENANT_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_ENTRA_TENANT_DOMAIN_RE = re.compile(
+    r"^[a-zA-Z0-9](?:[a-zA-Z0-9\-\.]{0,253}[a-zA-Z0-9])?$"
+)
+
+
+def validate_entra_tenant_id(value: str, field_name: str = "entra_creds.tenant_id") -> str:
+    """tenant_id: UUID(GUID) 또는 도메인 형식. 셸 메타문자 차단."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if any(c in value for c in _SHELL_METAS + " "):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자 포함")
+    if _ENTRA_TENANT_UUID_RE.match(value):
+        return value
+    if _ENTRA_TENANT_DOMAIN_RE.match(value) and "." in value:
+        return value
+    raise ValueError(f"{field_name}: GUID 또는 도메인 형식이어야 합니다")

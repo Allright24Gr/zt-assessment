@@ -338,6 +338,36 @@ export function Reporting() {
     tasks: improvements.filter((t) => t.term === term),
   }));
 
+  // 자동/자가 비율 — checklistDetails 의 tool / rawResult 를 source 별로 카운트
+  const sourceBreakdown = useMemo(() => {
+    let autoExternal = 0;  // nmap / trivy
+    let autoApi = 0;       // keycloak / wazuh / entra
+    let manual = 0;        // 수동
+    let unscored = 0;      // tool_unavailable / 평가불가
+    for (const d of checklistDetails) {
+      const tool = (d.tool ?? "").toLowerCase();
+      const raw = (d as ChecklistDetail & { rawResult?: string }).rawResult ?? d.result;
+      // 미진단(도구 미설정 또는 평가불가)을 먼저 우선 분류
+      if (tool.includes("tool_unavailable") || tool.includes("미설정") || raw === "평가불가") {
+        unscored += 1;
+        continue;
+      }
+      if (tool.includes("nmap") || tool.includes("trivy")) {
+        autoExternal += 1;
+      } else if (tool.includes("keycloak") || tool.includes("wazuh") || tool.includes("entra")) {
+        autoApi += 1;
+      } else if (tool.includes("수동") || tool.includes("manual")) {
+        manual += 1;
+      } else {
+        // 매핑되지 않은 도구 — 자동 API로 분류 (보수적)
+        autoApi += 1;
+      }
+    }
+    return { autoExternal, autoApi, manual, unscored };
+  }, [checklistDetails]);
+  const totalSourceCount =
+    sourceBreakdown.autoExternal + sourceBreakdown.autoApi + sourceBreakdown.manual + sourceBreakdown.unscored;
+
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       {usedFallback && (
@@ -372,6 +402,52 @@ export function Reporting() {
           재진단 시작
         </Link>
       </div>
+
+      {/* 이 진단 결과의 출처 — 자동/자가 비율 배지 */}
+      {totalSourceCount > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-800">이 진단 결과의 출처</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                총 {totalSourceCount}개 체크리스트 — 자동/자가/미진단 비율
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200"
+                title="Nmap, Trivy 등 외부 자동 스캔으로 수집한 항목"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                자동 외부 스캔: {sourceBreakdown.autoExternal}건
+              </span>
+              <span
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200"
+                title="Keycloak, Wazuh, Entra 등 도구 API로 수집한 항목"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-green-600" />
+                자동 API 진단: {sourceBreakdown.autoApi}건
+              </span>
+              <span
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-200"
+                title="담당자가 직접 답변·증적을 제출한 항목"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
+                수동 진단: {sourceBreakdown.manual}건
+              </span>
+              {sourceBreakdown.unscored > 0 && (
+                <span
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700 border border-red-200"
+                  title="도구 미설정 또는 평가불가로 점수에 반영되지 않은 항목"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                  미진단: {sourceBreakdown.unscored}건
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="border-b border-gray-200">

@@ -1,41 +1,31 @@
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Building2, Upload, CheckCircle2, FileText, X, Wrench, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical } from "lucide-react";
+import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
-import type { ScanTargets, KeycloakCreds, WazuhCreds } from "../../types/api";
-
-const TOOLS = [
-  {
-    key: "keycloak",
-    label: "Keycloak",
-    desc: "ID/접근 관리 (IAM/SSO/MFA)",
-    detail: "신원 확인, 인증 정책, 접근 권한 항목 자동 수집",
-  },
-  {
-    key: "wazuh",
-    label: "Wazuh",
-    desc: "SIEM / EDR / 로그 수집",
-    detail: "보안 이벤트, 취약점, 정책 위반 항목 자동 수집",
-  },
-  {
-    key: "nmap",
-    label: "Nmap",
-    desc: "네트워크 스캔",
-    detail: "네트워크 세그먼테이션, 포트·서비스 현황 자동 수집",
-  },
-  {
-    key: "trivy",
-    label: "Trivy",
-    desc: "컨테이너·소프트웨어 취약점",
-    detail: "이미지 스캔, SBOM, 공급망 보안 항목 자동 수집",
-  },
-] as const;
+import type { ScanTargets, KeycloakCreds, WazuhCreds, EntraCreds, IdpType, SiemType } from "../../types/api";
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
 const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"];
+
+// 사전 프로파일링 — 신원 관리(IdP) 선택지
+const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported: boolean }> = [
+  { key: "keycloak", label: "Keycloak",                desc: "오픈소스 IAM/SSO",        supported: true  },
+  { key: "entra",    label: "MS Entra ID (Azure AD)",  desc: "Microsoft 클라우드 IdP",   supported: true  },
+  { key: "okta",     label: "Okta",                    desc: "SaaS IdP",                supported: false },
+  { key: "ldap",     label: "자체 LDAP / AD",          desc: "온프레미스 디렉터리",      supported: false },
+  { key: "none",     label: "사용 안 함 / 기타",       desc: "수동 진단으로 폴백",       supported: false },
+];
+
+// 사전 프로파일링 — 보안 정보 관리(SIEM) 선택지
+const SIEM_OPTIONS: Array<{ key: SiemType; label: string; desc: string; supported: boolean }> = [
+  { key: "wazuh",   label: "Wazuh",        desc: "오픈소스 SIEM/XDR",  supported: true  },
+  { key: "splunk",  label: "Splunk",       desc: "상용 SIEM",          supported: false },
+  { key: "elastic", label: "Elastic SIEM", desc: "Elastic Stack",      supported: false },
+  { key: "none",    label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백", supported: false },
+];
 
 export function NewAssessment() {
   const navigate = useNavigate();
@@ -90,9 +80,23 @@ export function NewAssessment() {
   const [pillarScope, setPillarScope] = useState<Record<string, boolean>>(
     Object.fromEntries(PILLARS.map((p) => [p.key, true]))
   );
-  const [toolScope, setToolScope] = useState<Record<string, boolean>>({
-    keycloak: false, wazuh: false, nmap: false, trivy: false,
+  // 사전 프로파일링 선택 — 기본은 현재 동작과 동일(Keycloak + Wazuh)
+  const [profileSelect, setProfileSelect] = useState<{ idp_type: IdpType; siem_type: SiemType }>({
+    idp_type: "keycloak",
+    siem_type: "wazuh",
   });
+  // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy
+  const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean }>({
+    nmap: true, trivy: true,
+  });
+  // 내부적으로 백엔드에 보내는 tool_scope는 profileSelect + externalScanTools에서 파생
+  const toolScope: Record<string, boolean> = {
+    keycloak: profileSelect.idp_type === "keycloak",
+    entra:    profileSelect.idp_type === "entra",
+    wazuh:    profileSelect.siem_type === "wazuh",
+    nmap:     externalScanTools.nmap,
+    trivy:    externalScanTools.trivy,
+  };
   const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string }>({
     nmap: "", trivy: "",
   });
@@ -109,6 +113,10 @@ export function NewAssessment() {
   // Wazuh 연결 카드 입력값 (작업 E-fe)
   const [wazuhCreds, setWazuhCreds] = useState<{ url: string; api_user: string; api_pass: string }>({
     url: "", api_user: "", api_pass: "",
+  });
+  // Entra ID 자격 카드 입력값 (신규)
+  const [entraCreds, setEntraCreds] = useState<{ tenant_id: string; client_id: string; client_secret: string }>({
+    tenant_id: "", client_id: "", client_secret: "",
   });
 
   const togglePillar = (key: string) => {
@@ -186,6 +194,15 @@ export function NewAssessment() {
     }
     const hasWz = Object.keys(wzPayload).length > 0;
 
+    // Entra ID 자격: 실 스캔 모드 + IdP=entra + 입력값이 있을 때만 전송
+    const entraPayload: EntraCreds = {};
+    if (isLive && toolScope.entra) {
+      if (entraCreds.tenant_id.trim())     entraPayload.tenant_id     = entraCreds.tenant_id.trim();
+      if (entraCreds.client_id.trim())     entraPayload.client_id     = entraCreds.client_id.trim();
+      if (entraCreds.client_secret)        entraPayload.client_secret = entraCreds.client_secret;
+    }
+    const hasEntra = Object.keys(entraPayload).length > 0;
+
     runAssessment({
       org_name: formData.orgName,
       manager: formData.manager,
@@ -200,9 +217,11 @@ export function NewAssessment() {
       note: formData.note,
       pillar_scope: pillarScope,
       tool_scope: toolScope,
+      profile_select: profileSelect,
       ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),
+      ...(hasEntra ? { entra_creds: entraPayload } : {}),
     })
       .then((res) =>
         navigate(`/in-progress/${res.session_id}`, {
@@ -223,15 +242,17 @@ export function NewAssessment() {
     try {
       localStorage.setItem(
         "zt_new_assessment_draft",
-        // 보안: keycloak/wazuh 비밀번호는 임시저장에 포함하지 않는다.
+        // 보안: keycloak/wazuh/entra 비밀번호·시크릿은 임시저장에 포함하지 않는다.
         JSON.stringify({
           formData,
           pillarScope,
-          toolScope,
+          profileSelect,
+          externalScanTools,
           scanTargets,
           scanMode,
           keycloakCreds: { url: keycloakCreds.url, admin_user: keycloakCreds.admin_user },
           wazuhCreds:    { url: wazuhCreds.url,    api_user:   wazuhCreds.api_user   },
+          entraCreds:    { tenant_id: entraCreds.tenant_id, client_id: entraCreds.client_id },
         }),
       );
       toast.success("입력한 내용이 임시저장되었습니다. (비밀번호는 저장되지 않습니다)");
@@ -264,7 +285,7 @@ export function NewAssessment() {
           <div className="space-y-6">
             <div className="flex items-center gap-2 mb-6">
               <Building2 className="text-blue-600" size={24} />
-              <h2>Step 1: 기관 정보 입력</h2>
+              <h2>Step 1: 사전 프로파일링 + 기관 정보 입력</h2>
             </div>
 
             {prefillNotice && (
@@ -342,6 +363,138 @@ export function NewAssessment() {
                   </div>
                 </label>
               </div>
+            </div>
+
+            {/* Step 0 — 사전 프로파일링 (사용 중인 보안 도구) */}
+            <div className="rounded-xl border border-blue-200 bg-blue-50/30 p-5">
+              <div className="flex items-center gap-2 mb-1">
+                <Fingerprint size={18} className="text-blue-600" />
+                <h3 className="text-sm font-semibold text-gray-800">사용 중인 보안 도구 (사전 프로파일링)</h3>
+              </div>
+              <p className="text-xs text-gray-600 mb-4">
+                기관에서 운영 중인 도구를 먼저 선택하면 해당 자동 진단 항목이 활성화됩니다.
+                <strong className="text-gray-800"> "사용 안 함 / 기타"</strong>를 고르면 해당 분야의 자동 항목은 수동 진단으로 폴백됩니다.
+              </p>
+
+              {/* 신원 관리(IdP) */}
+              <div className="mb-4">
+                <p className="mb-2 text-xs font-semibold text-gray-700">신원 관리 (IdP)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" role="radiogroup" aria-label="신원 관리 도구">
+                  {IDP_OPTIONS.map((opt) => {
+                    const checked = profileSelect.idp_type === opt.key;
+                    return (
+                      <label
+                        key={opt.key}
+                        className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                          checked ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="idpType"
+                          className="mt-0.5 w-4 h-4"
+                          checked={checked}
+                          onChange={() => setProfileSelect((prev) => ({ ...prev, idp_type: opt.key }))}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-800 flex items-center gap-1.5">
+                            {opt.label}
+                            {!opt.supported && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
+                                자동 미지원
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-500">{opt.desc}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 보안 정보 관리(SIEM) */}
+              <div className="mb-4">
+                <p className="mb-2 text-xs font-semibold text-gray-700">보안 정보 관리 (SIEM)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2" role="radiogroup" aria-label="보안 정보 관리 도구">
+                  {SIEM_OPTIONS.map((opt) => {
+                    const checked = profileSelect.siem_type === opt.key;
+                    return (
+                      <label
+                        key={opt.key}
+                        className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                          checked ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="siemType"
+                          className="mt-0.5 w-4 h-4"
+                          checked={checked}
+                          onChange={() => setProfileSelect((prev) => ({ ...prev, siem_type: opt.key }))}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-800 flex items-center gap-1.5">
+                            {opt.label}
+                            {!opt.supported && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
+                                자동 미지원
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-500">{opt.desc}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 외부 자동 스캔 (도구 무관) */}
+              <div>
+                <p className="mb-2 text-xs font-semibold text-gray-700">외부 자동 스캔 (도구 무관)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                    externalScanTools.nmap ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.nmap}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, nmap: !p.nmap }))}
+                    />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-800">Nmap</p>
+                      <p className="text-xs text-gray-500">네트워크/포트 외부 스캔</p>
+                    </div>
+                  </label>
+                  <label className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                    externalScanTools.trivy ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.trivy}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, trivy: !p.trivy }))}
+                    />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-800">Trivy</p>
+                      <p className="text-xs text-gray-500">컨테이너 이미지 스캔</p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* 폴백 안내 */}
+              {(profileSelect.idp_type === "okta" || profileSelect.idp_type === "ldap" || profileSelect.idp_type === "none" ||
+                profileSelect.siem_type === "splunk" || profileSelect.siem_type === "elastic" || profileSelect.siem_type === "none") && (
+                <div className="mt-4 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                  <Info size={14} className="mt-0.5 shrink-0" />
+                  <span>
+                    선택한 도구 중 일부는 현재 cycle에서 자동 진단을 지원하지 않습니다. 해당 분야의 자동 항목은 다음 단계에서 <strong>수동 진단</strong>으로 표시됩니다.
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* 기관 정보 */}
@@ -487,49 +640,6 @@ export function NewAssessment() {
               </div>
             </div>
 
-            {/* 보안 도구 선택 */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <Wrench size={16} className="text-blue-600" />
-                <h3 className="text-sm font-semibold text-gray-700">해당 기관에서 사용 중인 보안 도구 선택</h3>
-              </div>
-              <p className="text-xs text-gray-500 mb-3">
-                선택한 도구의 항목은 자동으로 수집됩니다. 선택하지 않은 도구의 항목은 다음 단계에서 직접 답변합니다.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {TOOLS.map((tool) => (
-                  <label
-                    key={tool.key}
-                    className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                      toolScope[tool.key]
-                        ? "border-blue-400 bg-blue-50"
-                        : "border-gray-200 hover:bg-gray-50"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 w-4 h-4"
-                      checked={!!toolScope[tool.key]}
-                      onChange={() =>
-                        setToolScope((prev) => ({ ...prev, [tool.key]: !prev[tool.key] }))
-                      }
-                    />
-                    <div>
-                      <p className="text-sm font-semibold text-gray-800">{tool.label}
-                        <span className="ml-2 text-xs font-normal text-gray-500">{tool.desc}</span>
-                      </p>
-                      <p className="text-xs text-gray-400 mt-0.5">{tool.detail}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-              {Object.values(toolScope).every((v) => !v) && (
-                <p className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                  도구를 선택하지 않으면 모든 항목을 직접 답변해야 합니다.
-                </p>
-              )}
-            </div>
-
             {/* 진단 대상 (외부 스캔) */}
             {(toolScope.nmap || toolScope.trivy) && (
               <div className={!isLive ? "opacity-60" : ""}>
@@ -603,8 +713,8 @@ export function NewAssessment() {
               </div>
             )}
 
-            {/* Keycloak / Wazuh 연결 카드 (작업 E-fe) */}
-            {(toolScope.keycloak || toolScope.wazuh) && (
+            {/* IdP / SIEM 연결 카드 (작업 E-fe + Entra 신규) */}
+            {(toolScope.keycloak || toolScope.entra || toolScope.wazuh) && (
               <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <KeyRound size={16} className="text-blue-600" />
@@ -617,7 +727,7 @@ export function NewAssessment() {
                 </div>
                 <p className="text-xs text-gray-500 mb-3">
                   {isLive
-                    ? "실 스캔 모드에서 사용할 Keycloak / Wazuh 연결 정보를 입력합니다. 비워두면 도구 기본 설정값이 사용됩니다."
+                    ? "사전 프로파일링에서 선택한 도구의 연결 정보를 입력합니다. 비워두면 도구 기본 설정값이 사용됩니다."
                     : "데모 모드에서는 연결 정보를 입력할 수 없습니다. 실 스캔 모드로 전환 후 입력해주세요."}
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -658,6 +768,51 @@ export function NewAssessment() {
                           disabled={!isLive}
                           aria-label="Keycloak Admin 비밀번호"
                         />
+                      </div>
+                    </div>
+                  )}
+                  {/* Entra ID 카드 (신규) */}
+                  {toolScope.entra && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">MS Entra ID</span>
+                        <span className="text-[10px] text-gray-400">Azure AD</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={entraCreds.tenant_id}
+                          onChange={(e) => setEntraCreds({ ...entraCreds, tenant_id: e.target.value })}
+                          placeholder="00000000-0000-0000-0000-000000000000"
+                          disabled={!isLive}
+                          aria-label="Entra Tenant ID"
+                        />
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={entraCreds.client_id}
+                          onChange={(e) => setEntraCreds({ ...entraCreds, client_id: e.target.value })}
+                          placeholder="app registration의 Application(client) ID"
+                          disabled={!isLive}
+                          aria-label="Entra Client ID"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={entraCreds.client_secret}
+                          onChange={(e) => setEntraCreds({ ...entraCreds, client_secret: e.target.value })}
+                          placeholder="Client Secret"
+                          disabled={!isLive}
+                          aria-label="Entra Client Secret"
+                        />
+                        <p className="text-[11px] text-gray-500 leading-relaxed">
+                          Microsoft Entra admin center → App registrations → API permissions에
+                          <strong className="text-gray-700"> Directory.Read.All, Policy.Read.All, AuditLog.Read.All</strong> 권한 부여 필요
+                        </p>
                       </div>
                     </div>
                   )}

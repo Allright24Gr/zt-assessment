@@ -25,6 +25,7 @@ from routers.validators import (
     validate_trivy_image,
     validate_https_url,
     validate_cred_field,
+    validate_entra_tenant_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,8 +45,9 @@ SHUFFLE_WF = {
     "wazuh":    os.getenv("SHUFFLE_WORKFLOW_WAZUH",    ""),
     "nmap":     os.getenv("SHUFFLE_WORKFLOW_NMAP",     ""),
     "trivy":    os.getenv("SHUFFLE_WORKFLOW_TRIVY",    ""),
+    "entra":    os.getenv("SHUFFLE_WORKFLOW_ENTRA",    ""),
 }
-ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy")
+ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy", "entra")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -90,6 +92,13 @@ def _mask_creds(extra: dict) -> dict:
                 if masked.get(pw_field):
                     masked[pw_field] = "***"
             safe[key] = masked
+    # entra_creds: client_secret 마스킹 (tenant_id/client_id 는 식별자라 노출 가능)
+    ec = safe.get("entra_creds")
+    if isinstance(ec, dict):
+        masked = dict(ec)
+        if masked.get("client_secret"):
+            masked["client_secret"] = "***"
+        safe["entra_creds"] = masked
     return safe
 
 
@@ -101,12 +110,18 @@ _session_creds_lock = threading.Lock()
 _session_creds_store: dict[int, dict] = {}
 
 
-def _store_session_secrets(session_id: int, kc_creds: dict, wz_creds: dict) -> None:
+def _store_session_secrets(
+    session_id: int,
+    kc_creds: dict,
+    wz_creds: dict,
+    entra_creds: dict = None,
+) -> None:
     """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
     with _session_creds_lock:
         _session_creds_store[session_id] = {
             "keycloak": dict(kc_creds or {}),
             "wazuh":    dict(wz_creds or {}),
+            "entra":    dict(entra_creds or {}),
         }
 
 
@@ -202,6 +217,16 @@ def _build_session_errors(db: Session, session_id: int) -> list[dict]:
 # Pydantic Models
 # ──────────────────────────────────────────────────────────────────────────────
 
+class ProfileSelect(BaseModel):
+    """Step 0 사전 환경 프로파일링 — 사용자가 쓰는 IdP/SIEM 종류.
+
+    값에 따라 _resolve_supported_tools 가 tool_scope 를 자동 보정한다.
+    예: idp_type='entra' → keycloak collector 비활성, entra 매핑만 평가.
+    """
+    idp_type: Optional[str] = None   # keycloak | entra | okta | ldap | none
+    siem_type: Optional[str] = None  # wazuh | splunk | elastic | none
+
+
 class AssessmentRunRequest(BaseModel):
     org_name: str = "기본 조직"
     manager: str = "담당자"
@@ -216,6 +241,8 @@ class AssessmentRunRequest(BaseModel):
     note: Optional[str] = None
     pillar_scope: dict = Field(default_factory=dict)
     tool_scope: dict = Field(default_factory=dict)
+    # Step 0 — 사용자 IdP/SIEM 환경. 미지원 도구는 자동 폴백.
+    profile_select: Optional[ProfileSelect] = None
     # 외부 스캔 대상 (사용자가 NewAssessment에서 직접 입력)
     # 예: {"nmap": "scanme.nmap.org", "trivy": "nginx:1.25"}
     scan_targets: dict = Field(default_factory=dict)
@@ -224,6 +251,52 @@ class AssessmentRunRequest(BaseModel):
     keycloak_creds: Optional[dict] = None
     # 예: {"url": "https://wazuh.example.com:55000", "api_user": "...", "api_pass": "..."}
     wazuh_creds: Optional[dict] = None
+    # 예: {"tenant_id": "<guid or domain>", "client_id": "...", "client_secret": "..."}
+    entra_creds: Optional[dict] = None
+
+
+# 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑. 신규 도구 자동화가 생기면 여기에 추가.
+_IDP_TOOL_OF = {
+    "keycloak": "keycloak",
+    "entra":    "entra",
+    # "okta": "okta",  # collector 추가 시 활성
+    # "ldap": "ldap",
+    # "none" / 미선택 → IdP 자동 도구 전체 비활성 (전부 수동 폴백)
+}
+_SIEM_TOOL_OF = {
+    "wazuh": "wazuh",
+    # "splunk":  "splunk",
+    # "elastic": "elastic",
+}
+_IDP_AUTO_TOOLS = {"keycloak", "entra"}
+_SIEM_AUTO_TOOLS = {"wazuh"}
+
+
+def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) -> dict:
+    """tool_scope 와 사용자 환경(profile_select) 교집합으로 실제 실행할 도구 결정.
+
+    - requested 가 비어있으면 ALL_TOOLS 전체 활성 가정.
+    - profile_select.idp_type 이 명시되면 IdP 자동 도구 중 매핑된 1개만 활성.
+    - profile_select.siem_type 도 동일.
+    - 비활성된 도구의 매핑 item_id 는 _run_collectors 가 호출하지 않으며,
+      manual.py /items 가 자동으로 수동 폴백 항목으로 노출한다.
+    """
+    if not requested:
+        requested = {t: True for t in ALL_TOOLS}
+    sel_idp = ((profile_select or {}).get("idp_type") or "").lower() if profile_select else ""
+    sel_siem = ((profile_select or {}).get("siem_type") or "").lower() if profile_select else ""
+    allowed_idp = _IDP_TOOL_OF.get(sel_idp)  # 매칭되는 자동 도구 (없으면 None=전체 폴백)
+    allowed_siem = _SIEM_TOOL_OF.get(sel_siem)
+
+    result: dict = {}
+    for t in ALL_TOOLS:
+        ok = bool(requested.get(t))
+        if t in _IDP_AUTO_TOOLS and sel_idp and allowed_idp != t:
+            ok = False
+        if t in _SIEM_AUTO_TOOLS and sel_siem and allowed_siem != t:
+            ok = False
+        result[t] = ok
+    return result
 
 
 class WebhookResultItem(BaseModel):
@@ -286,6 +359,18 @@ def run_assessment(
             wz_in["api_pass"] = validate_cred_field(
                 wz_in.get("api_pass") or "", "wazuh_creds.api_pass"
             )
+
+        en_in = dict(req.entra_creds or {}) if req.entra_creds else {}
+        if en_in:
+            en_in["tenant_id"] = validate_entra_tenant_id(
+                en_in.get("tenant_id") or "", "entra_creds.tenant_id"
+            )
+            en_in["client_id"] = validate_cred_field(
+                en_in.get("client_id") or "", "entra_creds.client_id"
+            )
+            en_in["client_secret"] = validate_cred_field(
+                en_in.get("client_secret") or "", "entra_creds.client_secret", max_len=200
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -318,15 +403,18 @@ def run_assessment(
         # admin 본인의 user 행은 그대로 두고, 진단 세션의 user_id 는 admin user 로 기록.
         pass
 
-    # 도구 선택 정규화: 빈 dict → 전체 도구
-    tool_scope = req.tool_scope or {t: True for t in ALL_TOOLS}
-    selected_tools = sorted(t for t in ALL_TOOLS if tool_scope.get(t))
+    # 도구 선택 정규화: Step 0 profile_select 와 교집합 보정.
+    profile_select_dict = req.profile_select.model_dump(exclude_none=True) if req.profile_select else {}
+    resolved_scope = _resolve_supported_tools(profile_select_dict, req.tool_scope or {})
+    selected_tools = sorted(t for t in ALL_TOOLS if resolved_scope.get(t))
 
     # 세션 메타데이터
     # 자격 비밀번호(admin_pass/api_pass)는 DB에 저장하지 않는다.
     # URL/사용자명만 extra에 남기고, 비밀번호는 _store_session_secrets 로 메모리에만 보관.
     kc_meta = {k: v for k, v in kc_in.items() if k in ("url", "admin_user") and v}
     wz_meta = {k: v for k, v in wz_in.items() if k in ("url", "api_user") and v}
+    # entra: client_secret 은 DB에 저장하지 않는다. tenant_id/client_id 만 extra 에 남김.
+    en_meta = {k: v for k, v in en_in.items() if k in ("tenant_id", "client_id") and v}
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -338,6 +426,9 @@ def run_assessment(
         "scan_targets": scan_targets_in,
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
+        "entra_creds":    en_meta,
+        # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
+        "profile_select": profile_select_dict,
     }
 
     session = DiagnosisSession(
@@ -353,7 +444,7 @@ def run_assessment(
     db.refresh(session)
 
     # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
-    _store_session_secrets(session.session_id, kc_in, wz_in)
+    _store_session_secrets(session.session_id, kc_in, wz_in, en_in)
 
     # Shuffle 경로 우선, 미설정 시 직접 collector 실행
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
@@ -921,6 +1012,40 @@ def _nm_mapping():
     ]
 
 
+def _entra_mapping():
+    from collectors.entra_collector import (
+        collect_user_role_ratio, collect_idp_inventory, collect_idp_registered,
+        collect_active_idp_multi, collect_mfa_required, collect_otp_flow,
+        collect_webauthn_status, collect_conditional_auth, collect_session_policy,
+        collect_stepup_auth, collect_realm_count, collect_icam_inventory,
+        collect_webauthn_users, collect_authz_clients, collect_rbac_policy,
+        collect_aggregate_policy, collect_resource_permission, collect_password_policy,
+        collect_central_authz_policy, collect_abac_policy,
+    )
+    return [
+        (collect_user_role_ratio,      "1.1.1.2_1", "초기"),
+        (collect_idp_inventory,        "1.1.1.3_1", "향상"),
+        (collect_idp_registered,       "1.1.2.1_1", "기존"),
+        (collect_active_idp_multi,     "1.1.2.2_1", "초기"),
+        (collect_mfa_required,         "1.2.1.1_1", "기존"),
+        (collect_otp_flow,             "1.2.1.2_1", "초기"),
+        (collect_webauthn_status,      "1.2.1.2_2", "초기"),
+        (collect_conditional_auth,     "1.2.1.3_1", "향상"),
+        (collect_session_policy,       "1.2.2.1_1", "기존"),
+        (collect_stepup_auth,          "1.2.2.2_1", "초기"),
+        (collect_realm_count,          "1.3.1.1_1", "기존"),
+        (collect_icam_inventory,       "1.3.1.2_1", "초기"),
+        (collect_webauthn_users,       "1.3.2.2_1", "향상"),
+        (collect_authz_clients,        "1.4.1.1_3", "기존"),
+        (collect_rbac_policy,          "1.4.1.2_1", "초기"),
+        (collect_aggregate_policy,     "1.4.1.3_2", "향상"),
+        (collect_resource_permission,  "1.4.1.3_3", "향상"),
+        (collect_password_policy,      "1.4.2.2_1", "초기"),
+        (collect_central_authz_policy, "4.1.1.2_1", "초기"),
+        (collect_abac_policy,          "4.1.1.3_1", "향상"),
+    ]
+
+
 def _tr_mapping():
     from collectors.trivy_collector import (
         collect_image_scan, collect_cicd_scan_ratio, collect_integrity_check,
@@ -1002,6 +1127,7 @@ _TOOL_MODULE = {
     "wazuh":    "collectors.wazuh_collector",
     "nmap":     "collectors.nmap_collector",
     "trivy":    "collectors.trivy_collector",
+    "entra":    "collectors.entra_collector",
 }
 
 # 명시 매핑 함수 캐시(원본 함수)
@@ -1010,6 +1136,7 @@ _BASE_MAPPING_FNS = {
     "wazuh":    _wz_mapping,
     "nmap":     _nm_mapping,
     "trivy":    _tr_mapping,
+    "entra":    _entra_mapping,
 }
 
 
@@ -1034,6 +1161,7 @@ _TOOL_DISPATCH = {
     "wazuh":    (lambda: _full_mapping("wazuh"),    True),
     "nmap":     (lambda: _full_mapping("nmap"),     False),
     "trivy":    (lambda: _full_mapping("trivy"),    False),
+    "entra":    (lambda: _full_mapping("entra"),    True),
 }
 
 
@@ -1118,6 +1246,26 @@ def _tool_configured(tool: str) -> Optional[str]:
             return f"Trivy 미연결: TRIVY_TARGET이 placeholder('{target or 'empty'}'). .env에 진단 대상 이미지/경로 설정 필요"
         return None
 
+    if tool == "entra":
+        # session-level 자격(set_session_creds 로 주입됨)이 살아있으면 통과.
+        # _run_collectors 가 _tool_health 보다 먼저 set_session_creds 를 호출한다.
+        try:
+            from collectors import entra_collector as _ec
+            if _ec._session_creds and (
+                _ec._session_creds.get("tenant_id")
+                and _ec._session_creds.get("client_id")
+                and _ec._session_creds.get("client_secret")
+            ):
+                return None
+        except Exception:
+            pass
+        tenant = os.getenv("ENTRA_TENANT_ID", "")
+        cid = os.getenv("ENTRA_CLIENT_ID", "")
+        cs = os.getenv("ENTRA_CLIENT_SECRET", "")
+        if not (tenant and cid and cs):
+            return "Entra 미연결: ENTRA_TENANT_ID/CLIENT_ID/CLIENT_SECRET 미설정"
+        return None
+
     return f"unknown tool: {tool}"
 
 
@@ -1139,6 +1287,9 @@ def _tool_health(tool: str) -> Optional[str]:
         return _probe_tcp(os.getenv("NMAP_WRAPPER_URL", "http://localhost:8001"))
     if tool == "trivy":
         return _probe_tcp(os.getenv("TRIVY_WRAPPER_URL", "http://localhost:8002"))
+    if tool == "entra":
+        # Microsoft Graph 도달성 확인. 인증 토큰은 collector 호출 시 발급된다.
+        return _probe_tcp("https://login.microsoftonline.com")
     return f"unknown tool: {tool}"
 
 
@@ -1189,6 +1340,7 @@ def _run_collectors(session_id: int, tools: list[str]):
     scan_targets: dict = {}
     keycloak_creds: dict = {}
     wazuh_creds: dict = {}
+    entra_creds: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -1205,6 +1357,9 @@ def _run_collectors(session_id: int, tools: list[str]):
             wz_meta = sess.extra.get("wazuh_creds") or {}
             if isinstance(wz_meta, dict):
                 wazuh_creds = {k: v for k, v in wz_meta.items() if v}
+            en_meta = sess.extra.get("entra_creds") or {}
+            if isinstance(en_meta, dict):
+                entra_creds = {k: v for k, v in en_meta.items() if v}
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
@@ -1214,6 +1369,7 @@ def _run_collectors(session_id: int, tools: list[str]):
     secrets_blob = _pop_session_secrets(session_id)
     kc_secret = secrets_blob.get("keycloak") if isinstance(secrets_blob, dict) else None
     wz_secret = secrets_blob.get("wazuh") if isinstance(secrets_blob, dict) else None
+    en_secret = secrets_blob.get("entra") if isinstance(secrets_blob, dict) else None
     if isinstance(kc_secret, dict):
         for k, v in kc_secret.items():
             if v:
@@ -1222,6 +1378,10 @@ def _run_collectors(session_id: int, tools: list[str]):
         for k, v in wz_secret.items():
             if v:
                 wazuh_creds[k] = v
+    if isinstance(en_secret, dict):
+        for k, v in en_secret.items():
+            if v:
+                entra_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -1253,16 +1413,24 @@ def _run_collectors(session_id: int, tools: list[str]):
                     from collectors import wazuh_collector as _wz
                     explicit_creds = wazuh_creds or None
                     _wz.set_session_creds(explicit_creds)
+                elif tool == "entra":
+                    from collectors import entra_collector as _ec
+                    explicit_creds = entra_creds or None
+                    _ec.set_session_creds(explicit_creds)
 
                 # 가용성 체크:
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
                 # - keycloak/wazuh: 사용자가 URL을 직접 줬으면 그 URL TCP probe만 확인
                 #   (placeholder 가드는 .env 디폴트값에만 의미가 있으므로 우회).
+                # - entra: tenant/client/secret 모두 있으면 Microsoft Graph 도달성만 확인.
                 if tool in ("nmap", "trivy") and explicit_target:
                     wrapper_env = "NMAP_WRAPPER_URL" if tool == "nmap" else "TRIVY_WRAPPER_URL"
                     health_err = _probe_tcp(os.getenv(wrapper_env, ""))
                 elif tool in ("keycloak", "wazuh") and explicit_creds and explicit_creds.get("url"):
                     health_err = _probe_tcp(explicit_creds["url"])
+                elif tool == "entra" and explicit_creds and explicit_creds.get("tenant_id") \
+                        and explicit_creds.get("client_id") and explicit_creds.get("client_secret"):
+                    health_err = _probe_tcp("https://login.microsoftonline.com")
                 else:
                     health_err = _tool_health(tool)
 
@@ -1295,6 +1463,11 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import wazuh_collector as _wz
                 _wz.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import entra_collector as _ec
+                _ec.set_session_creds(None)
             except Exception:
                 pass
 

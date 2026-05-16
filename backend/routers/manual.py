@@ -319,6 +319,9 @@ def get_manual_items(
 ):
     """수동 진단 항목 + 미사용 도구 항목을 반환한다.
     excluded_tools: 쉼표 구분 도구명 (예: 'nmap,trivy') — 해당 도구 자동 항목도 수동으로 포함.
+
+    추가: session.extra.profile_select 가 있으면 사용자가 쓰는 IdP/SIEM 외 자동 도구의
+    체크리스트 항목을 자동으로 폴백 노출한다(예: idp_type='entra' → keycloak 항목 수동).
     """
     session = db.query(DiagnosisSession).filter(
         DiagnosisSession.session_id == session_id
@@ -327,8 +330,22 @@ def get_manual_items(
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
     assert_session_access(current_user, session)
 
-    excluded_list = [t.strip().lower() for t in excluded_tools.split(",") if t.strip()]
+    excluded_set = {t.strip().lower() for t in excluded_tools.split(",") if t.strip()}
 
+    # session.extra.profile_select 로부터 자동 폴백 도구 산출
+    extra = session.extra if isinstance(session.extra, dict) else {}
+    ps = extra.get("profile_select") if isinstance(extra.get("profile_select"), dict) else {}
+    idp_sel = (ps.get("idp_type") or "").lower()
+    siem_sel = (ps.get("siem_type") or "").lower()
+    # IdP/SIEM 자동 도구 목록 (assessment.py 와 동기화 필요 시 함께 갱신)
+    if idp_sel and idp_sel != "keycloak":
+        excluded_set.add("keycloak")
+    if idp_sel and idp_sel != "entra":
+        excluded_set.add("entra")
+    if siem_sel and siem_sel != "wazuh":
+        excluded_set.add("wazuh")
+
+    excluded_list = sorted(excluded_set)
     if excluded_list:
         manual_items = db.query(Checklist).filter(
             or_(

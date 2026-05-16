@@ -85,6 +85,20 @@ export interface WazuhCreds {
   api_pass?: string;
 }
 
+export interface EntraCreds {
+  tenant_id?: string;
+  client_id?: string;
+  client_secret?: string;
+}
+
+export type IdpType = "keycloak" | "entra" | "okta" | "ldap" | "none";
+export type SiemType = "wazuh" | "splunk" | "elastic" | "none";
+
+export interface ProfileSelect {
+  idp_type: IdpType;
+  siem_type: SiemType;
+}
+
 export interface AssessmentRunRequest {
   org_name?: string;
   manager?: string;
@@ -102,6 +116,8 @@ export interface AssessmentRunRequest {
   scan_targets?: ScanTargets;
   keycloak_creds?: KeycloakCreds;
   wazuh_creds?: WazuhCreds;
+  entra_creds?: EntraCreds;
+  profile_select?: ProfileSelect;
 }
 
 export interface AssessmentRunResponse {
