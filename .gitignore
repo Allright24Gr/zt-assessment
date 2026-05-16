@@ -38,3 +38,15 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Nginx SSL 인증서 (운영 환경에 직접 배포)
+nginx/certs/*.pem
+nginx/certs/*.key
+
+# 증적 업로드 저장소 (운영 외부 볼륨 또는 S3)
+evidence/
+
+# pytest / coverage
+.pytest_cache/
+htmlcov/
+.coverage
