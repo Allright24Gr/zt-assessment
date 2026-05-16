@@ -15,6 +15,17 @@ from models import (
     DiagnosisResult, MaturityScore, ScoreHistory, Organization, User,
 )
 from scoring.engine import score_session, determine_maturity_level
+from routers.auth import (
+    get_current_user,
+    assert_session_access,
+    assert_org_access,
+)
+from routers.validators import (
+    validate_nmap_target,
+    validate_trivy_image,
+    validate_https_url,
+    validate_cred_field,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,6 +71,49 @@ def _get_session_or_404(db: Session, session_id: int) -> DiagnosisSession:
     if not s:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
     return s
+
+
+def _mask_creds(extra: dict) -> dict:
+    """session.extra 응답 직전에 자격 비밀번호를 마스킹.
+
+    Phase 3 이후 비밀번호 자체는 DB에 저장되지 않는다(메모리 dict로만 전달).
+    그러나 다음 두 경우에 대비해 마스킹 로직은 그대로 둔다:
+      1) 과거에 저장된 세션 (마이그레이션 전 데이터)
+      2) 잘못된 입력 경로로 누군가 admin_pass/api_pass를 extra에 넣은 경우
+    """
+    safe = dict(extra or {})
+    for key in ("keycloak_creds", "wazuh_creds"):
+        val = safe.get(key)
+        if isinstance(val, dict):
+            masked = dict(val)
+            for pw_field in ("admin_pass", "api_pass"):
+                if masked.get(pw_field):
+                    masked[pw_field] = "***"
+            safe[key] = masked
+    return safe
+
+
+# ─── 자격(비밀번호) 메모리 보관 ────────────────────────────────────────────────
+# DB 평문 저장을 피하기 위해 세션 ID → 자격 dict 매핑을 메모리에만 보관한다.
+# BackgroundTask(_run_collectors) 가 꺼내 쓰고 finally 에서 즉시 폐기.
+# 서버 재시작/장애로 진단이 처리 전에 끊기면 자격은 사라지며 사용자가 재실행해야 한다.
+_session_creds_lock = threading.Lock()
+_session_creds_store: dict[int, dict] = {}
+
+
+def _store_session_secrets(session_id: int, kc_creds: dict, wz_creds: dict) -> None:
+    """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
+    with _session_creds_lock:
+        _session_creds_store[session_id] = {
+            "keycloak": dict(kc_creds or {}),
+            "wazuh":    dict(wz_creds or {}),
+        }
+
+
+def _pop_session_secrets(session_id: int) -> dict:
+    """_run_collectors 가 호출. 메모리에서 자격을 꺼내고 즉시 삭제."""
+    with _session_creds_lock:
+        return _session_creds_store.pop(session_id, {}) or {}
 
 
 def _selected_tools_set(session: DiagnosisSession) -> set[str]:
@@ -165,6 +219,11 @@ class AssessmentRunRequest(BaseModel):
     # 외부 스캔 대상 (사용자가 NewAssessment에서 직접 입력)
     # 예: {"nmap": "scanme.nmap.org", "trivy": "nginx:1.25"}
     scan_targets: dict = Field(default_factory=dict)
+    # 사용자 환경 IdP/SIEM 자격 (NewAssessment에서 직접 입력)
+    # 예: {"url": "https://idp.example.com", "admin_user": "...", "admin_pass": "..."}
+    keycloak_creds: Optional[dict] = None
+    # 예: {"url": "https://wazuh.example.com:55000", "api_user": "...", "api_pass": "..."}
+    wazuh_creds: Optional[dict] = None
 
 
 class WebhookResultItem(BaseModel):
@@ -196,7 +255,40 @@ def run_assessment(
     req: AssessmentRunRequest,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    # ── 입력 검증 (L) ────────────────────────────────────────────────────────
+    # scan_targets / IdP·SIEM URL 은 wrapper / collector 로 그대로 전달되므로
+    # 인자 주입 위험을 차단하기 위해 형식·메타문자 검증을 먼저 수행한다.
+    try:
+        scan_targets_in = dict(req.scan_targets or {})
+        if "nmap" in scan_targets_in:
+            scan_targets_in["nmap"] = validate_nmap_target(scan_targets_in.get("nmap") or "")
+        if "trivy" in scan_targets_in:
+            scan_targets_in["trivy"] = validate_trivy_image(scan_targets_in.get("trivy") or "")
+
+        kc_in = dict(req.keycloak_creds or {}) if req.keycloak_creds else {}
+        if kc_in:
+            kc_in["url"] = validate_https_url(kc_in.get("url") or "", "keycloak_creds.url")
+            kc_in["admin_user"] = validate_cred_field(
+                kc_in.get("admin_user") or "", "keycloak_creds.admin_user"
+            )
+            kc_in["admin_pass"] = validate_cred_field(
+                kc_in.get("admin_pass") or "", "keycloak_creds.admin_pass"
+            )
+
+        wz_in = dict(req.wazuh_creds or {}) if req.wazuh_creds else {}
+        if wz_in:
+            wz_in["url"] = validate_https_url(wz_in.get("url") or "", "wazuh_creds.url")
+            wz_in["api_user"] = validate_cred_field(
+                wz_in.get("api_user") or "", "wazuh_creds.api_user"
+            )
+            wz_in["api_pass"] = validate_cred_field(
+                wz_in.get("api_pass") or "", "wazuh_creds.api_pass"
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     # Organization upsert + 메타데이터 갱신
     org = db.query(Organization).filter(Organization.name == req.org_name).first()
     if not org:
@@ -212,22 +304,29 @@ def run_assessment(
             "중소기업"
         )
 
-    # User upsert
-    user = db.query(User).filter(User.email == req.email).first()
-    if not user:
-        user = User(org_id=org.org_id, name=req.manager, email=req.email)
-        db.add(user)
-        db.flush()
-    else:
-        # 같은 이메일이라도 조직이 바뀔 수 있음
-        user.org_id = org.org_id
-        user.name = req.manager or user.name
+    # 진단 실행 주체는 X-Login-Id 로 식별된 current_user.
+    # 과거에는 body.email 로 User upsert를 했지만 이제는 본인 또는 admin 만 실행 가능.
+    # body.manager/email 은 표시용 메타데이터로만 사용 (User 행 변경 없음).
+    if current_user.role != "admin" and current_user.org_id != org.org_id:
+        raise HTTPException(
+            status_code=403,
+            detail="현재 사용자 소속 조직 외의 조직으로 진단을 실행할 수 없습니다.",
+        )
+    user = current_user
+    # admin이 다른 조직에 대해 진단을 트리거할 때만 org 변경 허용.
+    if current_user.role == "admin" and user.org_id != org.org_id:
+        # admin 본인의 user 행은 그대로 두고, 진단 세션의 user_id 는 admin user 로 기록.
+        pass
 
     # 도구 선택 정규화: 빈 dict → 전체 도구
     tool_scope = req.tool_scope or {t: True for t in ALL_TOOLS}
     selected_tools = sorted(t for t in ALL_TOOLS if tool_scope.get(t))
 
     # 세션 메타데이터
+    # 자격 비밀번호(admin_pass/api_pass)는 DB에 저장하지 않는다.
+    # URL/사용자명만 extra에 남기고, 비밀번호는 _store_session_secrets 로 메모리에만 보관.
+    kc_meta = {k: v for k, v in kc_in.items() if k in ("url", "admin_user") and v}
+    wz_meta = {k: v for k, v in wz_in.items() if k in ("url", "api_user") and v}
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -236,7 +335,9 @@ def run_assessment(
         "applications": req.applications,
         "note":         req.note,
         "pillar_scope": req.pillar_scope,
-        "scan_targets": req.scan_targets or {},
+        "scan_targets": scan_targets_in,
+        "keycloak_creds": kc_meta,
+        "wazuh_creds":    wz_meta,
     }
 
     session = DiagnosisSession(
@@ -250,6 +351,9 @@ def run_assessment(
     db.add(session)
     db.commit()
     db.refresh(session)
+
+    # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
+    _store_session_secrets(session.session_id, kc_in, wz_in)
 
     # Shuffle 경로 우선, 미설정 시 직접 collector 실행
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
@@ -268,12 +372,17 @@ def run_assessment(
 
 
 @router.get("/status/{session_id}")
-def get_assessment_status(session_id: int, db: Session = Depends(get_db)):
+def get_assessment_status(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """자동 수집 진행 상태를 반환한다 (프론트 폴링용).
 
     도구별 / 필러별 진행률까지 포함하여 InProgress 페이지의 시각화에 그대로 사용 가능.
     """
     session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
     tools = _selected_tools_set(session)
 
     # 도구별 mapping에서 expected item_id 모으기
@@ -347,9 +456,14 @@ def get_assessment_status(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/finalize/{session_id}")
-def finalize_assessment(session_id: int, db: Session = Depends(get_db)):
+def finalize_assessment(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """수동 제출 완료 후 채점을 명시적으로 트리거한다."""
     session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
     if session.status == "완료":
         return {"status": "already_completed", "session_id": session_id}
     _trigger_scoring(session_id, db)
@@ -397,8 +511,13 @@ def assessment_webhook(
 
 
 @router.get("/result")
-def get_result(session_id: int, db: Session = Depends(get_db)):
+def get_result(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
     org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
     user = db.query(User).filter(User.user_id == session.user_id).first()
 
@@ -458,7 +577,7 @@ def get_result(session_id: int, db: Session = Depends(get_db)):
             "status":  session.status,
             "score":   session.total_score,
             "errors":  _build_session_errors(db, session_id),
-            "extra":   session.extra or {},
+            "extra":   _mask_creds(session.extra or {}),
             "is_demo": bool(org and org.name == DEMO_ORG_NAME),
         },
         "pillar_scores":     pillar_scores,
@@ -473,8 +592,15 @@ def get_history(
     org_id: Optional[int] = None,
     org_name: Optional[str] = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    # 일반 사용자: 자기 조직 세션만. admin: 전체.
     query = db.query(DiagnosisSession)
+    if current_user.role != "admin":
+        query = query.filter(DiagnosisSession.org_id == current_user.org_id)
+        # 일반 사용자가 다른 org_id/name 으로 필터하려 해도 자기 조직으로 강제.
+        org_id = None
+        org_name = None
     if org_id is not None:
         query = query.filter(DiagnosisSession.org_id == org_id)
     if org_name:
@@ -1050,14 +1176,19 @@ def _run_collectors(session_id: int, tools: list[str]):
 
     각 도구는 호출 전 _tool_health로 가용성을 확인한다. 도구가 닫혀있으면
     그 도구의 모든 매핑을 '평가불가'로 일괄 표시하고 함수 호출은 스킵한다.
-    사용자가 nmap/trivy 스캔 대상을 직접 입력한 경우 session.extra.scan_targets
-    를 collector 모듈 전역에 주입한다.
+    사용자가 nmap/trivy 스캔 대상 또는 Keycloak/Wazuh 자격을 직접 입력한
+    경우 session.extra 의 해당 키를 각 collector 모듈 전역에 주입한다.
     """
     if not tools:
         return
 
-    # 세션의 사용자 입력 scan_targets 조회
+    # 세션의 사용자 입력 조회.
+    # - scan_targets / IdP·SIEM URL·user 등 비민감 정보 → DB extra 에서 로드.
+    # - 자격 비밀번호(admin_pass/api_pass) → 메모리 dict 에서 pop (DB 평문 저장 금지).
+    # 자격은 로깅에 절대 포함하지 않는다.
     scan_targets: dict = {}
+    keycloak_creds: dict = {}
+    wazuh_creds: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -1067,10 +1198,30 @@ def _run_collectors(session_id: int, tools: list[str]):
             raw = sess.extra.get("scan_targets") or {}
             if isinstance(raw, dict):
                 scan_targets = {k: (v or "").strip() for k, v in raw.items() if v}
+            # extra 에는 URL/user 만 들어있다 (Phase 3 이후). 비번은 메모리에서 합칠 것.
+            kc_meta = sess.extra.get("keycloak_creds") or {}
+            if isinstance(kc_meta, dict):
+                keycloak_creds = {k: v for k, v in kc_meta.items() if v}
+            wz_meta = sess.extra.get("wazuh_creds") or {}
+            if isinstance(wz_meta, dict):
+                wazuh_creds = {k: v for k, v in wz_meta.items() if v}
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
         db_pre.close()
+
+    # 메모리에 보관된 자격 비번 합류 (사용 후 폐기 보장)
+    secrets_blob = _pop_session_secrets(session_id)
+    kc_secret = secrets_blob.get("keycloak") if isinstance(secrets_blob, dict) else None
+    wz_secret = secrets_blob.get("wazuh") if isinstance(secrets_blob, dict) else None
+    if isinstance(kc_secret, dict):
+        for k, v in kc_secret.items():
+            if v:
+                keycloak_creds[k] = v
+    if isinstance(wz_secret, dict):
+        for k, v in wz_secret.items():
+            if v:
+                wazuh_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -1085,20 +1236,33 @@ def _run_collectors(session_id: int, tools: list[str]):
                     logger.warning("[collector] %s mapping load failed: %s", tool, exc)
                     continue
 
-                # 사용자 입력 target 우선. nmap/trivy의 모듈-전역에 주입.
+                # 사용자 입력 target / 자격 우선. 모듈-전역에 주입.
                 explicit_target = scan_targets.get(tool) if tool in ("nmap", "trivy") else None
+                explicit_creds: Optional[dict] = None
                 if tool == "nmap":
                     from collectors import nmap_collector as _nm
                     _nm.set_session_target(explicit_target)
                 elif tool == "trivy":
                     from collectors import trivy_collector as _tr
                     _tr.set_session_target(explicit_target)
+                elif tool == "keycloak":
+                    from collectors import keycloak_collector as _kc
+                    explicit_creds = keycloak_creds or None
+                    _kc.set_session_creds(explicit_creds)
+                elif tool == "wazuh":
+                    from collectors import wazuh_collector as _wz
+                    explicit_creds = wazuh_creds or None
+                    _wz.set_session_creds(explicit_creds)
 
-                # 가용성 체크: 사용자가 target을 직접 줬으면 placeholder 가드를 우회하고
-                # wrapper TCP 도달성만 확인. 그렇지 않으면 기존 _tool_health 그대로.
-                if explicit_target:
+                # 가용성 체크:
+                # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
+                # - keycloak/wazuh: 사용자가 URL을 직접 줬으면 그 URL TCP probe만 확인
+                #   (placeholder 가드는 .env 디폴트값에만 의미가 있으므로 우회).
+                if tool in ("nmap", "trivy") and explicit_target:
                     wrapper_env = "NMAP_WRAPPER_URL" if tool == "nmap" else "TRIVY_WRAPPER_URL"
                     health_err = _probe_tcp(os.getenv(wrapper_env, ""))
+                elif tool in ("keycloak", "wazuh") and explicit_creds and explicit_creds.get("url"):
+                    health_err = _probe_tcp(explicit_creds["url"])
                 else:
                     health_err = _tool_health(tool)
 
@@ -1112,7 +1276,7 @@ def _run_collectors(session_id: int, tools: list[str]):
                 for fn, item_id, maturity in mapping:
                     results.append(_safe_call(fn, item_id, maturity, takes_args, tool))
         finally:
-            # 모듈-전역 target은 다음 세션에 누수되지 않도록 항상 해제.
+            # 모듈-전역 target / creds 는 다음 세션에 누수되지 않도록 항상 해제.
             try:
                 from collectors import nmap_collector as _nm
                 _nm.set_session_target(None)
@@ -1121,6 +1285,16 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import trivy_collector as _tr
                 _tr.set_session_target(None)
+            except Exception:
+                pass
+            try:
+                from collectors import keycloak_collector as _kc
+                _kc.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import wazuh_collector as _wz
+                _wz.set_session_creds(None)
             except Exception:
                 pass
 

@@ -56,6 +56,14 @@ export function Login() {
 
     const ok = await login(username, password);
     if (ok) {
+      // 시드 계정(password === login_id) 감지 → Dashboard 배너 트리거 (작업 N)
+      try {
+        if (username && username === password) {
+          sessionStorage.setItem("zt_seed_password_warning", "true");
+        } else {
+          sessionStorage.removeItem("zt_seed_password_warning");
+        }
+      } catch { /* ignore */ }
       navigate("/");
     } else {
       setError("아이디 또는 비밀번호가 올바르지 않습니다.");

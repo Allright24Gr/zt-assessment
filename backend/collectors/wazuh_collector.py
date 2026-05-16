@@ -19,6 +19,38 @@ WAZUH_INDEXER_PASS = os.environ.get("WAZUH_INDEXER_PASS", "admin")
 _token_cache: dict = {"token": None, "expires_at": 0.0}
 _indexer_session: Optional[requests.Session] = None
 
+# ─── session-scoped credential override (E-be) ───────────────────────────────
+# 사용자가 NewAssessment에서 입력한 SIEM 자격을 _run_collectors에서 주입한다.
+# dispatcher가 _collector_lock으로 직렬화하므로 모듈 전역 상태로 안전.
+_session_creds: Optional[dict] = None
+
+
+def set_session_creds(creds: Optional[dict]) -> None:
+    """세션 단위 Wazuh 자격을 모듈 전역에 주입. None 이면 해제."""
+    global _session_creds, _token_cache, _indexer_session
+    _session_creds = creds or None
+    # 자격이 바뀌면 토큰/인덱서 세션 캐시 모두 무효화.
+    _token_cache = {"token": None, "expires_at": 0.0}
+    _indexer_session = None
+
+
+def _wz_url() -> str:
+    if _session_creds and _session_creds.get("url"):
+        return str(_session_creds["url"]).rstrip("/")
+    return WAZUH_API_URL
+
+
+def _wz_user() -> str:
+    if _session_creds and _session_creds.get("api_user"):
+        return str(_session_creds["api_user"])
+    return WAZUH_API_USER
+
+
+def _wz_pass() -> str:
+    if _session_creds and _session_creds.get("api_pass"):
+        return str(_session_creds["api_pass"])
+    return WAZUH_API_PASS
+
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -40,8 +72,8 @@ def _get_wazuh_token() -> str:
     if _token_cache["token"] and time.time() < _token_cache["expires_at"] - 30:
         return _token_cache["token"]
     resp = requests.post(
-        f"{WAZUH_API_URL}/security/user/authenticate",
-        auth=(WAZUH_API_USER, WAZUH_API_PASS),
+        f"{_wz_url()}/security/user/authenticate",
+        auth=(_wz_user(), _wz_pass()),
         verify=False,
         timeout=10,
     )
@@ -90,7 +122,7 @@ def _indexer_search(index_pattern: str, query_dsl: dict) -> dict:
 def _wazuh_get(path: str, params: dict = None) -> dict:
     token = _get_wazuh_token()
     resp = requests.get(
-        f"{WAZUH_API_URL}{path}",
+        f"{_wz_url()}{path}",
         headers={"Authorization": f"Bearer {token}"},
         params=params,
         verify=False,

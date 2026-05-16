@@ -10,7 +10,8 @@ import io
 import openpyxl
 
 from database import get_db
-from models import DiagnosisSession, Checklist, DiagnosisResult, Evidence, CollectedData
+from models import DiagnosisSession, Checklist, DiagnosisResult, Evidence, CollectedData, User
+from routers.auth import get_current_user, assert_session_access
 
 router = APIRouter()
 
@@ -77,6 +78,7 @@ async def manual_upload(
     session_id: int = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """수동 체크리스트 Excel 파일을 업로드해 DiagnosisResult를 일괄 생성한다.
 
@@ -87,6 +89,7 @@ async def manual_upload(
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
 
     content = await file.read()
     try:
@@ -202,12 +205,17 @@ async def manual_upload(
 
 
 @router.post("/submit")
-def manual_submit(req: ManualSubmitRequest, db: Session = Depends(get_db)):
+def manual_submit(
+    req: ManualSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     session = db.query(DiagnosisSession).filter(
         DiagnosisSession.session_id == req.session_id
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
 
     weight_map = {"충족": 1.0, "부분충족": 0.5, "미충족": 0.0, "평가불가": 0.0}
     saved = 0
@@ -286,7 +294,7 @@ def manual_submit(req: ManualSubmitRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/template")
-def download_template():
+def download_template(current_user: User = Depends(get_current_user)):
     """사용자에게 배포할 빈 manual-checklist.xlsx 템플릿을 반환한다."""
     candidates = [
         Path("/app/manual-checklist.xlsx"),
@@ -307,6 +315,7 @@ def get_manual_items(
     session_id: int,
     excluded_tools: str = "",
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """수동 진단 항목 + 미사용 도구 항목을 반환한다.
     excluded_tools: 쉼표 구분 도구명 (예: 'nmap,trivy') — 해당 도구 자동 항목도 수동으로 포함.
@@ -316,6 +325,7 @@ def get_manual_items(
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
 
     excluded_list = [t.strip().lower() for t in excluded_tools.split(",") if t.strip()]
 

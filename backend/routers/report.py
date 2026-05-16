@@ -11,6 +11,7 @@ from models import (
     Checklist, Organization, User, ImprovementGuide,
 )
 from scoring.engine import determine_maturity_level
+from routers.auth import get_current_user, assert_session_access
 
 router = APIRouter()
 
@@ -438,7 +439,13 @@ def generate_report_by_query(
     session_id: int,
     fmt: str = Query(default="json", pattern="^(json|pdf)$"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    session = db.query(DiagnosisSession).filter(DiagnosisSession.session_id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
     data = _build_data(session_id, db)
     if fmt == "pdf":
         pdf_bytes = _make_pdf(data)
@@ -463,5 +470,8 @@ def generate_report(
     session_id: int,
     fmt: str = Query(default="json", pattern="^(json|pdf)$"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    return generate_report_by_query(session_id=session_id, fmt=fmt, db=db)
+    return generate_report_by_query(
+        session_id=session_id, fmt=fmt, db=db, current_user=current_user,
+    )

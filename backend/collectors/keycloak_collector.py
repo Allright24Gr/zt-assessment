@@ -16,6 +16,37 @@ KEYCLOAK_ADMIN_PASS = os.environ.get("KEYCLOAK_ADMIN_PASS", "")
 _SYSTEM_ROLES = frozenset({"offline_access", "uma_authorization"})
 _token_cache: dict = {"token": None, "expires_at": 0.0}
 
+# ─── session-scoped credential override (E-be) ───────────────────────────────
+# 사용자가 NewAssessment에서 입력한 IdP 자격을 _run_collectors에서 주입한다.
+# 동일 프로세스에서 동시 세션이 돌면 안 되므로 dispatcher가 _collector_lock으로 직렬화한다.
+_session_creds: Optional[dict] = None
+
+
+def set_session_creds(creds: Optional[dict]) -> None:
+    """세션 단위 Keycloak 자격을 모듈 전역에 주입. None 이면 해제."""
+    global _session_creds, _token_cache
+    _session_creds = creds or None
+    # 세션이 바뀌면 이전 세션의 admin token 캐시를 반드시 무효화한다.
+    _token_cache = {"token": None, "expires_at": 0.0}
+
+
+def _kc_url() -> str:
+    if _session_creds and _session_creds.get("url"):
+        return str(_session_creds["url"]).rstrip("/")
+    return KEYCLOAK_URL
+
+
+def _kc_admin_user() -> str:
+    if _session_creds and _session_creds.get("admin_user"):
+        return str(_session_creds["admin_user"])
+    return KEYCLOAK_ADMIN_USER
+
+
+def _kc_admin_pass() -> str:
+    if _session_creds and _session_creds.get("admin_pass"):
+        return str(_session_creds["admin_pass"])
+    return KEYCLOAK_ADMIN_PASS
+
 
 # ─────────────────────────── internal helpers ───────────────────────────
 
@@ -24,14 +55,14 @@ def _get_admin_token() -> str:
     now = time.time()
     if _token_cache["token"] and now < _token_cache["expires_at"] - 30:
         return _token_cache["token"]
-    url = f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token"
+    url = f"{_kc_url()}/realms/master/protocol/openid-connect/token"
     resp = requests.post(
         url,
         data={
             "grant_type": "password",
             "client_id": KEYCLOAK_CLIENT_ID,
-            "username": KEYCLOAK_ADMIN_USER,
-            "password": KEYCLOAK_ADMIN_PASS,
+            "username": _kc_admin_user(),
+            "password": _kc_admin_pass(),
         },
         timeout=10,
     )
@@ -85,7 +116,7 @@ def _unavailable(
 
 def _kc_get(path: str, params: dict = None, token: str = None) -> Any:
     """GET with 401 token-refresh (1 retry) and 5xx (3 retries), 10s timeout."""
-    url = f"{KEYCLOAK_URL}{path}"
+    url = f"{_kc_url()}{path}"
     current_token = token
     token_refreshed = False
     server_errors = 0

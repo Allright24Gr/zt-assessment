@@ -73,6 +73,18 @@ export interface ScanTargets {
   trivy?: string;
 }
 
+export interface KeycloakCreds {
+  url?: string;
+  admin_user?: string;
+  admin_pass?: string;
+}
+
+export interface WazuhCreds {
+  url?: string;
+  api_user?: string;
+  api_pass?: string;
+}
+
 export interface AssessmentRunRequest {
   org_name?: string;
   manager?: string;
@@ -88,6 +100,8 @@ export interface AssessmentRunRequest {
   pillar_scope?: Record<string, boolean>;
   tool_scope?: Record<string, boolean>;
   scan_targets?: ScanTargets;
+  keycloak_creds?: KeycloakCreds;
+  wazuh_creds?: WazuhCreds;
 }
 
 export interface AssessmentRunResponse {

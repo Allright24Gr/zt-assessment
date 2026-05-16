@@ -1,11 +1,11 @@
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Building2, Upload, CheckCircle2, FileText, X, Wrench, Info, Target, AlertTriangle } from "lucide-react";
+import { Building2, Upload, CheckCircle2, FileText, X, Wrench, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
-import type { ScanTargets } from "../../types/api";
+import type { ScanTargets, KeycloakCreds, WazuhCreds } from "../../types/api";
 
 const TOOLS = [
   {
@@ -98,6 +98,19 @@ export function NewAssessment() {
   });
   const [files, setFiles] = useState<File[]>([]);
 
+  // 데모/실 스캔 모드: 기본은 데모(외부 시스템 미접근).
+  const [scanMode, setScanMode] = useState<"demo" | "live">("demo");
+  // 외부 스캔 동의 체크박스 (작업 C)
+  const [consentExternalScan, setConsentExternalScan] = useState(false);
+  // Keycloak 연결 카드 입력값 (작업 E-fe)
+  const [keycloakCreds, setKeycloakCreds] = useState<{ url: string; admin_user: string; admin_pass: string }>({
+    url: "", admin_user: "", admin_pass: "",
+  });
+  // Wazuh 연결 카드 입력값 (작업 E-fe)
+  const [wazuhCreds, setWazuhCreds] = useState<{ url: string; api_user: string; api_pass: string }>({
+    url: "", api_user: "", api_pass: "",
+  });
+
   const togglePillar = (key: string) => {
     setPillarScope((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -133,19 +146,45 @@ export function NewAssessment() {
     setStep(2);
   };
 
+  // 실 스캔 모드에서 외부 스캔 입력이 있는지(=동의 체크박스가 필요한지)
+  const isLive = scanMode === "live";
+  const liveScanIntent = isLive && (
+    (toolScope.nmap && scanTargets.nmap.trim()) ||
+    (toolScope.trivy && scanTargets.trivy.trim())
+  );
+  const submitDisabled = !!liveScanIntent && !consentExternalScan;
+
   const handleSubmit = () => {
     const excludedTools = Object.entries(toolScope)
       .filter(([, enabled]) => !enabled)
       .map(([tool]) => tool)
       .join(",");
 
-    // 외부 스캔 대상이 입력된 경우에만 scan_targets 포함
+    // 데모 모드: 외부 시스템 정보를 일절 전송하지 않는다.
+    // 실 스캔 모드: 입력된 외부 시스템 정보만 선택적으로 전송한다.
     const nmapTarget = scanTargets.nmap.trim();
     const trivyTarget = scanTargets.trivy.trim();
     const scanTargetsPayload: ScanTargets = {};
-    if (toolScope.nmap && nmapTarget) scanTargetsPayload.nmap = nmapTarget;
-    if (toolScope.trivy && trivyTarget) scanTargetsPayload.trivy = trivyTarget;
+    if (isLive && toolScope.nmap && nmapTarget) scanTargetsPayload.nmap = nmapTarget;
+    if (isLive && toolScope.trivy && trivyTarget) scanTargetsPayload.trivy = trivyTarget;
     const hasScanTargets = Object.keys(scanTargetsPayload).length > 0;
+
+    // Keycloak/Wazuh 연결 정보 — 실 스캔 모드 + 도구 선택 시에만, 그리고 입력값이 있을 때만 전송
+    const kcPayload: KeycloakCreds = {};
+    if (isLive && toolScope.keycloak) {
+      if (keycloakCreds.url.trim())        kcPayload.url        = keycloakCreds.url.trim();
+      if (keycloakCreds.admin_user.trim()) kcPayload.admin_user = keycloakCreds.admin_user.trim();
+      if (keycloakCreds.admin_pass)        kcPayload.admin_pass = keycloakCreds.admin_pass;
+    }
+    const hasKc = Object.keys(kcPayload).length > 0;
+
+    const wzPayload: WazuhCreds = {};
+    if (isLive && toolScope.wazuh) {
+      if (wazuhCreds.url.trim())      wzPayload.url      = wazuhCreds.url.trim();
+      if (wazuhCreds.api_user.trim()) wzPayload.api_user = wazuhCreds.api_user.trim();
+      if (wazuhCreds.api_pass)        wzPayload.api_pass = wazuhCreds.api_pass;
+    }
+    const hasWz = Object.keys(wzPayload).length > 0;
 
     runAssessment({
       org_name: formData.orgName,
@@ -162,6 +201,8 @@ export function NewAssessment() {
       pillar_scope: pillarScope,
       tool_scope: toolScope,
       ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
+      ...(hasKc ? { keycloak_creds: kcPayload } : {}),
+      ...(hasWz ? { wazuh_creds: wzPayload } : {}),
     })
       .then((res) =>
         navigate(`/in-progress/${res.session_id}`, {
@@ -182,9 +223,18 @@ export function NewAssessment() {
     try {
       localStorage.setItem(
         "zt_new_assessment_draft",
-        JSON.stringify({ formData, pillarScope, toolScope, scanTargets }),
+        // 보안: keycloak/wazuh 비밀번호는 임시저장에 포함하지 않는다.
+        JSON.stringify({
+          formData,
+          pillarScope,
+          toolScope,
+          scanTargets,
+          scanMode,
+          keycloakCreds: { url: keycloakCreds.url, admin_user: keycloakCreds.admin_user },
+          wazuhCreds:    { url: wazuhCreds.url,    api_user:   wazuhCreds.api_user   },
+        }),
       );
-      toast.success("입력한 내용이 임시저장되었습니다.");
+      toast.success("입력한 내용이 임시저장되었습니다. (비밀번호는 저장되지 않습니다)");
     } catch (err) {
       console.warn("[new-assessment] save draft failed:", err);
       toast.error("임시저장에 실패했습니다.");
@@ -223,6 +273,76 @@ export function NewAssessment() {
                 <span>가입 시 등록한 진단 프로필이 자동으로 입력되었습니다. 필요 시 수정해주세요.</span>
               </div>
             )}
+
+            {/* 데모 / 실 스캔 모드 토글 (작업 D) */}
+            <div className={`rounded-xl border p-5 transition-colors ${
+              isLive ? "border-red-300 bg-red-50/40" : "border-blue-200 bg-blue-50/40"
+            }`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Shield size={18} className={isLive ? "text-red-600" : "text-blue-600"} />
+                  <h3 className="text-sm font-semibold text-gray-800">진단 실행 모드</h3>
+                </div>
+                {isLive && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-semibold rounded-full bg-red-600 text-white">
+                    <AlertTriangle size={12} />
+                    외부 시스템 스캔
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-gray-600 mb-4">
+                데모 모드는 외부 시스템에 접근하지 않고 안전한 예시 데이터로 진단 흐름을 시연합니다.
+                실 스캔 모드는 입력한 외부 시스템(Keycloak/Wazuh/Nmap/Trivy)을 실제로 스캔합니다.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" role="radiogroup" aria-label="진단 실행 모드">
+                <label
+                  className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                    !isLive ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="scanMode"
+                    value="demo"
+                    checked={!isLive}
+                    onChange={() => setScanMode("demo")}
+                    className="mt-1 w-4 h-4"
+                  />
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <FlaskConical size={14} className="text-blue-600" />
+                      <p className="text-sm font-semibold text-gray-800">데모 모드</p>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      안전한 예시 데이터로 진행. 외부 시스템에 접근하지 않습니다.
+                    </p>
+                  </div>
+                </label>
+                <label
+                  className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                    isLive ? "border-red-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="scanMode"
+                    value="live"
+                    checked={isLive}
+                    onChange={() => setScanMode("live")}
+                    className="mt-1 w-4 h-4"
+                  />
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <Activity size={14} className="text-red-600" />
+                      <p className="text-sm font-semibold text-gray-800">실 스캔 모드</p>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      입력한 외부 시스템을 실제로 스캔합니다. 권한 보유 자산만 대상으로 사용하세요.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
 
             {/* 기관 정보 */}
             <div>
@@ -412,13 +532,20 @@ export function NewAssessment() {
 
             {/* 진단 대상 (외부 스캔) */}
             {(toolScope.nmap || toolScope.trivy) && (
-              <div>
+              <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <Target size={16} className="text-blue-600" />
                   <h3 className="text-sm font-semibold text-gray-700">진단 대상 (외부 스캔)</h3>
+                  {!isLive && (
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
+                      데모 모드 비활성
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-gray-500 mb-3">
-                  선택한 도구가 외부에서 스캔할 대상을 입력합니다. 비워두면 데모 기본값이 사용됩니다.
+                  {isLive
+                    ? "선택한 도구가 외부에서 스캔할 대상을 입력합니다. 권한 보유 자산만 대상으로 사용하세요."
+                    : "데모 모드에서는 외부 스캔 대상을 입력할 수 없습니다. 실 스캔 모드로 전환 후 입력해주세요."}
                 </p>
                 <div className="grid grid-cols-1 gap-4">
                   {toolScope.nmap && (
@@ -428,10 +555,11 @@ export function NewAssessment() {
                       </label>
                       <input
                         type="text"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                         value={scanTargets.nmap}
                         onChange={(e) => setScanTargets({ ...scanTargets, nmap: e.target.value })}
                         placeholder="예: scanme.nmap.org 또는 192.168.1.1"
+                        disabled={!isLive}
                       />
                     </div>
                   )}
@@ -442,20 +570,138 @@ export function NewAssessment() {
                       </label>
                       <input
                         type="text"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                         value={scanTargets.trivy}
                         onChange={(e) => setScanTargets({ ...scanTargets, trivy: e.target.value })}
                         placeholder="예: nginx:1.25, alpine:latest"
+                        disabled={!isLive}
                       />
                     </div>
                   )}
                 </div>
-                {(scanTargets.nmap.trim() || scanTargets.trivy.trim()) && (
-                  <div className="mt-3 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    <span>외부 시스템 스캔 동의(권한 보유) 후 입력하세요. 권한이 없는 자산을 스캔하면 법적 책임이 발생할 수 있습니다.</span>
-                  </div>
+                {isLive && (scanTargets.nmap.trim() || scanTargets.trivy.trim()) && (
+                  <>
+                    <div className="mt-3 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      <span>외부 시스템 스캔 동의(권한 보유) 후 진행하세요. 권한이 없는 자산을 스캔하면 법적 책임이 발생할 수 있습니다.</span>
+                    </div>
+                    {/* 외부 스캔 동의 체크박스 (작업 C) */}
+                    <label className="mt-3 flex items-start gap-2 p-3 bg-white border border-red-300 rounded-lg cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 w-4 h-4 accent-red-600"
+                        checked={consentExternalScan}
+                        onChange={(e) => setConsentExternalScan(e.target.checked)}
+                      />
+                      <span className="text-xs text-gray-800 leading-relaxed">
+                        제가 해당 시스템에 대한 진단 권한을 보유하고 있으며,<br />
+                        외부 스캔 수행으로 인한 모든 책임을 인지하고 진행합니다.
+                      </span>
+                    </label>
+                  </>
                 )}
+              </div>
+            )}
+
+            {/* Keycloak / Wazuh 연결 카드 (작업 E-fe) */}
+            {(toolScope.keycloak || toolScope.wazuh) && (
+              <div className={!isLive ? "opacity-60" : ""}>
+                <div className="flex items-center gap-2 mb-3">
+                  <KeyRound size={16} className="text-blue-600" />
+                  <h3 className="text-sm font-semibold text-gray-700">보안 도구 연결 정보</h3>
+                  {!isLive && (
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
+                      데모 모드 비활성
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 mb-3">
+                  {isLive
+                    ? "실 스캔 모드에서 사용할 Keycloak / Wazuh 연결 정보를 입력합니다. 비워두면 도구 기본 설정값이 사용됩니다."
+                    : "데모 모드에서는 연결 정보를 입력할 수 없습니다. 실 스캔 모드로 전환 후 입력해주세요."}
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Keycloak 카드 */}
+                  {toolScope.keycloak && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Keycloak</span>
+                        <span className="text-[10px] text-gray-400">IAM/SSO</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={keycloakCreds.url}
+                          onChange={(e) => setKeycloakCreds({ ...keycloakCreds, url: e.target.value })}
+                          placeholder="https://keycloak.example.com:8443"
+                          disabled={!isLive}
+                          aria-label="Keycloak URL"
+                        />
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={keycloakCreds.admin_user}
+                          onChange={(e) => setKeycloakCreds({ ...keycloakCreds, admin_user: e.target.value })}
+                          placeholder="admin"
+                          disabled={!isLive}
+                          aria-label="Keycloak Admin 사용자"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={keycloakCreds.admin_pass}
+                          onChange={(e) => setKeycloakCreds({ ...keycloakCreds, admin_pass: e.target.value })}
+                          placeholder="Admin 비밀번호"
+                          disabled={!isLive}
+                          aria-label="Keycloak Admin 비밀번호"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {/* Wazuh 카드 */}
+                  {toolScope.wazuh && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Wazuh</span>
+                        <span className="text-[10px] text-gray-400">SIEM/EDR</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={wazuhCreds.url}
+                          onChange={(e) => setWazuhCreds({ ...wazuhCreds, url: e.target.value })}
+                          placeholder="https://wazuh.example.com:55000"
+                          disabled={!isLive}
+                          aria-label="Wazuh URL"
+                        />
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={wazuhCreds.api_user}
+                          onChange={(e) => setWazuhCreds({ ...wazuhCreds, api_user: e.target.value })}
+                          placeholder="wazuh-api"
+                          disabled={!isLive}
+                          aria-label="Wazuh API 사용자"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={wazuhCreds.api_pass}
+                          onChange={(e) => setWazuhCreds({ ...wazuhCreds, api_pass: e.target.value })}
+                          placeholder="API 비밀번호"
+                          disabled={!isLive}
+                          aria-label="Wazuh API 비밀번호"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -631,11 +877,42 @@ export function NewAssessment() {
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
               <p className="text-sm">예상 소요 시간: 약 5-10분</p>
             </div>
+            {/* 실행 모드 안내 */}
+            <div className={`border rounded-lg p-4 text-sm ${
+              isLive ? "bg-red-50 border-red-200 text-red-800" : "bg-blue-50 border-blue-200 text-blue-800"
+            }`}>
+              {isLive ? (
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-semibold">실 스캔 모드로 진단을 시작합니다.</p>
+                    <p className="text-xs mt-1">
+                      입력한 외부 시스템(Keycloak/Wazuh/Nmap/Trivy)을 실제로 스캔합니다.
+                      {liveScanIntent && !consentExternalScan && " 외부 스캔 동의 체크가 필요합니다."}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start gap-2">
+                  <FlaskConical size={16} className="mt-0.5 shrink-0" />
+                  <p>데모 모드로 진단을 시작합니다. 외부 시스템에 접근하지 않고 예시 데이터로 진행됩니다.</p>
+                </div>
+              )}
+            </div>
             <div className="flex justify-between pt-4">
               <button onClick={() => setStep(2)} className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
                 이전
               </button>
-              <button onClick={handleSubmit} className="px-8 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700">
+              <button
+                onClick={handleSubmit}
+                disabled={submitDisabled}
+                title={submitDisabled ? "외부 스캔 동의 체크 후 진행 가능합니다." : undefined}
+                className={`px-8 py-3 text-white rounded-lg ${
+                  submitDisabled
+                    ? "bg-gray-300 cursor-not-allowed"
+                    : "bg-green-600 hover:bg-green-700"
+                }`}
+              >
                 진단 시작
               </button>
             </div>

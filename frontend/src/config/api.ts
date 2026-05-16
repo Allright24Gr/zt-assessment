@@ -31,6 +31,7 @@ export const API_ENDPOINTS = {
   AUTH_LOGIN: "/api/auth/login",
   AUTH_ME: "/api/auth/me",
   AUTH_PROFILE: "/api/auth/profile",
+  AUTH_CHANGE_PASSWORD: "/api/auth/change-password",
 } as const;
 
 export class ApiError extends Error {
@@ -75,17 +76,43 @@ async function parseResponse(response: Response) {
   return response.text();
 }
 
+// 인증 헤더 자동 첨부 — backend의 보호 엔드포인트가 X-Login-Id를 요구한다.
+// 로그인 전(register/login)에는 헤더 없이 호출. headers에 명시적으로 다른 값이 있으면 그쪽 우선.
+const PUBLIC_ENDPOINTS = new Set<string>([
+  API_ENDPOINTS.AUTH_REGISTER,
+  API_ENDPOINTS.AUTH_LOGIN,
+]);
+
+function _getLoginIdFromStorage(): string | null {
+  try {
+    const raw = localStorage.getItem("zt_user");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { login_id?: string; id?: string };
+    return parsed?.login_id ?? parsed?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function apiFetch<T>(
   endpoint: string,
   options: RequestInit & { params?: QueryParams } = {},
 ): Promise<T> {
   const { params, headers, body, ...requestOptions } = options;
+
+  // 헤더 병합 순서: Content-Type → 자동 X-Login-Id → 호출자가 명시한 headers (override 가능)
+  const mergedHeaders: Record<string, string> = {
+    ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+  };
+  if (!PUBLIC_ENDPOINTS.has(endpoint)) {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) mergedHeaders["X-Login-Id"] = loginId;
+  }
+  Object.assign(mergedHeaders, headers as Record<string, string> | undefined);
+
   const response = await fetch(buildUrl(endpoint, params), {
     ...requestOptions,
-    headers: {
-      ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...headers,
-    },
+    headers: mergedHeaders,
     body,
   });
   const payload = await parseResponse(response);
@@ -255,4 +282,19 @@ export function updateAuthProfile(
     headers: { "X-Login-Id": login_id },
     body: JSON.stringify({ profile, current_password: currentPassword }),
   });
+}
+
+export function changePassword(
+  login_id: string,
+  current_password: string,
+  new_password: string,
+) {
+  return apiFetch<{ status: string; message?: string }>(
+    API_ENDPOINTS.AUTH_CHANGE_PASSWORD,
+    {
+      method: "POST",
+      headers: { "X-Login-Id": login_id },
+      body: JSON.stringify({ current_password, new_password }),
+    },
+  );
 }

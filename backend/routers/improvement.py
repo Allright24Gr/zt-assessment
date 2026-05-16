@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from database import get_db
-from models import ImprovementGuide, DiagnosisResult, Checklist
+from models import ImprovementGuide, DiagnosisResult, Checklist, DiagnosisSession, User
+from routers.auth import get_current_user, assert_session_access
 
 router = APIRouter()
 
@@ -17,6 +18,7 @@ def get_improvements(
     term: Optional[str] = None,
     priority: Optional[str] = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """개선 가이드 목록을 필터 조건에 따라 반환한다."""
     q = db.query(ImprovementGuide)
@@ -50,8 +52,17 @@ def get_improvements(
 
 # /session/{session_id}를 /{guide_id} 보다 먼저 등록해야 라우팅 충돌 방지
 @router.get("/session/{session_id}")
-def get_session_improvements(session_id: int, db: Session = Depends(get_db)):
+def get_session_improvements(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """세션의 미충족·부분충족 항목에 연결된 개선 가이드를 우선순위 순으로 반환한다."""
+    session = db.query(DiagnosisSession).filter(DiagnosisSession.session_id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
     failed_check_ids = {
         r.check_id
         for r in db.query(DiagnosisResult).filter(
@@ -89,7 +100,11 @@ def get_session_improvements(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{guide_id}")
-def get_improvement_detail(guide_id: int, db: Session = Depends(get_db)):
+def get_improvement_detail(
+    guide_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """특정 개선 가이드의 상세 정보를 반환한다."""
     guide = db.query(ImprovementGuide).filter(
         ImprovementGuide.guide_id == guide_id

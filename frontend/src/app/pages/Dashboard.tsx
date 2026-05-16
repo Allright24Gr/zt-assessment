@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -9,9 +9,11 @@ import {
   ChevronDown,
   ChevronUp,
   FileCheck,
+  KeyRound,
   Minus,
   Target,
   TrendingUp,
+  X,
 } from "lucide-react";
 import {
   CartesianGrid,
@@ -46,6 +48,17 @@ const TARGET_SCORES = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
 
 export function Dashboard() {
   const { user } = useAuth();
+  const navigate = useNavigate();
+
+  // 시드 비번 사용 경고 배너 (작업 N) — 닫기 버튼은 표시만 닫고 sessionStorage는 유지
+  const [seedPwBannerVisible, setSeedPwBannerVisible] = useState(() => {
+    try {
+      return sessionStorage.getItem("zt_seed_password_warning") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [seedPwBannerDismissed, setSeedPwBannerDismissed] = useState(false);
 
   const [pillarScores, setPillarScores] = useState(DEFAULT_PILLAR_SCORES);
   const [avgScore, setAvgScore] = useState(
@@ -164,6 +177,41 @@ export function Dashboard() {
           <span className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm font-medium">관리자 모드</span>
         )}
       </div>
+
+      {/* 시드 비번 사용 경고 배너 (작업 N) */}
+      {seedPwBannerVisible && !seedPwBannerDismissed && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 p-4 rounded-xl border border-amber-300 bg-amber-50 text-amber-900"
+        >
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold">기본 비밀번호를 사용 중입니다.</p>
+            <p className="text-xs mt-0.5 text-amber-800">
+              보안을 위해 Settings에서 비밀번호를 변경하세요.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              navigate("/settings", { state: { openPasswordModal: true } })
+            }
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-medium hover:bg-amber-700"
+          >
+            <KeyRound size={14} />
+            지금 변경
+          </button>
+          <button
+            type="button"
+            onClick={() => setSeedPwBannerDismissed(true)}
+            className="text-amber-600 hover:text-amber-800 p-1"
+            aria-label="배너 닫기"
+            title="배너 닫기"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-xl p-5 flex flex-col justify-between">

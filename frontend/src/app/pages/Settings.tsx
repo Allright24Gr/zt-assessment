@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Settings as SettingsIcon, Bell, Target, User, Save, Lock, X, Loader2 } from "lucide-react";
+import { useLocation, useNavigate } from "react-router";
+import { Settings as SettingsIcon, Bell, Target, User, Save, Lock, X, Loader2, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { useAuth } from "../context/AuthContext";
-import { updateAuthProfile, ApiError, type ProfileFields } from "../../config/api";
+import { updateAuthProfile, changePassword, ApiError, type ProfileFields } from "../../config/api";
 
 const STORAGE_KEY = "zt_settings";
 
@@ -61,6 +62,8 @@ function profileFromUser(p?: ProfileFields | null): ProfileFormState {
 
 export function Settings() {
   const { user, setUser } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [targetScores, setTargetScores] = useState(DEFAULT_SETTINGS.targetScores);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
 
@@ -70,6 +73,16 @@ export function Settings() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const confirmInputRef = useRef<HTMLInputElement>(null);
+
+  // 비밀번호 변경 모달 (작업 H-fe)
+  const [pwModalOpen, setPwModalOpen] = useState(false);
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwError, setPwError] = useState("");
+  const [pwSaving, setPwSaving] = useState(false);
+  const pwFirstInputRef = useRef<HTMLInputElement>(null);
+  const pwLastButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setProfileForm(profileFromUser(user?.profile));
@@ -91,6 +104,109 @@ export function Settings() {
       window.clearTimeout(t);
     };
   }, [confirmOpen]);
+
+  // 비밀번호 변경 모달 — ESC 닫기 + autoFocus + focus trap
+  useEffect(() => {
+    if (!pwModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !pwSaving) {
+        closePwModal();
+      }
+      // 간단한 focus trap: Tab/Shift+Tab만 다룬다.
+      if (e.key === "Tab") {
+        const first = pwFirstInputRef.current;
+        const last = pwLastButtonRef.current;
+        if (!first || !last) return;
+        const active = document.activeElement;
+        if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const t = window.setTimeout(() => pwFirstInputRef.current?.focus(), 0);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pwModalOpen, pwSaving]);
+
+  // Dashboard "지금 변경" 진입 시 자동 오픈 (작업 N)
+  useEffect(() => {
+    const state = location.state as { openPasswordModal?: boolean } | null;
+    if (state?.openPasswordModal) {
+      setPwModalOpen(true);
+      // 뒤로가기 시 다시 모달이 열리지 않도록 state 제거
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const closePwModal = () => {
+    setPwModalOpen(false);
+    setPwCurrent("");
+    setPwNew("");
+    setPwConfirm("");
+    setPwError("");
+  };
+
+  // 비밀번호 정책: 8자 이상 + 영문+숫자 혼합
+  const validateNewPassword = (next: string, confirm: string): string => {
+    if (next.length < 8) return "새 비밀번호는 8자 이상이어야 합니다.";
+    if (!/[A-Za-z]/.test(next) || !/[0-9]/.test(next)) {
+      return "새 비밀번호는 영문과 숫자를 모두 포함해야 합니다.";
+    }
+    if (next !== confirm) return "새 비밀번호 확인 값이 일치하지 않습니다.";
+    return "";
+  };
+
+  const submitPasswordChange = async () => {
+    if (!user?.id) {
+      toast.error("로그인 정보를 확인할 수 없습니다.");
+      return;
+    }
+    if (!pwCurrent) {
+      setPwError("현재 비밀번호를 입력해주세요.");
+      return;
+    }
+    const v = validateNewPassword(pwNew, pwConfirm);
+    if (v) {
+      setPwError(v);
+      return;
+    }
+    setPwError("");
+    setPwSaving(true);
+    try {
+      await changePassword(user.id, pwCurrent, pwNew);
+      toast.success("비밀번호가 변경되었습니다.");
+      try {
+        sessionStorage.removeItem("zt_seed_password_warning");
+      } catch { /* ignore */ }
+      closePwModal();
+    } catch (err) {
+      console.warn("[settings] change password:", err);
+      if (err instanceof ApiError) {
+        if (err.status === 401) {
+          setPwError("현재 비밀번호가 일치하지 않습니다.");
+        } else if (err.status === 400) {
+          setPwError("비밀번호 정책: 8자 이상 + 영문+숫자");
+        } else if (err.status === 423 || err.status === 429) {
+          setPwError("로그인 잠금 상태입니다. 잠시 후 다시 시도하세요.");
+        } else {
+          setPwError("비밀번호 변경 중 오류가 발생했습니다.");
+        }
+      } else {
+        setPwError("비밀번호 변경 중 오류가 발생했습니다.");
+      }
+    } finally {
+      setPwSaving(false);
+    }
+  };
 
   const openProfileConfirm = () => {
     if (!user?.id) {
@@ -505,7 +621,12 @@ export function Settings() {
           </div>
           <div>
             <label className="block mb-2">비밀번호 변경</label>
-            <button className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+            <button
+              type="button"
+              onClick={() => setPwModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+            >
+              <KeyRound size={14} />
               비밀번호 변경하기
             </button>
           </div>
@@ -586,6 +707,114 @@ export function Settings() {
                   disabled={savingProfile}
                 >
                   {savingProfile ? <><Loader2 size={14} className="animate-spin" /> 저장 중...</> : "확인 후 저장"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 비밀번호 변경 모달 (작업 H-fe) */}
+      {pwModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => !pwSaving && closePwModal()}
+          aria-hidden="true"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pw-change-title"
+            className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => !pwSaving && closePwModal()}
+              className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
+              aria-label="닫기"
+            >
+              <X size={18} />
+            </button>
+            <div className="flex items-center gap-2 mb-3">
+              <KeyRound size={18} className="text-blue-600" aria-hidden="true" />
+              <h2 id="pw-change-title" className="text-base font-semibold text-gray-900">
+                비밀번호 변경
+              </h2>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">
+              새 비밀번호는 8자 이상, 영문과 숫자를 모두 포함해야 합니다.
+            </p>
+            <form
+              onSubmit={(e) => { e.preventDefault(); submitPasswordChange(); }}
+              className="space-y-3"
+            >
+              <div>
+                <label htmlFor="pw-current" className="block text-xs text-gray-700 mb-1">현재 비밀번호</label>
+                <input
+                  ref={pwFirstInputRef}
+                  id="pw-current"
+                  type="password"
+                  autoComplete="current-password"
+                  value={pwCurrent}
+                  onChange={(e) => setPwCurrent(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="현재 비밀번호"
+                  disabled={pwSaving}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="pw-new" className="block text-xs text-gray-700 mb-1">새 비밀번호</label>
+                <input
+                  id="pw-new"
+                  type="password"
+                  autoComplete="new-password"
+                  value={pwNew}
+                  onChange={(e) => setPwNew(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="새 비밀번호"
+                  disabled={pwSaving}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="pw-confirm" className="block text-xs text-gray-700 mb-1">새 비밀번호 확인</label>
+                <input
+                  id="pw-confirm"
+                  type="password"
+                  autoComplete="new-password"
+                  value={pwConfirm}
+                  onChange={(e) => setPwConfirm(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="새 비밀번호 확인"
+                  disabled={pwSaving}
+                  required
+                />
+              </div>
+              {pwError && (
+                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+                  {pwError}
+                </p>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => !pwSaving && closePwModal()}
+                  className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200 text-sm font-medium"
+                  disabled={pwSaving}
+                >
+                  취소
+                </button>
+                <button
+                  ref={pwLastButtonRef}
+                  type="submit"
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium text-white ${
+                    pwSaving ? "bg-blue-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                  }`}
+                  disabled={pwSaving}
+                >
+                  {pwSaving ? <><Loader2 size={14} className="animate-spin" /> 변경 중...</> : "변경"}
                 </button>
               </div>
             </form>

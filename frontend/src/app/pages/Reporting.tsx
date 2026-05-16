@@ -463,7 +463,7 @@ export function Reporting() {
               <div className="flex flex-col gap-2">
                 <div className="text-sm font-semibold text-blue-100">향상 단계</div>
                 <div className="flex items-center gap-2">
-                {["기존", "초기", "향상", "최적화"].map((step, i, arr) => (
+                {(["기존", "초기", "향상", "최적화"] as const).map((step, i, arr) => (
                   <div key={step} className="flex items-center gap-2">
                     <div className={`flex flex-col items-center`}>
                       <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-xs font-bold ${
