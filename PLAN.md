@@ -3,7 +3,15 @@
 > 본 문서는 **무엇이 끝났고 무엇이 남았는지** 헷갈리지 않도록 기능별·우선순위별로 정리한다.
 > 현재 상태 스냅샷은 `STATUS.md`, 운영 정책·아키텍처는 `CLAUDE.md`를 본다.
 
-작성: 2026-05-17 / 기준 브랜치 `dev` @ `8111ca0`
+작성: 2026-05-17 / 기준 브랜치 `dev` @ `2ec8457`
+
+> **변경 요약 (2026-05-17 후속)**
+> - P0 6개 모두 완료 (JWT, 비번재설정, audit DB, IP 잠금, 약관 동의, 회원 탈퇴+SMTP)
+> - P1 6개 모두 완료 (Okta+Splunk collector, 증적 업로드, 비교, 공유, retry, frontend 통합)
+> - STEP 1 운영 셋업 완료 (docker-compose.prod.yml, nginx, DEPLOY.md, e2e_smoke.sh)
+> - STEP 2 pytest 66 케이스 완료 (multi-tenant는 test_idor.py로 보증, 별도 SQLAlchemy guard 미추가)
+> - **자동 진단 항목 211 → 262 (Entra +20, Okta +15, Splunk +15)**
+> - **남은 결정**: P3-20 LLM·P3-26 PDF는 사용자 결정으로 보류. STEP 3 차별화 자체 보류.
 
 ---
 
@@ -100,9 +108,10 @@
 
 ## 2. 진행할 작업 (TODO, 우선순위별)
 
-### 2-P0 — 운영 시작 전 필수 (6개)
+### 2-P0 — 운영 시작 전 필수 (6개) ✅ **모두 완료**
 
-> 빠지면 진짜 운영 시작 불가. 시연 영상 직후 즉시 진행 권장. **합계 ~5.5일, 3트랙 병렬이면 2~3일.**
+> 6개 모두 commit `70ce828` + `882e51e` + `ab1a313` 로 dev 반영 완료.
+> 아래 항목은 **이력 보존을 위해 그대로 둔다**. 실제 코드 위치는 STATUS.md §2 참조.
 
 #### P0-1. JWT 세션 토큰화
 - **왜**: 현재 X-Login-Id 헤더는 만료 없음. localStorage 탈취 시 영구 접근.
@@ -172,7 +181,10 @@
 
 ---
 
-### 2-P1 — 베타 고객 응대 수준 (운영 1개월 내)
+### 2-P1 — 베타 고객 응대 수준 (운영 1개월 내) ✅ **6개 중 5개 완료, 1개 보류**
+
+> P1-7 / P1-8 / P1-10 / P1-11 / P1-12 모두 dev 반영 완료. P1-9 진단 완료 이메일 trigger
+> 만 backend `_trigger_scoring` 후속 작업으로 남음 (frontend 작업은 없음, 20분).
 
 #### P1-7. 수동 증적 파일 업로드 (PDF/이미지)
 - 현재 `Evidence.observed`는 텍스트만. 자가 진단의 핵심인 정책 스크린샷·문서 첨부 불가.
@@ -218,7 +230,14 @@
 
 ---
 
-### 2-P2 — 확장기 (10+ 고객, 운영 3개월 내)
+### 2-P2 — 확장기 (10+ 고객, 운영 3개월 내) — **2/7 완료**
+
+> ✅ P2-18 pytest 66 케이스 완료 (`2ec8457`)
+> ✅ P2-13 multi-tenant 격리 — 별도 SQLAlchemy guard 추가하지 않고 **test_idor.py 10 케이스로 회귀 보증**.
+>   `assert_session_access` / `assert_org_access` 가 모든 보호 엔드포인트에서 명시 호출 중이며,
+>   tests 가 잘못된 cross-org 접근을 403으로 차단함을 보증.
+>
+> 남은 P2: P2-14 Redis / P2-15 Prometheus / P2-16 CI/CD / P2-17 Alembic / P2-19 throttling.
 
 #### P2-13. multi-tenant 격리 강화
 - 현재 user.org_id 필터로 논리 격리만. row-level security 또는 schema 분리 검토.
@@ -367,37 +386,57 @@
 
 ---
 
-## 4. 권장 진행 순서
+## 4. 권장 진행 순서 (2026-05-17 갱신)
 
 ```
-[지금] dev @ 8111ca0
+[지금] dev @ 2ec8457
+       P0 ✅ / P1 ✅ (P1-9 trigger만 남음) / STEP 1 ✅ / STEP 2 ✅
    │
-   ▼  P0 6개 (병렬 3트랙, 2~3일)
-   ├ 트랙 A (auth): P0-1 JWT + P0-2 비번 재설정 backend + P0-3 audit DB + P0-4 IP 잠금
-   ├ 트랙 B (frontend): P0-1 frontend + P0-2 페이지 + P0-5 약관 + P0-6 탈퇴 UI
-   └ 트랙 C (infra): P0-6 SMTP 인프라 + 이메일 템플릿
+   ▼  STEP 1 실 배포 (사용자 인프라 작업)
+   ├ 도메인 + DNS A 레코드
+   ├ AWS SES 프로덕션 신청 (1~3일 심사)
+   ├ Let's Encrypt 인증서 + nginx/certs 배치
+   ├ .env 운영값(SECRET_KEY, DB_PASSWORD, INTERNAL_API_TOKEN, EMAIL_FROM …)
+   └ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
    │
-   ▼  베타 1~3사 시작 시점
-   P1 (1개월 분량, 우선순위 P1-7 → P1-8 → P1-9 → P1-12 → P1-11 → P1-10)
+   ▼  e2e 자체 검증
+   └ ./scripts/e2e_smoke.sh — 10단계 자동 통과 확인
    │
-   ▼  10+ 고객
-   P2 (3개월 분량, 우선순위 P2-14 → P2-13 → P2-16 → P2-18 → P2-15 → P2-17 → P2-19)
+   ▼  남은 자잘한 작업
+   ├ P1-9 진단 완료 이메일 trigger (Claude 20m)
+   └ P2-19 /run throttling (Claude 15m, 선택)
    │
-   ▼  차별화
-   P3 (선택)
+   ▼  필요 시 P2 나머지 (P2-14 Redis / P2-15 Prom / P2-16 CI / P2-17 Alembic)
+   │  — 다중 인스턴스·여러 사람 push 시점에 진행
+   │
+   ▼  P3 차별화 (현재 보류 — 사용자 결정 시)
 ```
 
 ---
 
-## 5. 결정 필요 (사용자가 답해야 할 것)
+## 5. 결정 이력 + 남은 결정
 
-다음에 진행할 때 명확히 결정 필요한 것들:
+### 5-1. 이미 결정된 사항 (2026-05-17)
 
-1. **P0-1 JWT** — 토큰 만료 시간 (기본 8h 권장 / refresh 30d), `SECRET_KEY` 발급 방법
-2. **P0-2 이메일** — SMTP 공급자 (Gmail App Password / AWS SES / Mailgun / SendGrid 중)
-3. **P0-3 audit log 보관 기간** — 90일 동일 vs 1년 별도 정책
-4. **P0-5 약관 본문** — 표준 템플릿 사용 vs 법무 검토 의뢰
-5. **P0-6 회원 탈퇴 정책** — 즉시 삭제 vs 30일 유예 (복구 가능 기간)
-6. **P1-10 자동 IdP/SIEM 추가 순위** — Okta / 자체 LDAP / Splunk / Elastic 중 우선
+| 결정 | 값 | 반영 |
+|---|---|---|
+| JWT 만료 | access 8h / refresh 30d | `auth.py` JWT_ACCESS_TTL/JWT_REFRESH_TTL, `.env.example` |
+| SMTP 공급자 | **AWS SES** (boto3 + IAM role 우선) | `services/email_sender.py` |
+| audit 보관 | 일단 90일 (DiagnosisSession과 동일) | `AuthAuditLog`. 별도 분리는 필요 시 |
+| 약관 본문 | 표준 템플릿 적용 (`legalText.ts`) | 법무 검토 후 교체 예정 |
+| 회원 탈퇴 | 즉시 cascade 삭제 (개인 조직 포함) | `DELETE /api/auth/me` |
+| 추가 IdP/SIEM | **Okta + Splunk 둘 다** | `okta_collector.py`, `splunk_collector.py` 각 15개 |
+| 진단 흐름 | 우리 인프라로 외부 스캔 + Step 0 폴백 | `_resolve_supported_tools` |
+| 인증 강도 | 최소 패치 → JWT 토큰화 + IP 잠금까지 강화 | P0-1·P0-4 |
+| P3-20 LLM | **보류** (제외) | — |
+| P3-26 PDF 디자인 | **보류** (나중에) | — |
+| STEP 3 차별화 | **전체 보류** | — |
 
-이 6개 답이 정해지면 P0 즉시 분배 시작 가능.
+### 5-2. 남은 결정
+
+1. **운영 도메인 + EC2 IP**: AWS SES 도메인 검증 + Let's Encrypt 인증서 발급 위해 필요
+2. **시드 비번 변경 정책**: admin/admin·user1/user1를 데모에선 유지 / 운영 직후 강제 변경 안내
+3. **회원 탈퇴 30일 유예 옵션**: 현재 즉시 cascade. 법령 권장은 즉시 가능, 다만 실수 복구는 불가
+4. **audit log 보관 분리**: 현재 90일. 컴플라이언스 요구(예: 1년·3년)가 생기면 별도 정책
+
+새 결정 필요해지면 본 섹션에 추가.

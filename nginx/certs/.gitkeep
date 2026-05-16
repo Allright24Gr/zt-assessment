@@ -1,0 +1,4 @@
+# 인증서 파일은 git 추적 제외.
+# 실 배포 시 다음 두 파일을 이 디렉토리에 둔다:
+#   fullchain.pem
+#   privkey.pem

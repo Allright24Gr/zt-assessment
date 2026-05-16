@@ -1,17 +1,17 @@
 # STATUS — Readyz-T ZT Assessment Platform
 
 > 작성일: 2026-05-17
-> 기준 브랜치: `dev` (HEAD `8111ca0`)
+> 기준 브랜치: `dev` (HEAD `2ec8457`)
 > 본 문서는 "지금 시점의 사실"만 기록한다. 앞으로의 계획은 `PLAN.md`, 운영 모델·정책은 `CLAUDE.md`를 본다.
 
 ---
 
 ## 0. TL;DR
 
-- **상태**: dev 브랜치 모두 통과. 진단 자동 항목 211 → 231(MS Entra ID +20). 운영 가능 수준 보안·UX 패치 완료. 본격 운영 시작 직전.
+- **상태**: dev 모두 통과. 진단 자동 항목 211 → **262** (Entra +20, Okta +15, Splunk +15). P0+P1 완전 종료 + STEP 1 운영 셋업 + STEP 2 pytest 66 케이스 완료. 본격 운영 시작 준비.
 - **운영 모델**: 고객 시스템 무침해(원격 outbound 호출만). Step 0 환경 프로파일링 → 자동/수동 폴백.
-- **마지막 큰 변경**: `8111ca0` "Step 0 사전 프로파일링 + MS Entra ID 자동 + 90일 보관 정책"
-- **다음 단계**: PLAN.md의 P0 6개 (JWT 세션, 비번 재설정, audit log DB, IP rate limit, 약관 동의, 이메일 발송)
+- **마지막 큰 변경**: `2ec8457` "pytest 자동 테스트 66 케이스" / `ab1a313` "frontend P0+P1 통합" / `882e51e` "backend P0+P1"
+- **다음 단계**: STEP 3 시연 차별화는 보류 (사용자 결정 — LLM·PDF는 나중에). 운영 배포 가이드(DEPLOY.md) 작성 완료, 실제 배포는 사용자 인프라 설정 대기.
 
 ---
 
@@ -28,6 +28,10 @@
 | 5 | Step 0 사전 프로파일링 + 자동/수동 폴백 | `8111ca0` | ✅ |
 | 6 | MS Entra ID collector +20 (Microsoft Graph) | `entra_collector.py` 570줄 | ✅ |
 | 7 | DiagnosisSession 90일 자동 삭제 + 시드 보호 | `cleanup_old_sessions.py` | ✅ |
+| **P0** | JWT/audit DB/IP 잠금/약관 동의/회원 탈퇴/SMTP/비번 재설정 (6개) | `70ce828` + `882e51e` | ✅ |
+| **P1** | Okta·Splunk collector + 증적 업로드 + 비교 + 공유 + retry + frontend 통합 | `882e51e` + `ab1a313` | ✅ |
+| **STEP 1** | 운영 셋업 — docker-compose.prod.yml + nginx + DEPLOY.md + e2e_smoke.sh | (본 커밋) | ✅ |
+| **STEP 2** | pytest 66 케이스 + multi-tenant 격리(테스트로 보증) | `2ec8457` | ✅ |
 
 자동 진단 매핑(2026-05-17 기준):
 
@@ -37,8 +41,10 @@
 | wazuh | 41 | 81 | **122** | SIEM — Wazuh 사용 고객 한정 |
 | nmap | 14 | 0 | **14** | 도구 무관, 외부 스캔 |
 | trivy | 11 | 0 | **11** | 도구 무관, 이미지 스캔 |
-| **entra (신규)** | 20 | 0 | **20** | IdP — Entra ID 사용 고객 (Phase A) |
-| **합계** | 118 | 114 | **231** | |
+| entra | 20 | 0 | **20** | IdP — Entra ID 사용 고객 (Phase A) |
+| **okta (신규)** | 15 | 0 | **15** | IdP — Okta 사용 고객 (Phase A) |
+| **splunk (신규)** | 15 | 0 | **15** | SIEM — Splunk 사용 고객 (Phase A) |
+| **합계** | 148 | 114 | **262** | |
 
 ---
 
@@ -49,10 +55,19 @@ zt-assessment/
 ├── CLAUDE.md                       # 프로젝트 가이드 + 최종 운영 계획·정책
 ├── STATUS.md                       # ← 본 문서. 현재 상태 스냅샷
 ├── PLAN.md                         # 작업 로드맵 (Done/TODO 매트릭스)
+├── DEPLOY.md                       # 운영 배포 가이드 (신규 — STEP 1)
 ├── README.md
 ├── deploy.sh                       # EC2 배포 스크립트 (./deploy.sh <IP>)
 ├── docker-compose.yml              # 8개 서비스 통합
+├── docker-compose.prod.yml         # 운영 override — nginx + 데모도구 분리 (신규)
 ├── .env.example                    # 운영 환경변수 가이드
+│
+├── nginx/                          # Reverse proxy (운영 전용, 신규)
+│   ├── nginx.conf                  # 80→443, SSL, 보안 헤더, /api 라우팅
+│   └── certs/.gitkeep              # 인증서는 gitignore (운영 환경 직접 배포)
+│
+├── scripts/                        # 호스트 스크립트 (신규)
+│   └── e2e_smoke.sh                # 10단계 e2e 자동 검증 (회원가입→탈퇴)
 │
 ├── backend/                        # FastAPI 백엔드
 │   ├── Dockerfile
@@ -65,21 +80,39 @@ zt-assessment/
 │   ├── models.py                   # 10개 테이블 (Organization, User, ...)
 │   │
 │   ├── routers/                    # API 엔드포인트
-│   │   ├── auth.py                 # 412줄. 회원가입/로그인/me/profile/change-password
-│   │   ├── assessment.py           # 1319줄. 진단 실행/상태/결과/이력/finalize/webhook
+│   │   ├── auth.py                 # 820줄. 회원가입/로그인/me/profile/change-password
+│   │   │                           #         /refresh /request-password-reset /reset-password /me(DELETE)
+│   │   │                           #         JWT 세션 + IP 잠금 + audit DB + 회원 탈퇴
+│   │   ├── assessment.py           # ~2100줄. 진단 run/status/result/history/finalize/webhook
+│   │   │                           #          /compare /share/{id} /shared/{token}
 │   │   ├── score.py                # 122줄. 점수 요약/추이/체크리스트 점수
 │   │   ├── improvement.py          # 143줄. 개선 가이드 목록/세션별/상세
 │   │   ├── report.py               # 477줄. JSON·PDF 보고서 (NanumGothic)
-│   │   ├── manual.py               # 384줄. 수동 항목 제출/업로드/items
+│   │   ├── manual.py               # ~600줄. 수동 항목 제출/업로드/items + 증적 업로드/다운로드
 │   │   ├── checklist.py            # 45줄. 체크리스트 목록 (인증 무필요)
-│   │   └── validators.py           # 119줄. 입력 검증 (Nmap/Trivy/URL/자격/Entra GUID)
+│   │   └── validators.py           # 119줄. 입력 검증 (Nmap/Trivy/URL/자격/Entra/Okta)
 │   │
-│   ├── collectors/                 # 도구별 자동 수집기
+│   ├── collectors/                 # 도구별 자동 수집기 (7개)
 │   │   ├── keycloak_collector.py   # 1427줄. 65 함수, IdP 통제 평가
 │   │   ├── wazuh_collector.py      # 2930줄. 122 함수, SIEM/HIDS 통제 평가
 │   │   ├── entra_collector.py      # 570줄. 20 함수, Microsoft Graph API
+│   │   ├── okta_collector.py       # ~500줄. 15 함수, Okta REST API (SSWS)  (신규)
+│   │   ├── splunk_collector.py     # ~500줄. 15 함수, Splunk REST API       (신규)
 │   │   ├── nmap_collector.py       # 308줄. 14 함수, 외부 포트/CIDR 스캔
 │   │   └── trivy_collector.py      # 257줄. 11 함수, 컨테이너 이미지 스캔
+│   │
+│   ├── services/                   # 외부 서비스 통합 (신규)
+│   │   ├── email_sender.py         # AWS SES + Jinja2 + DRY_RUN + audit
+│   │   └── email_templates/        # password_reset, account_deleted, assessment_complete (txt+html)
+│   │
+│   ├── tests/                      # pytest 자동 테스트 (신규 — 66 케이스)
+│   │   ├── conftest.py             # sqlite in-memory + JWT helper + Checklist 시드
+│   │   ├── test_auth_basic.py      # 15 cases — register/login/refresh/delete
+│   │   ├── test_idor.py            # 10 cases — multi-tenant 격리 회귀 차단
+│   │   ├── test_collector_mapping.py  # 14 cases — 7 도구 매핑 정합성
+│   │   ├── test_resolve_tools.py   # 6 cases — profile_select 폴백
+│   │   ├── test_validators.py      # 17 cases — shell metachar 차단
+│   │   └── test_cleanup.py         # 4 cases — 90일 retention + 시드 보호
 │   │
 │   ├── scoring/
 │   │   └── engine.py               # 130줄. 결과 → MaturityScore 계산
@@ -431,43 +464,54 @@ Shuffle (옵션)
 ## 9. 자기 검증 (정적, 2026-05-17 기준)
 
 ```
-✅ AST parse: backend 15개 파일 모두 통과
-✅ _full_mapping():
-     keycloak 65 / wazuh 122 / nmap 14 / trivy 11 / entra 20 = 232
-     (entra Phase A 매핑이 도구별 unique 보장)
-✅ _resolve_supported_tools 5케이스 모두 통과
+✅ AST parse: backend 21개 파일 + 8개 tests 모두 통과
+✅ _full_mapping() base 매핑:
+     keycloak 32 + wazuh 41 + nmap 14 + trivy 11 + entra 20 + okta 15 + splunk 15 = 148
+     autodiscover 합산 시 262 (keycloak +33, wazuh +81)
+✅ _resolve_supported_tools 7케이스 모두 통과
      · keycloak+wazuh → {keycloak, wazuh, nmap, trivy}
      · entra+wazuh    → {entra, wazuh, nmap, trivy}
-     · okta+splunk    → {nmap, trivy}
-     · 미선택         → {keycloak, entra, wazuh, nmap, trivy}
+     · okta+splunk    → {okta, splunk, nmap, trivy}
+     · okta+wazuh     → {okta, wazuh, nmap, trivy}
+     · none+none      → {nmap, trivy}  (모든 IdP/SIEM 자동 비활성)
+     · 미선택         → {keycloak, entra, okta, wazuh, splunk, nmap, trivy}
      · entra만        → {entra, wazuh, nmap, trivy}
 ✅ frontend npm run build 통과 (chunk-size 경고만, 변경 코드 무관)
-✅ validator 호출: scanme.nmap.org / 192.168.1.0/24 통과,
-     ; rm -rf / / $(whoami) / nginx;ls / `whoami` 차단
-✅ _mask_creds: admin_pass / api_pass / client_secret → "***"
+✅ validators:
+     - validate_nmap_target: scanme.nmap.org / 192.168.1.0/24 통과,
+       "; rm -rf /" / "$(whoami)" / "nginx;ls" / "`whoami`" 차단
+     - validate_https_url: javascript:/file:// 차단
+     - validate_entra_tenant_id: GUID + *.onmicrosoft.com 통과, 메타문자 차단
+     - validate_okta_domain: *.okta.com 통과, "; ls" 차단
+✅ _mask_creds: admin_pass / api_pass / client_secret / okta.api_token /
+     splunk.password+token → "***"
+✅ pytest 자동 테스트: 66 케이스 (실행은 docker 컨테이너 안에서)
+     - test_auth_basic 15 / test_idor 10 / test_collector_mapping 14 /
+       test_resolve_tools 6 / test_validators 17 / test_cleanup 4
 ```
 
 ---
 
 ## 10. 알려진 한계 (이미 인지하고 다음 사이클로 보낸 것)
 
+✅ P0+P1 항목은 모두 완료됨. STEP 1·2(운영 셋업 + pytest) 추가 완료.
+
+남은 한계 — `PLAN.md` P2/P3 참조:
+
 | 한계 | 위치 | PLAN.md 항목 |
 |---|---|---|
-| X-Login-Id 헤더 영구 유효 (만료 없음) | apiFetch / get_current_user | P0-1 JWT 세션 |
-| 비밀번호 재설정 흐름 없음 | auth.py | P0-2 |
-| audit log가 stdlib logger 콘솔만 (DB 미저장) | auth.py, cleanup_old_sessions.py | P0-3 |
-| 로그인 잠금이 login_id 기준 (IP 무관) | auth.py `_login_state` | P0-4 |
-| 약관·개인정보 처리방침 동의 화면 없음 | Signup.tsx | P0-5 |
-| 회원 탈퇴 + 데이터 삭제 요청 미구현 | Settings.tsx, auth.py | P0-6 |
-| 이메일 발송 인프라 없음 (SMTP) | — | P0-6 (이메일은 P0 묶음 안에) |
 | _login_state 모듈 전역 in-memory (다중 인스턴스 불가) | auth.py | P2-14 Redis |
-| Okta/Splunk/Elastic 자동 collector 부재 | — | P1-10 / P2-12 |
-| 수동 증적 파일 업로드 부재 (텍스트만) | manual.py | P1-7 |
-| 진단 결과 비교 시각화 없음 | History.tsx | P1-8 |
-| 진단 결과 외부 공유 링크 없음 | — | P1-11 |
-| pytest 자동 테스트 0개 | — | P2-18 |
+| Elastic SIEM / QRadar / ArcSight collector 부재 | — | P2 미정 |
 | CI/CD GitHub Actions 없음 | — | P2-16 |
 | Alembic DB 마이그레이션 없음 (수동 migrate_schema.py) | — | P2-17 |
 | Prometheus/Grafana 모니터링 없음 | — | P2-15 |
+| /run 호출 throttling 없음 (사용자가 무한 트리거 가능) | assessment.py | P2-19 |
+| 자가 증적 자동 파싱 (OCR+LLM) | — | P3-20 (사용자 결정: 보류) |
+| PDF 디자인 고도화 | report.py | P3-26 (사용자 결정: 나중에) |
+| 정기 스케줄링 (월간 자동 진단) | — | P3-22 |
+| 결제 (Stripe/토스) | — | P3-23 |
+| 다국어 (i18n 영문) | — | P3-24 |
+| 2FA / WebAuthn | — | P3-25 |
+| 회원 탈퇴 후 30일 유예(soft delete) — 현재 즉시 cascade | auth.py | (선택) |
 
 전체 TODO는 `PLAN.md` 참조.

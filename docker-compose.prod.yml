@@ -1,0 +1,103 @@
+# Production override.
+#
+# 사용:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 변경점 (vs docker-compose.yml):
+#   - 모든 서비스 restart: unless-stopped
+#   - nginx reverse-proxy 추가: 443/80 → frontend, /api → backend
+#     · 인증서: ./nginx/certs/{fullchain.pem,privkey.pem} 마운트 (Let's Encrypt 권장)
+#     · self-signed로 시작하고 도메인 결정 후 교체 가능
+#   - backend: 외부 8000 노출 제거 (nginx 통해서만 접근)
+#   - frontend: 외부 8080 노출 제거 (nginx 80/443으로만)
+#   - keycloak/wazuh/elasticsearch: 데모 서비스라 운영 외부 포트 차단 (profile로 옮김)
+#   - 로깅: json-file driver + 10MB rotation
+#   - 헬스체크 강화: backend /health, mysql ping
+#
+# 데모 도구를 운영에서도 띄우려면 (시드 데이터 시연용):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile demo up -d
+
+services:
+  zt-web:
+    restart: unless-stopped
+    ports: []  # nginx 통과만
+    expose:
+      - "80"
+    logging: &json_log
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  zt-backend:
+    restart: unless-stopped
+    ports: []  # nginx 통과만
+    expose:
+      - "8000"
+    environment:
+      - SELF_BASE_URL=http://zt-backend:8000
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - ZTA_CLEANUP_DISABLE=${ZTA_CLEANUP_DISABLE:-}
+      # 운영에서는 SES 실 발송 권장 — DRY_RUN 명시적으로 false 처리
+      - EMAIL_DRY_RUN=${EMAIL_DRY_RUN:-false}
+    logging: *json_log
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  mysql:
+    restart: unless-stopped
+    ports: []  # 외부 노출 차단 (보안). 외부 백업 도구 필요 시 별도 SSH 터널
+    logging: *json_log
+
+  # ── 운영에서 데모 도구는 기본 비활성 (시연용은 --profile demo) ─────────────
+  keycloak:
+    profiles: ["demo"]
+    restart: unless-stopped
+    ports: []  # 데모 외 노출 X
+    expose:
+      - "8443"
+
+  wazuh:
+    profiles: ["demo"]
+    restart: unless-stopped
+    ports: []
+    expose:
+      - "55000"
+
+  elasticsearch:
+    profiles: ["demo"]
+    restart: unless-stopped
+    ports: []
+    expose:
+      - "9200"
+
+  nmap-wrapper:
+    restart: unless-stopped
+    logging: *json_log
+    # cap_add 는 docker-compose.yml 의 정의 유지
+
+  trivy-wrapper:
+    restart: unless-stopped
+    logging: *json_log
+
+  # ── Reverse proxy (운영 진입점) ───────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: zt-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - /var/log/nginx:/var/log/nginx
+    depends_on:
+      - zt-web
+      - zt-backend
+    networks:
+      - zt-network
+    logging: *json_log
