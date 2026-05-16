@@ -11,7 +11,7 @@ import { useAuth } from "../context/AuthContext";
 import { sessions as mockSessions, improvements as mockImprovements } from "../data/mockData";
 import type { ChecklistDetail, Improvement, Session } from "../data/mockData";
 import { PILLARS } from "../data/constants";
-import { getMaturityLevel, getScoreColor } from "../lib/maturity";
+import { getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
 import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import type { ChecklistItemResult, ImprovementItem } from "../../types/api";
@@ -240,6 +240,7 @@ export function Reporting() {
   const fallbackSession: Session = mockSessions.find((s) => s.id === Number(sessionId)) ?? mockSessions[0];
   const [session, setSession] = useState<Session>(fallbackSession);
   const [isDemo, setIsDemo] = useState(false);
+  const [usedFallback, setUsedFallback] = useState(false);
   const [currentScores, setCurrentScores] = useState(DEFAULT_SCORES);
   const [checklistDetails, setChecklistDetails] = useState<ChecklistDetail[]>(fallbackSession.checklistDetails);
   const [improvements, setImprovements] = useState<Improvement[]>(mockImprovements);
@@ -249,6 +250,7 @@ export function Reporting() {
 
     getAssessmentResult(sessionId)
       .then((data) => {
+        setUsedFallback(false);
         setSession({
           id: Number(data.session.id),
           org: data.session.org,
@@ -284,12 +286,14 @@ export function Reporting() {
       .catch((err) => {
         console.warn("[reporting] result fetch failed:", err);
         toast.error("진단 결과를 불러오지 못했습니다.");
+        setUsedFallback(true);
       });
 
     getImprovement(sessionId)
       .then((data) => setImprovements(data.items.map(adaptImprovement)))
       .catch((err) => {
         console.warn("[reporting] improvement fetch failed:", err);
+        setUsedFallback(true);
       });
   }, [sessionId]);
 
@@ -336,6 +340,17 @@ export function Reporting() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
+      {usedFallback && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <p className="font-semibold">백엔드 연결 실패 — 예시 데이터로 표시 중</p>
+            <p className="mt-0.5 text-xs text-amber-800">
+              실제 진단 결과를 불러오지 못해 시연용 mock 데이터를 표시하고 있습니다. 백엔드 상태를 확인한 뒤 새로고침해주세요.
+            </p>
+          </div>
+        </div>
+      )}
       {isDemo && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
           <span className="font-semibold">데모 데이터</span> — 실제 진단 결과가 아닙니다. 시연용 사전 시드된 결과입니다.
@@ -441,7 +456,7 @@ export function Reporting() {
                   <span className="ml-2 text-2xl font-semibold text-blue-200">/ 4.0</span>
                 </h1>
                 <p className="text-blue-200">
-                  종합 점수 · {session.level} 단계
+                  종합 점수 · {maturityLabel(session.level)} 단계
                 </p>
               </div>
               {/* 단계 진행 표시 */}
@@ -459,7 +474,7 @@ export function Reporting() {
                         {i + 1}
                       </div>
                       <span className={`text-xs mt-1 ${step === session.level ? "text-white font-semibold" : "text-blue-400"}`}>
-                        {step}
+                        {maturityLabel(step)}
                       </span>
                     </div>
                     {i < arr.length - 1 && (
@@ -504,7 +519,7 @@ export function Reporting() {
                 <div key={pillar.key} className="bg-white rounded-xl border border-gray-200 p-5">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-semibold text-gray-700">{pillar.name}</h3>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors.badge}`}>{pillar.level}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors.badge}`}>{maturityLabel(pillar.level)}</span>
                   </div>
                   <div className="flex items-baseline gap-1 mb-3">
                     <span className={`text-3xl font-bold ${colors.text}`}>{pillar.score}</span>
@@ -656,13 +671,13 @@ export function Reporting() {
                                 {raw}
                               </span>
                               <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${scoreColors.badge}`}>
-                                {getMaturityLevel(detail.score)}
+                                {maturityLabel(getMaturityLevel(detail.score))}
                               </span>
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
                                 {detail.diagnosisType} / {detail.tool}
                               </span>
                             </div>
-                            <p className="mb-1 text-xs font-semibold text-gray-500">{detail.item} · {detail.maturity}</p>
+                            <p className="mb-1 text-xs font-semibold text-gray-500">{detail.item} · {maturityLabel(detail.maturity)}</p>
                             <p className="font-medium text-gray-900">{detail.question}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-4">

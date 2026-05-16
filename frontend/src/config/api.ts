@@ -240,13 +240,19 @@ export function loginUser(login_id: string, password: string) {
 }
 
 export function fetchAuthMe(login_id: string) {
-  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_ME, { params: { login_id } });
+  return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_ME, {
+    headers: { "X-Login-Id": login_id },
+  });
 }
 
-export function updateAuthProfile(login_id: string, profile: ProfileFields) {
+export function updateAuthProfile(
+  login_id: string,
+  profile: ProfileFields,
+  currentPassword: string,
+) {
   return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_PROFILE, {
     method: "PUT",
-    params: { login_id },
-    body: JSON.stringify({ profile }),
+    headers: { "X-Login-Id": login_id },
+    body: JSON.stringify({ profile, current_password: currentPassword }),
   });
 }

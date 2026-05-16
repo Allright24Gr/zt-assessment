@@ -180,25 +180,44 @@ export function InProgress() {
   const SMOOTH_TOTAL_MS = 90_000;
   const [mountedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
+  const collectionDone = status?.collection_done ?? false;
+
+  // 100% 도달 후에는 setInterval을 정지해 자원 낭비를 막는다.
   useEffect(() => {
+    if (collectionDone && now - mountedAt >= SMOOTH_TOTAL_MS) return;
     const t = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(t);
-  }, []);
+  }, [collectionDone, now, mountedAt]);
   const elapsedMs = now - mountedAt;
-  const smoothCap = Math.min(99, Math.floor((elapsedMs / SMOOTH_TOTAL_MS) * 100));
+
+  // backend 진행 속도(items/sec)를 측정해 실제 예상 소요시간을 동적으로 추정한다.
+  // 진행 시작 후 collected_count가 양수가 되면 평균 속도를 계산할 수 있다.
+  const collectedCount = status?.collected_count ?? 0;
+  const autoTotal = status?.auto_total ?? 0;
+  const estimatedTotalMs = (() => {
+    if (autoTotal <= 0) return SMOOTH_TOTAL_MS;
+    if (collectedCount <= 0 || elapsedMs < 1500) return SMOOTH_TOTAL_MS;
+    const avgMsPerItem = elapsedMs / collectedCount;
+    const projected = avgMsPerItem * autoTotal;
+    // backend가 빠르면 90s 유지(시연용), 더 느리면 그 값으로 ramp 연장.
+    return Math.max(SMOOTH_TOTAL_MS, Math.min(projected, 30 * 60 * 1000));
+  })();
+
+  const smoothCap = Math.min(99, Math.floor((elapsedMs / estimatedTotalMs) * 100));
   // 실제로 backend가 완료(realProgress===100 && collection_done)이고 시연시간도 다 지나야 100
-  const collectionDone = status?.collection_done ?? false;
   const progress = collectionDone && elapsedMs >= SMOOTH_TOTAL_MS
     ? 100
     : Math.min(realProgress, smoothCap);
 
-  // 예상 남은 시간 (mm:ss)
+  // 예상 남은 시간 (mm:ss) — 동적 추정 totalMs 기준
   const remainingMs = progress >= 100
     ? 0
-    : Math.max(0, SMOOTH_TOTAL_MS - elapsedMs);
+    : Math.max(0, estimatedTotalMs - elapsedMs);
   const remainingLabel = (() => {
     if (progress >= 100) return "완료";
     const totalSec = Math.ceil(remainingMs / 1000);
+    // 추정값이 거의 0인데 100%에 도달하지 못한 경우 — 후처리/마감 단계
+    if (totalSec <= 1) return "마무리 중...";
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
     return m > 0 ? `약 ${m}분 ${s}초 남음` : `약 ${s}초 남음`;

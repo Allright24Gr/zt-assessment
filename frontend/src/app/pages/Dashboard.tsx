@@ -31,7 +31,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { improvements, sessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
-import { MATURITY_STEPS, getMaturityLevel, getScoreColor } from "../lib/maturity";
+import { MATURITY_STEPS, getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
 import {
   getAssessmentHistory,
   getImprovement,
@@ -194,14 +194,14 @@ export function Dashboard() {
 
         <div className="bg-white border border-gray-200 rounded-xl p-5">
           <p className="text-gray-500 text-sm mb-3">성숙도 단계</p>
-          <p className="text-2xl font-bold text-gray-900 mb-4">{getMaturityLevel(avgScore)}</p>
+          <p className="text-2xl font-bold text-gray-900 mb-4">{maturityLabel(getMaturityLevel(avgScore))}</p>
           <div className="space-y-1.5">
             {MATURITY_STEPS.map((step) => {
               const current = getMaturityLevel(avgScore) === step;
               return (
                 <div key={step} className={`flex items-center gap-2 px-2 py-1 rounded ${current ? "bg-blue-50" : ""}`}>
                   <div className={`w-2 h-2 rounded-full ${current ? "bg-blue-500" : "bg-gray-200"}`} />
-                  <span className={`text-xs ${current ? "text-blue-700 font-semibold" : "text-gray-400"}`}>{step}</span>
+                  <span className={`text-xs ${current ? "text-blue-700 font-semibold" : "text-gray-400"}`}>{maturityLabel(step)}</span>
                 </div>
               );
             })}
@@ -211,7 +211,7 @@ export function Dashboard() {
         <div className="bg-red-50 border border-red-200 rounded-xl p-5">
           <div className="flex items-center gap-2 mb-3">
             <AlertTriangle size={16} className="text-red-500" />
-            <p className="text-red-600 text-sm font-medium">가장 취약한 필러</p>
+            <p className="text-red-600 text-sm font-medium">점수 낮은 영역</p>
           </div>
           <p className="text-lg font-bold text-red-700 mb-1">{weakestPillar.label}</p>
           <p className="text-3xl font-bold text-red-600 mb-3">
@@ -279,7 +279,7 @@ export function Dashboard() {
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm text-gray-700">{p.label}</span>
                   <div className="flex items-center gap-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${colors.badge}`}>{getMaturityLevel(score)}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${colors.badge}`}>{maturityLabel(getMaturityLevel(score))}</span>
                     <span className={`text-sm font-semibold ${colors.text}`}>{score}</span>
                   </div>
                 </div>
@@ -407,7 +407,7 @@ export function Dashboard() {
                     <td className="py-3 px-4">
                       {session.score !== null ? (
                         <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getScoreColor(session.score ?? 0).badge}`}>
-                          {getMaturityLevel(session.score ?? 0)}
+                          {maturityLabel(getMaturityLevel(session.score ?? 0))}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-sm text-blue-600">

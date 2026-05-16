@@ -44,6 +44,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const stored = localStorage.getItem(STORAGE_KEY);
       return stored ? (JSON.parse(stored) as User) : null;
     } catch {
+      // 손상된 데이터는 제거해 다음 로드에서 catch가 반복되지 않도록 한다.
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
       return null;
     }
   });

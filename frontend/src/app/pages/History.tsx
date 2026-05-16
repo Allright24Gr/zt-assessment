@@ -28,6 +28,7 @@ import { sessions as mockSessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
 import { getAssessmentHistory, getScoreSummary } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
+import { maturityLabel } from "../lib/maturity";
 import type { AssessmentSession } from "../../types/api";
 
 type SortKey = "org" | "date" | "manager";
@@ -206,7 +207,7 @@ export function History() {
                 <th className="py-3 px-4 text-sm font-medium text-gray-500">점수</th>
                 <th className="py-3 px-4 text-sm font-medium text-gray-500">상태</th>
                 {user?.role === "admin" && (
-                  <th className="py-3 px-4 text-sm font-medium text-gray-500">오류</th>
+                  <th className="py-3 px-4 text-sm font-medium text-gray-500">위험 영역</th>
                 )}
                 <th className="py-3 px-4 text-sm font-medium text-gray-500">작업</th>
               </tr>
@@ -258,7 +259,7 @@ export function History() {
                       <td className="py-3 px-4 text-gray-600">{session.manager}</td>
                       <td className="py-3 px-4">
                         <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getLevelBadgeClass(session.level)}`}>
-                          {session.level}
+                          {maturityLabel(session.level)}
                         </span>
                       </td>
                       <td className="py-3 px-4">

@@ -250,14 +250,32 @@ def seed(force: bool = False):
             print("[seed] Checklist가 비어있음. seed_checklist.py 먼저 실행하세요.")
             return
 
-        # idempotent: admin이 이미 있으면 스킵 (--force로 우회)
+        # idempotent: admin/user1 상태에 따른 분기
+        # - 2개 모두 존재: 스킵 (정상 운영)
+        # - 0개: 신규 시드 (안전한 fresh install)
+        # - 1개만 존재: 부분 손상. 그대로 wipe하면 가입한 일반 사용자까지 다 날아가므로 강제 중단.
+        #   --force 플래그가 있을 때만 진행.
         if not force:
-            existing = db.query(User).filter(User.login_id.in_(["admin", "user1"])).count()
-            if existing >= 2:
+            existing_logins = {
+                u.login_id for u in
+                db.query(User).filter(User.login_id.in_(["admin", "user1"])).all()
+            }
+            if len(existing_logins) >= 2:
                 print("[seed] admin/user1이 이미 존재 — 스킵 (--force로 강제 재생성)")
                 return
+            if len(existing_logins) == 1:
+                missing = {"admin", "user1"} - existing_logins
+                total_users = db.query(User).count()
+                print(
+                    f"[seed] WARNING: 부분 손상 감지 — {existing_logins} 존재, {missing} 누락.\n"
+                    f"       현재 DB 전체 User 수: {total_users}건.\n"
+                    f"       그대로 진행하면 모든 User/Organization이 삭제됩니다.\n"
+                    f"       의도된 재시드라면 `python seed_demo_examples.py --force` 로 재실행하세요.\n"
+                    f"       (실수로 admin/user1 중 하나만 삭제된 상황이면 해당 계정만 수동 복구 권장.)"
+                )
+                return
 
-        # 1) 기존 데이터 삭제
+        # 1) 기존 데이터 삭제 (admin/user1 둘 다 없거나, --force 모드)
         _wipe_session_data(db)
         _wipe_orgs_and_users(db, keep_login_ids=set())  # 모두 삭제
 

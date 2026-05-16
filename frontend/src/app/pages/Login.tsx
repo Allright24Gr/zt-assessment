@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { Shield, AlertCircle, X, Mail } from "lucide-react";
@@ -17,6 +17,8 @@ export function Login() {
   const [recovery, setRecovery] = useState<RecoveryMode>(null);
   const [recoveryEmail, setRecoveryEmail] = useState("");
   const [recoverySent, setRecoverySent] = useState(false);
+  const recoveryEmailInputRef = useRef<HTMLInputElement>(null);
+  const recoveryCloseButtonRef = useRef<HTMLButtonElement>(null);
   const { user, login } = useAuth();
   const navigate = useNavigate();
 
@@ -25,6 +27,28 @@ export function Login() {
       navigate("/");
     }
   }, [user, navigate]);
+
+  // ESC 키로 모달 닫기 + 첫 입력 필드 자동 포커스
+  useEffect(() => {
+    if (!recovery) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setRecovery(null);
+        setRecoveryEmail("");
+        setRecoverySent(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    // 다음 tick에 첫 인터랙티브 요소에 포커스
+    const t = window.setTimeout(() => {
+      if (recoverySent) recoveryCloseButtonRef.current?.focus();
+      else recoveryEmailInputRef.current?.focus();
+    }, 0);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.clearTimeout(t);
+    };
+  }, [recovery, recoverySent]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -159,8 +183,12 @@ export function Login() {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
           onClick={closeRecovery}
+          aria-hidden="true"
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="recovery-modal-title"
             className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-6"
             onClick={(e) => e.stopPropagation()}
           >
@@ -173,8 +201,8 @@ export function Login() {
               <X size={18} />
             </button>
             <div className="flex items-center gap-2 mb-3">
-              <Mail size={18} className="text-blue-600" />
-              <h2 className="text-base font-semibold text-gray-900">
+              <Mail size={18} className="text-blue-600" aria-hidden="true" />
+              <h2 id="recovery-modal-title" className="text-base font-semibold text-gray-900">
                 {recovery === "id" ? "아이디 찾기" : "비밀번호 찾기"}
               </h2>
             </div>
@@ -188,11 +216,13 @@ export function Login() {
                 </p>
                 <form onSubmit={submitRecovery} className="space-y-3">
                   <input
+                    ref={recoveryEmailInputRef}
                     type="email"
                     value={recoveryEmail}
                     onChange={(e) => setRecoveryEmail(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     placeholder="user@example.com"
+                    aria-label="가입 이메일"
                     required
                   />
                   <button
@@ -216,6 +246,7 @@ export function Login() {
                   메일이 도착하지 않으면 스팸함을 확인하거나 시스템 관리자에게 문의해주세요.
                 </p>
                 <button
+                  ref={recoveryCloseButtonRef}
                   type="button"
                   onClick={closeRecovery}
                   className="w-full bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200 text-sm font-medium"

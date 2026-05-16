@@ -1,10 +1,11 @@
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Building2, Upload, CheckCircle2, FileText, X, Wrench, Info } from "lucide-react";
+import { Building2, Upload, CheckCircle2, FileText, X, Wrench, Info, Target, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
+import type { ScanTargets } from "../../types/api";
 
 const TOOLS = [
   {
@@ -92,6 +93,9 @@ export function NewAssessment() {
   const [toolScope, setToolScope] = useState<Record<string, boolean>>({
     keycloak: false, wazuh: false, nmap: false, trivy: false,
   });
+  const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string }>({
+    nmap: "", trivy: "",
+  });
   const [files, setFiles] = useState<File[]>([]);
 
   const togglePillar = (key: string) => {
@@ -135,6 +139,14 @@ export function NewAssessment() {
       .map(([tool]) => tool)
       .join(",");
 
+    // 외부 스캔 대상이 입력된 경우에만 scan_targets 포함
+    const nmapTarget = scanTargets.nmap.trim();
+    const trivyTarget = scanTargets.trivy.trim();
+    const scanTargetsPayload: ScanTargets = {};
+    if (toolScope.nmap && nmapTarget) scanTargetsPayload.nmap = nmapTarget;
+    if (toolScope.trivy && trivyTarget) scanTargetsPayload.trivy = trivyTarget;
+    const hasScanTargets = Object.keys(scanTargetsPayload).length > 0;
+
     runAssessment({
       org_name: formData.orgName,
       manager: formData.manager,
@@ -149,6 +161,7 @@ export function NewAssessment() {
       note: formData.note,
       pillar_scope: pillarScope,
       tool_scope: toolScope,
+      ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
     })
       .then((res) =>
         navigate(`/in-progress/${res.session_id}`, {
@@ -169,7 +182,7 @@ export function NewAssessment() {
     try {
       localStorage.setItem(
         "zt_new_assessment_draft",
-        JSON.stringify({ formData, pillarScope, toolScope }),
+        JSON.stringify({ formData, pillarScope, toolScope, scanTargets }),
       );
       toast.success("입력한 내용이 임시저장되었습니다.");
     } catch (err) {
@@ -201,7 +214,7 @@ export function NewAssessment() {
           <div className="space-y-6">
             <div className="flex items-center gap-2 mb-6">
               <Building2 className="text-blue-600" size={24} />
-              <h2>Step 1: 기업 환경 입력</h2>
+              <h2>Step 1: 기관 정보 입력</h2>
             </div>
 
             {prefillNotice && (
@@ -358,7 +371,7 @@ export function NewAssessment() {
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <Wrench size={16} className="text-blue-600" />
-                <h3 className="text-sm font-semibold text-gray-700">귀사에서 사용 중인 보안 도구 선택</h3>
+                <h3 className="text-sm font-semibold text-gray-700">해당 기관에서 사용 중인 보안 도구 선택</h3>
               </div>
               <p className="text-xs text-gray-500 mb-3">
                 선택한 도구의 항목은 자동으로 수집됩니다. 선택하지 않은 도구의 항목은 다음 단계에서 직접 답변합니다.
@@ -396,6 +409,55 @@ export function NewAssessment() {
                 </p>
               )}
             </div>
+
+            {/* 진단 대상 (외부 스캔) */}
+            {(toolScope.nmap || toolScope.trivy) && (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Target size={16} className="text-blue-600" />
+                  <h3 className="text-sm font-semibold text-gray-700">진단 대상 (외부 스캔)</h3>
+                </div>
+                <p className="text-xs text-gray-500 mb-3">
+                  선택한 도구가 외부에서 스캔할 대상을 입력합니다. 비워두면 데모 기본값이 사용됩니다.
+                </p>
+                <div className="grid grid-cols-1 gap-4">
+                  {toolScope.nmap && (
+                    <div>
+                      <label className="block mb-2 text-sm">
+                        네트워크/호스트 (Nmap) <span className="text-gray-400 text-xs">(선택)</span>
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                        value={scanTargets.nmap}
+                        onChange={(e) => setScanTargets({ ...scanTargets, nmap: e.target.value })}
+                        placeholder="예: scanme.nmap.org 또는 192.168.1.1"
+                      />
+                    </div>
+                  )}
+                  {toolScope.trivy && (
+                    <div>
+                      <label className="block mb-2 text-sm">
+                        컨테이너 이미지 (Trivy) <span className="text-gray-400 text-xs">(선택)</span>
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                        value={scanTargets.trivy}
+                        onChange={(e) => setScanTargets({ ...scanTargets, trivy: e.target.value })}
+                        placeholder="예: nginx:1.25, alpine:latest"
+                      />
+                    </div>
+                  )}
+                </div>
+                {(scanTargets.nmap.trim() || scanTargets.trivy.trim()) && (
+                  <div className="mt-3 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    <span>외부 시스템 스캔 동의(권한 보유) 후 입력하세요. 권한이 없는 자산을 스캔하면 법적 책임이 발생할 수 있습니다.</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 비고 */}
             <div>

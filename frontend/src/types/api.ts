@@ -68,6 +68,11 @@ export interface AssessmentSession {
   is_demo?: boolean;
 }
 
+export interface ScanTargets {
+  nmap?: string;
+  trivy?: string;
+}
+
 export interface AssessmentRunRequest {
   org_name?: string;
   manager?: string;
@@ -82,6 +87,7 @@ export interface AssessmentRunRequest {
   note?: string;
   pillar_scope?: Record<string, boolean>;
   tool_scope?: Record<string, boolean>;
+  scan_targets?: ScanTargets;
 }
 
 export interface AssessmentRunResponse {

@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
-import { Settings as SettingsIcon, Bell, Target, User, Save } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Settings as SettingsIcon, Bell, Target, User, Save, Lock, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
+import { useAuth } from "../context/AuthContext";
+import { updateAuthProfile, ApiError, type ProfileFields } from "../../config/api";
 
 const STORAGE_KEY = "zt_settings";
 
@@ -33,9 +35,116 @@ const DEFAULT_SETTINGS: PersistedSettings = {
   organization: "보안팀",
 };
 
+interface ProfileFormState {
+  department: string;
+  contact: string;
+  org_type: string;
+  infra_type: string;
+  employees: string;
+  servers: string;
+  applications: string;
+  note: string;
+}
+
+function profileFromUser(p?: ProfileFields | null): ProfileFormState {
+  return {
+    department:   p?.department    ?? "",
+    contact:      p?.contact       ?? "",
+    org_type:     p?.org_type      ?? "기업",
+    infra_type:   p?.infra_type    ?? "온프레미스",
+    employees:    p?.employees    != null ? String(p.employees)    : "",
+    servers:      p?.servers      != null ? String(p.servers)      : "",
+    applications: p?.applications != null ? String(p.applications) : "",
+    note:         p?.note          ?? "",
+  };
+}
+
 export function Settings() {
+  const { user, setUser } = useAuth();
   const [targetScores, setTargetScores] = useState(DEFAULT_SETTINGS.targetScores);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+
+  // 진단 프로필 (백엔드 동기화)
+  const [profileForm, setProfileForm] = useState<ProfileFormState>(profileFromUser(user?.profile));
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const confirmInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setProfileForm(profileFromUser(user?.profile));
+  }, [user?.profile]);
+
+  // 비밀번호 확인 모달 — ESC 닫기 + autoFocus
+  useEffect(() => {
+    if (!confirmOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setConfirmOpen(false);
+        setConfirmPassword("");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const t = window.setTimeout(() => confirmInputRef.current?.focus(), 0);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.clearTimeout(t);
+    };
+  }, [confirmOpen]);
+
+  const openProfileConfirm = () => {
+    if (!user?.id) {
+      toast.error("로그인 정보를 확인할 수 없습니다.");
+      return;
+    }
+    setConfirmPassword("");
+    setConfirmOpen(true);
+  };
+
+  const submitProfile = async () => {
+    if (!user?.id) return;
+    if (!confirmPassword) {
+      toast.error("비밀번호를 입력해주세요.");
+      return;
+    }
+    const payload: ProfileFields = {
+      org_name:     user.orgName,
+      department:   profileForm.department.trim() || undefined,
+      contact:      profileForm.contact.trim()    || undefined,
+      org_type:     profileForm.org_type          || undefined,
+      infra_type:   profileForm.infra_type        || undefined,
+      employees:    profileForm.employees    ? Number(profileForm.employees)    : undefined,
+      servers:      profileForm.servers      ? Number(profileForm.servers)      : undefined,
+      applications: profileForm.applications ? Number(profileForm.applications) : undefined,
+      note:         profileForm.note.trim()       || undefined,
+    };
+    setSavingProfile(true);
+    try {
+      const updated = await updateAuthProfile(user.id, payload, confirmPassword);
+      setUser({
+        id: updated.login_id,
+        user_id: updated.user_id,
+        username: updated.name,
+        role: updated.role === "admin" ? "admin" : "user",
+        orgName: updated.org_name,
+        org_id: updated.org_id,
+        email: updated.email,
+        profile: updated.profile,
+      });
+      toast.success("진단 프로필이 저장되었습니다.");
+      setConfirmOpen(false);
+      setConfirmPassword("");
+    } catch (err) {
+      console.warn("[settings] profile save:", err);
+      if (err instanceof ApiError && err.status === 401) {
+        toast.error("비밀번호가 일치하지 않습니다.");
+      } else {
+        toast.error("프로필 저장 중 오류가 발생했습니다.");
+      }
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   useEffect(() => {
     try {
@@ -247,6 +356,118 @@ export function Settings() {
         </div>
       </div>
 
+      {/* 진단 프로필 (백엔드 동기화) */}
+      {user && (
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-2">
+              <User className="text-blue-600" size={20} />
+              <h2>진단 프로필</h2>
+            </div>
+            <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-blue-50 text-blue-700 border border-blue-100">
+              백엔드 동기화 · {user.orgName ?? "-"}
+            </span>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">
+            새 진단 시작 시 이 정보가 자동으로 입력됩니다. 저장 시 비밀번호 재확인이 필요합니다.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block mb-2 text-sm text-gray-700">부서 / 직책</label>
+              <input
+                type="text"
+                value={profileForm.department}
+                onChange={(e) => setProfileForm({ ...profileForm, department: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                placeholder="예: 정보보안팀 / 팀장"
+              />
+            </div>
+            <div>
+              <label className="block mb-2 text-sm text-gray-700">연락처</label>
+              <input
+                type="tel"
+                value={profileForm.contact}
+                onChange={(e) => setProfileForm({ ...profileForm, contact: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                placeholder="010-0000-0000"
+              />
+            </div>
+            <div>
+              <label className="block mb-2 text-sm text-gray-700">기관 유형</label>
+              <select
+                value={profileForm.org_type}
+                onChange={(e) => setProfileForm({ ...profileForm, org_type: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+              >
+                {["기업", "공공기관", "금융기관", "의료기관"].map((t) => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block mb-2 text-sm text-gray-700">인프라 유형</label>
+              <select
+                value={profileForm.infra_type}
+                onChange={(e) => setProfileForm({ ...profileForm, infra_type: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+              >
+                {["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"].map((t) => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block mb-2 text-sm text-gray-700">전체 임직원 수</label>
+              <input
+                type="number"
+                min={0}
+                value={profileForm.employees}
+                onChange={(e) => setProfileForm({ ...profileForm, employees: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                placeholder="예: 500"
+              />
+            </div>
+            <div>
+              <label className="block mb-2 text-sm text-gray-700">전체 서버 수</label>
+              <input
+                type="number"
+                min={0}
+                value={profileForm.servers}
+                onChange={(e) => setProfileForm({ ...profileForm, servers: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                placeholder="예: 50"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block mb-2 text-sm text-gray-700">운영 중 애플리케이션 수</label>
+              <input
+                type="number"
+                min={0}
+                value={profileForm.applications}
+                onChange={(e) => setProfileForm({ ...profileForm, applications: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                placeholder="예: 30"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block mb-2 text-sm text-gray-700">비고 / 진단 목적</label>
+              <textarea
+                rows={3}
+                value={profileForm.note}
+                onChange={(e) => setProfileForm({ ...profileForm, note: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg resize-none"
+                placeholder="진단 배경, 중점 검토 영역, 기타 참고 사항"
+              />
+            </div>
+          </div>
+          <div className="mt-5 flex justify-end">
+            <button
+              onClick={openProfileConfirm}
+              className="flex items-center gap-2 px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              <Lock size={16} />
+              비밀번호 확인 후 저장
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* User Account Settings */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <div className="flex items-center gap-2 mb-6">
@@ -301,6 +522,76 @@ export function Settings() {
           설정 저장
         </button>
       </div>
+
+      {/* 비밀번호 재확인 모달 */}
+      {confirmOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => !savingProfile && setConfirmOpen(false)}
+          aria-hidden="true"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-confirm-title"
+            className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => !savingProfile && setConfirmOpen(false)}
+              className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
+              aria-label="닫기"
+            >
+              <X size={18} />
+            </button>
+            <div className="flex items-center gap-2 mb-3">
+              <Lock size={18} className="text-blue-600" aria-hidden="true" />
+              <h2 id="profile-confirm-title" className="text-base font-semibold text-gray-900">
+                비밀번호 확인
+              </h2>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              진단 프로필 정보를 저장하려면 현재 비밀번호를 입력해주세요.
+            </p>
+            <form
+              onSubmit={(e) => { e.preventDefault(); submitProfile(); }}
+              className="space-y-3"
+            >
+              <input
+                ref={confirmInputRef}
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="현재 비밀번호"
+                aria-label="현재 비밀번호"
+                disabled={savingProfile}
+                required
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => !savingProfile && setConfirmOpen(false)}
+                  className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200 text-sm font-medium"
+                  disabled={savingProfile}
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium text-white ${
+                    savingProfile ? "bg-blue-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                  }`}
+                  disabled={savingProfile}
+                >
+                  {savingProfile ? <><Loader2 size={14} className="animate-spin" /> 저장 중...</> : "확인 후 저장"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

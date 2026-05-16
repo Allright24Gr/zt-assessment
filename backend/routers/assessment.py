@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import httpx
 import logging
 import os
+import threading
 
 from database import SessionLocal, get_db
 from models import (
@@ -41,9 +42,15 @@ ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy")
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _verify_internal_token(x_internal_token: Optional[str]):
-    """INTERNAL_API_TOKEN이 설정되어 있으면 X-Internal-Token 헤더 검증."""
+    """X-Internal-Token 헤더 검증. fail-closed: 토큰 미설정 시 503.
+
+    개발 편의를 위해 ZTA_DEV_ALLOW_UNAUTH_WEBHOOK=true 환경변수가 설정된 경우에만
+    토큰 검증을 스킵한다. 운영 기본값은 fail-closed.
+    """
     if not INTERNAL_TOKEN:
-        return  # 토큰 미설정 시 검증 생략 (로컬/개발 모드)
+        if os.getenv("ZTA_DEV_ALLOW_UNAUTH_WEBHOOK", "").lower() == "true":
+            return
+        raise HTTPException(status_code=503, detail="INTERNAL_API_TOKEN not configured")
     if x_internal_token != INTERNAL_TOKEN:
         raise HTTPException(status_code=401, detail="invalid internal token")
 
@@ -155,6 +162,9 @@ class AssessmentRunRequest(BaseModel):
     note: Optional[str] = None
     pillar_scope: dict = Field(default_factory=dict)
     tool_scope: dict = Field(default_factory=dict)
+    # 외부 스캔 대상 (사용자가 NewAssessment에서 직접 입력)
+    # 예: {"nmap": "scanme.nmap.org", "trivy": "nginx:1.25"}
+    scan_targets: dict = Field(default_factory=dict)
 
 
 class WebhookResultItem(BaseModel):
@@ -226,6 +236,7 @@ def run_assessment(
         "applications": req.applications,
         "note":         req.note,
         "pillar_scope": req.pillar_scope,
+        "scan_targets": req.scan_targets or {},
     }
 
     session = DiagnosisSession(
@@ -657,6 +668,7 @@ def _kc_mapping():
         collect_role_change_events, collect_central_authz_policy, collect_abac_policy,
         collect_central_authz_ratio, collect_mfa_required_actions,
         collect_webauthn_credential_users, collect_sso_clients, collect_conditional_policy,
+        collect_data_abac_policy,
     )
     return [
         (collect_user_role_ratio,           "1.1.1.2_1",  "초기"),
@@ -689,7 +701,8 @@ def _kc_mapping():
         (collect_mfa_required_actions,      "4.2.2.2_2",  "초기"),
         (collect_webauthn_credential_users, "4.2.2.3_1",  "향상"),
         (collect_sso_clients,               "4.3.1.3_5",  "향상"),
-        (collect_conditional_policy,        "6.2.1.3_1",  "향상"),
+        (collect_conditional_policy,        "4.1.1.3_2",  "향상"),
+        (collect_data_abac_policy,          "6.2.1.3_1",  "향상"),
     ]
 
 
@@ -1026,53 +1039,107 @@ def _safe_call(fn, item_id: str, maturity: str, takes_args: bool, tool_name: str
         return _unavailable_result(tool_name, item_id, maturity, str(exc))
 
 
+# 동시 세션이 nmap/trivy의 모듈-전역 _current_target을 덮어쓰지 않도록 직렬화.
+# 시연용 환경 기준이며, 대규모 동시 진단이 필요해지면 collector 시그니처에 target
+# 인자를 정식으로 추가하는 리팩터링이 필요하다.
+_collector_lock = threading.Lock()
+
+
 def _run_collectors(session_id: int, tools: list[str]):
     """선택된 도구들로 collector 실행 후 결과를 DB에 직접 저장 (httpx 자기호출 없음).
 
     각 도구는 호출 전 _tool_health로 가용성을 확인한다. 도구가 닫혀있으면
     그 도구의 모든 매핑을 '평가불가'로 일괄 표시하고 함수 호출은 스킵한다.
+    사용자가 nmap/trivy 스캔 대상을 직접 입력한 경우 session.extra.scan_targets
+    를 collector 모듈 전역에 주입한다.
     """
     if not tools:
         return
 
-    results: list[dict] = []
-    for tool in tools:
-        if tool not in _TOOL_DISPATCH:
-            continue
-        mapping_fn, takes_args = _TOOL_DISPATCH[tool]
-        try:
-            mapping = mapping_fn()
-        except Exception as exc:
-            logger.warning("[collector] %s mapping load failed: %s", tool, exc)
-            continue
-
-        health_err = _tool_health(tool)
-        if health_err:
-            logger.info("[collector] %s unavailable (%s) → %d items 평가불가 처리",
-                        tool, health_err, len(mapping))
-            for _fn, item_id, maturity in mapping:
-                results.append(_unavailable_result(tool, item_id, maturity, health_err))
-            continue
-
-        for fn, item_id, maturity in mapping:
-            results.append(_safe_call(fn, item_id, maturity, takes_args, tool))
-
-    if not results:
-        return
-
-    db = SessionLocal()
+    # 세션의 사용자 입력 scan_targets 조회
+    scan_targets: dict = {}
+    db_pre = SessionLocal()
     try:
-        for item in results:
-            item_id_str = item.get("item_id")
-            if not item_id_str:
-                continue
-            checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
-            if not checklist:
-                continue
-            _upsert_collected(db, session_id, checklist.check_id, item)
-        db.commit()
+        sess = db_pre.query(DiagnosisSession).filter(
+            DiagnosisSession.session_id == session_id
+        ).first()
+        if sess and isinstance(sess.extra, dict):
+            raw = sess.extra.get("scan_targets") or {}
+            if isinstance(raw, dict):
+                scan_targets = {k: (v or "").strip() for k, v in raw.items() if v}
     except Exception as exc:
-        db.rollback()
-        logger.error("[collector] DB write failed: %s", exc)
+        logger.warning("[collector] session lookup failed: %s", exc)
     finally:
-        db.close()
+        db_pre.close()
+
+    with _collector_lock:
+        results: list[dict] = []
+        try:
+            for tool in tools:
+                if tool not in _TOOL_DISPATCH:
+                    continue
+                mapping_fn, takes_args = _TOOL_DISPATCH[tool]
+                try:
+                    mapping = mapping_fn()
+                except Exception as exc:
+                    logger.warning("[collector] %s mapping load failed: %s", tool, exc)
+                    continue
+
+                # 사용자 입력 target 우선. nmap/trivy의 모듈-전역에 주입.
+                explicit_target = scan_targets.get(tool) if tool in ("nmap", "trivy") else None
+                if tool == "nmap":
+                    from collectors import nmap_collector as _nm
+                    _nm.set_session_target(explicit_target)
+                elif tool == "trivy":
+                    from collectors import trivy_collector as _tr
+                    _tr.set_session_target(explicit_target)
+
+                # 가용성 체크: 사용자가 target을 직접 줬으면 placeholder 가드를 우회하고
+                # wrapper TCP 도달성만 확인. 그렇지 않으면 기존 _tool_health 그대로.
+                if explicit_target:
+                    wrapper_env = "NMAP_WRAPPER_URL" if tool == "nmap" else "TRIVY_WRAPPER_URL"
+                    health_err = _probe_tcp(os.getenv(wrapper_env, ""))
+                else:
+                    health_err = _tool_health(tool)
+
+                if health_err:
+                    logger.info("[collector] %s unavailable (%s) → %d items 평가불가 처리",
+                                tool, health_err, len(mapping))
+                    for _fn, item_id, maturity in mapping:
+                        results.append(_unavailable_result(tool, item_id, maturity, health_err))
+                    continue
+
+                for fn, item_id, maturity in mapping:
+                    results.append(_safe_call(fn, item_id, maturity, takes_args, tool))
+        finally:
+            # 모듈-전역 target은 다음 세션에 누수되지 않도록 항상 해제.
+            try:
+                from collectors import nmap_collector as _nm
+                _nm.set_session_target(None)
+            except Exception:
+                pass
+            try:
+                from collectors import trivy_collector as _tr
+                _tr.set_session_target(None)
+            except Exception:
+                pass
+
+        if not results:
+            return
+
+        db = SessionLocal()
+        try:
+            for item in results:
+                item_id_str = item.get("item_id")
+                if not item_id_str:
+                    continue
+                checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
+                if not checklist:
+                    continue
+                _upsert_collected(db, session_id, checklist.check_id, item)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.error("[collector] DB write failed: %s", exc)
+        finally:
+            db.close()
