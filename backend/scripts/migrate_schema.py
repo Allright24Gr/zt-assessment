@@ -14,6 +14,75 @@ MIGRATIONS = [
     ("User",             "login_id",       "VARCHAR(100) NULL UNIQUE"),
     ("User",             "password_hash",  "VARCHAR(200) NULL"),
     ("User",             "profile",        "JSON NULL"),
+    # P0-5 약관·개인정보 처리방침 동의 시점
+    ("User",             "tos_agreed_at",     "DATETIME NULL"),
+    ("User",             "privacy_agreed_at", "DATETIME NULL"),
+    # P1-7: 수동 증적 파일 업로드 메타데이터
+    ("Evidence",         "file_path",         "VARCHAR(500) NULL"),
+    ("Evidence",         "mime_type",         "VARCHAR(120) NULL"),
+    ("Evidence",         "file_size",         "INT NULL"),
+    ("Evidence",         "original_filename", "VARCHAR(255) NULL"),
+]
+
+
+# 신규 테이블 (CREATE IF NOT EXISTS). 도커 fresh start 시 SQLAlchemy create_all 이 처리하지만,
+# 기존 환경 마이그레이션을 위해 명시 CREATE 도 함께.
+NEW_TABLES = [
+    ("AuthAuditLog", """
+        CREATE TABLE IF NOT EXISTS `AuthAuditLog` (
+            `audit_id`   INT NOT NULL AUTO_INCREMENT,
+            `event_type` VARCHAR(50)  NOT NULL,
+            `user_id`    INT NULL,
+            `login_id`   VARCHAR(100) NULL,
+            `source_ip`  VARCHAR(64)  NULL,
+            `user_agent` VARCHAR(500) NULL,
+            `success`    INT NOT NULL DEFAULT 1,
+            `detail`     JSON NULL,
+            `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`audit_id`),
+            KEY `idx_audit_event_type` (`event_type`),
+            KEY `idx_audit_user_id`    (`user_id`),
+            KEY `idx_audit_created_at` (`created_at`),
+            CONSTRAINT `fk_audit_user_id`
+              FOREIGN KEY (`user_id`) REFERENCES `User`(`user_id`) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """),
+    # P1-11: 외부 공유 링크 토큰
+    ("SharedResult", """
+        CREATE TABLE IF NOT EXISTS `SharedResult` (
+            `share_id`           INT NOT NULL AUTO_INCREMENT,
+            `session_id`         INT NOT NULL,
+            `token_hash`         VARCHAR(128) NOT NULL,
+            `created_by_user_id` INT NOT NULL,
+            `expires_at`         DATETIME NOT NULL,
+            `revoked_at`         DATETIME NULL,
+            `created_at`         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`share_id`),
+            UNIQUE KEY `uq_shared_result_token` (`token_hash`),
+            KEY `idx_shared_result_session` (`session_id`),
+            KEY `idx_shared_result_token`   (`token_hash`),
+            CONSTRAINT `fk_shared_result_session`
+              FOREIGN KEY (`session_id`) REFERENCES `DiagnosisSession`(`session_id`) ON DELETE CASCADE,
+            CONSTRAINT `fk_shared_result_user`
+              FOREIGN KEY (`created_by_user_id`) REFERENCES `User`(`user_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """),
+    # 비밀번호 재설정 토큰 — 평문은 메일로 전송, DB에는 SHA-256 해시만 저장
+    ("PasswordResetToken", """
+        CREATE TABLE IF NOT EXISTS `PasswordResetToken` (
+            `token_id`   INT NOT NULL AUTO_INCREMENT,
+            `user_id`    INT NOT NULL,
+            `token_hash` VARCHAR(128) NOT NULL,
+            `expires_at` DATETIME NOT NULL,
+            `used_at`    DATETIME NULL,
+            `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`token_id`),
+            UNIQUE KEY `uq_password_reset_token` (`token_hash`),
+            KEY `idx_password_reset_user` (`user_id`),
+            CONSTRAINT `fk_password_reset_user`
+              FOREIGN KEY (`user_id`) REFERENCES `User`(`user_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """),
 ]
 
 # 한글 ENUM은 charset 미스매치 시 'Data truncated' 에러를 자주 일으킴.
@@ -60,6 +129,11 @@ def run():
             sql = f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` {coltype}"
             print(f"[migrate] {sql}")
             conn.execute(text(sql))
+
+        # 3) 신규 테이블 (idempotent CREATE IF NOT EXISTS)
+        for table_name, ddl in NEW_TABLES:
+            print(f"[migrate] ensuring table {table_name}")
+            conn.execute(text(ddl))
 
 
 if __name__ == "__main__":

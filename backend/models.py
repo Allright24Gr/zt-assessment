@@ -37,6 +37,9 @@ class User(Base):
     password_hash = Column(String(200), nullable=True)
     # 진단 시 자동 prefill용 사용자 프로필 (org_name/dept/employees/servers 등)
     profile = Column(JSON, nullable=True)
+    # 이용약관 / 개인정보 처리방침 동의 시점 (정보통신망법·개인정보보호법)
+    tos_agreed_at = Column(DateTime, nullable=True)
+    privacy_agreed_at = Column(DateTime, nullable=True)
 
     org = relationship("Organization", back_populates="users")
     sessions = relationship("DiagnosisSession", back_populates="manager")
@@ -125,6 +128,11 @@ class Evidence(Base):
     location = Column(String(500), nullable=True)
     reason = Column(Text, nullable=True)
     impact = Column(Float, nullable=True)
+    # P1-7: 수동 증적 파일 업로드용 컬럼
+    file_path = Column(String(500), nullable=True)
+    mime_type = Column(String(120), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    original_filename = Column(String(255), nullable=True)
 
     session = relationship("DiagnosisSession", back_populates="evidences")
     checklist = relationship("Checklist", back_populates="evidences")
@@ -203,4 +211,72 @@ class ScoreHistory(Base):
 
     __table_args__ = (
         Index("idx_score_history_assessed_at", "assessed_at"),
+    )
+
+
+
+# ─── 보안 감사 로그 (P0-3) ─────────────────────────────────────────────────────
+# auth.py 의 audit_logger 채널에 더해 DB 영속화. 컨테이너 재시작 후에도 감사 추적 가능.
+
+class AuthAuditLog(Base):
+    __tablename__ = "AuthAuditLog"
+
+    audit_id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String(50), nullable=False)
+    # register | login_ok | login_fail | login_locked | profile_update |
+    # change_password | password_reset_requested | password_reset_completed |
+    # account_deleted | etc.
+    user_id = Column(Integer, ForeignKey("User.user_id"), nullable=True)
+    login_id = Column(String(100), nullable=True)
+    source_ip = Column(String(64), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+    success = Column(Integer, nullable=False, default=1)
+    detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_audit_event_type", "event_type"),
+        Index("idx_audit_user_id", "user_id"),
+        Index("idx_audit_created_at", "created_at"),
+    )
+
+
+# ─── 외부 공유 링크 (P1-11) ────────────────────────────────────────────────────
+# 진단 결과를 인증 없이 조회 가능한 토큰 기반 공유 링크.
+# 토큰은 SHA-256 해시로만 저장한다 (원본 토큰 유출 시 추적성 확보 + DB 노출 위험 최소화).
+
+class SharedResult(Base):
+    __tablename__ = "SharedResult"
+
+    share_id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(Integer, ForeignKey("DiagnosisSession.session_id"), nullable=False)
+    token_hash = Column(String(128), nullable=False, unique=True)
+    created_by_user_id = Column(Integer, ForeignKey("User.user_id"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_shared_result_session", "session_id"),
+        Index("idx_shared_result_token", "token_hash"),
+    )
+
+
+class PasswordResetToken(Base):
+    """비밀번호 재설정 토큰. 평문 토큰은 메일로만 발송, DB에는 SHA-256 해시만 보관.
+
+    회수 정책: 사용자가 새 요청을 보내면 기존 미사용 토큰을 모두 used_at으로 무효화.
+    검증 시 used_at IS NULL + expires_at > now 두 조건 모두 충족해야 한다.
+    """
+    __tablename__ = "PasswordResetToken"
+
+    token_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("User.user_id"), nullable=False)
+    token_hash = Column(String(128), nullable=False, unique=True)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_password_reset_user", "user_id"),
     )

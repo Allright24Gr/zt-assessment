@@ -16,21 +16,106 @@
 """
 import hashlib
 import logging
+import os
 import re
 import secrets
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+import jwt as pyjwt
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 
 from database import get_db
-from models import Organization, User
+from models import AuthAuditLog, Organization, PasswordResetToken, User
 
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("zt.audit")  # 별도 채널 — 운영 시 별도 파일/SIEM 라우팅 가능
+
+# ─── JWT 세션 (P0-1) ──────────────────────────────────────────────────────────
+# access 8h / refresh 30d. SECRET_KEY 미설정 시 부팅 시 임시 키(경고). 운영엔 .env 필수.
+JWT_ALG = "HS256"
+JWT_ACCESS_TTL = timedelta(hours=int(os.getenv("ZTA_JWT_ACCESS_HOURS", "8")))
+JWT_REFRESH_TTL = timedelta(days=int(os.getenv("ZTA_JWT_REFRESH_DAYS", "30")))
+JWT_SECRET = os.getenv("SECRET_KEY", "") or os.getenv("JWT_SECRET", "")
+if not JWT_SECRET:
+    # 부팅마다 새 키 — 모든 기존 토큰 무효. 개발 편의용. 운영 경고.
+    JWT_SECRET = secrets.token_urlsafe(48)
+    logger.warning("[auth] SECRET_KEY 미설정 — 임시 JWT 키 사용. 부팅마다 토큰 만료됨.")
+
+
+def _create_token(user: User, kind: str, ttl: timedelta) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user.login_id or str(user.user_id),
+        "uid": user.user_id,
+        "role": user.role,
+        "kind": kind,             # "access" | "refresh"
+        "iat": int(now.timestamp()),
+        "exp": int((now + ttl).timestamp()),
+        "jti": secrets.token_hex(8),
+    }
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def _decode_token(token: str) -> dict:
+    """검증 통과 시 payload dict 반환. 실패 시 HTTPException(401)."""
+    try:
+        return pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="토큰이 만료되었습니다.")
+    except pyjwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+
+
+# ─── audit log DB 영속화 (P0-3) ───────────────────────────────────────────────
+# stdlib audit_logger와 병행. DB insert는 best-effort — 실패해도 본 흐름 차단 X.
+
+def _audit_db(
+    db: Optional[Session],
+    event_type: str,
+    *,
+    user: Optional[User] = None,
+    login_id: Optional[str] = None,
+    success: bool = True,
+    source_ip: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    detail: Optional[dict] = None,
+):
+    if db is None:
+        return
+    try:
+        row = AuthAuditLog(
+            event_type=event_type,
+            user_id=user.user_id if user else None,
+            login_id=login_id or (user.login_id if user else None),
+            source_ip=source_ip,
+            user_agent=(user_agent or "")[:500] or None,
+            success=1 if success else 0,
+            detail=detail or None,
+        )
+        db.add(row)
+        db.commit()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.warning("[audit] DB insert failed: %s", exc)
+
+
+def _client_meta(request: Optional[Request]) -> tuple[Optional[str], Optional[str]]:
+    if request is None:
+        return None, None
+    # X-Forwarded-For 우선 (nginx 통과 IP)
+    fwd = request.headers.get("X-Forwarded-For", "")
+    ip = (fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else None))
+    ua = request.headers.get("User-Agent", "")[:500] or None
+    return ip, ua
 router = APIRouter()
 
 # OWASP 2023 Password Storage Cheat Sheet 권장치(PBKDF2-SHA256 600k 이상).
@@ -89,33 +174,55 @@ def _validate_password_policy(password: str) -> None:
 
 
 # ─── 로그인 실패 잠금 (in-memory) ─────────────────────────────────────────────
+# P0-4: login_id 단위 + source IP 단위 양쪽 잠금. 다중 ID 폭격(IP 1개에서 여러 ID 시도) 차단.
+# 다중 프로세스 환경에서는 Redis 권장 (PLAN.md P2-14).
+
+# IP별 잠금 정책 — login_id별보다 헐겁게 (오용 방지). 30분 내 50회 실패 시 30분 잠금.
+LOGIN_IP_MAX_ATTEMPTS = int(os.getenv("ZTA_LOGIN_IP_MAX", "50"))
+LOGIN_IP_WINDOW_SECONDS = int(os.getenv("ZTA_LOGIN_IP_WINDOW", "1800"))
+LOGIN_IP_LOCK_SECONDS = int(os.getenv("ZTA_LOGIN_IP_LOCK", "1800"))
 
 _login_state_lock = threading.Lock()
 # login_id → {"fails": int, "locked_until": float}
 _login_state: dict[str, dict] = {}
+# ip → {"fails": int, "window_start": float, "locked_until": float}
+_login_ip_state: dict[str, dict] = {}
 
 
-def _check_lock(login_id: str) -> None:
-    """잠금 상태면 HTTPException 423. 잠금 만료된 경우 카운터 리셋."""
+def _check_lock(login_id: str, source_ip: Optional[str] = None) -> None:
+    """login_id 또는 source_ip 가 잠금 상태면 HTTPException 423."""
     now = time.time()
     with _login_state_lock:
+        # login_id 잠금
         st = _login_state.get(login_id)
-        if not st:
-            return
-        if st.get("locked_until", 0) > now:
+        if st and st.get("locked_until", 0) > now:
             retry_after = int(st["locked_until"] - now) + 1
             raise HTTPException(
                 status_code=423,
                 detail=f"로그인 실패 횟수 초과. {retry_after}초 후 다시 시도하세요.",
                 headers={"Retry-After": str(retry_after)},
             )
-        if st.get("locked_until", 0) and st["locked_until"] <= now:
+        if st and st.get("locked_until", 0) and st["locked_until"] <= now:
             _login_state.pop(login_id, None)
 
+        # IP 잠금
+        if source_ip:
+            ip_st = _login_ip_state.get(source_ip)
+            if ip_st and ip_st.get("locked_until", 0) > now:
+                retry_after = int(ip_st["locked_until"] - now) + 1
+                raise HTTPException(
+                    status_code=423,
+                    detail=f"IP 차단 — {retry_after}초 후 다시 시도하세요.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            if ip_st and ip_st.get("locked_until", 0) and ip_st["locked_until"] <= now:
+                _login_ip_state.pop(source_ip, None)
 
-def _record_login_failure(login_id: str) -> None:
+
+def _record_login_failure(login_id: str, source_ip: Optional[str] = None) -> None:
     now = time.time()
     with _login_state_lock:
+        # login_id 카운터
         st = _login_state.setdefault(login_id, {"fails": 0, "locked_until": 0.0})
         st["fails"] += 1
         if st["fails"] >= LOGIN_MAX_ATTEMPTS:
@@ -125,10 +232,27 @@ def _record_login_failure(login_id: str) -> None:
                 login_id, st["fails"], LOGIN_LOCK_SECONDS,
             )
 
+        # IP 카운터 (sliding window)
+        if source_ip:
+            ip_st = _login_ip_state.setdefault(
+                source_ip, {"fails": 0, "window_start": now, "locked_until": 0.0},
+            )
+            if now - ip_st["window_start"] > LOGIN_IP_WINDOW_SECONDS:
+                ip_st["fails"] = 0
+                ip_st["window_start"] = now
+            ip_st["fails"] += 1
+            if ip_st["fails"] >= LOGIN_IP_MAX_ATTEMPTS:
+                ip_st["locked_until"] = now + LOGIN_IP_LOCK_SECONDS
+                audit_logger.warning(
+                    "[auth] IP=%s 잠금 적용: %d회 실패(%ds 윈도우) → %ds 잠금",
+                    source_ip, ip_st["fails"], LOGIN_IP_WINDOW_SECONDS, LOGIN_IP_LOCK_SECONDS,
+                )
 
-def _record_login_success(login_id: str) -> None:
+
+def _record_login_success(login_id: str, source_ip: Optional[str] = None) -> None:
     with _login_state_lock:
         _login_state.pop(login_id, None)
+        # IP는 성공 시 카운터 리셋하지 않음 (한 IP에서 여러 ID 시도 방지)
 
 
 # ─── Pydantic schemas ────────────────────────────────────────────────────────
@@ -410,3 +534,112 @@ def change_password(
     _record_login_success(user.login_id or "")  # 잠금 카운터 리셋
     audit_logger.info("[auth] change-password ok login_id=%s", x_login_id)
     return {"status": "ok", "message": "비밀번호가 변경되었습니다."}
+
+
+# ─── 비밀번호 재설정 (이메일 발송) ───────────────────────────────────────────────
+# /request-password-reset : login_id 로 사용자 조회 → SHA-256 해시 토큰 발급 + 이메일 전송
+# /reset-password         : 토큰 + new_password 로 실제 재설정 수행
+#
+# 보안 고려:
+# - 사용자 존재 여부를 응답에서 노출하지 않는다 (enumeration 방지). 항상 200 + 동일 메시지.
+# - 토큰은 평문(URL-safe 32바이트)을 메일로만 전달하고 DB에는 SHA-256 해시만 저장.
+# - 새 요청 발급 시 기존 미사용 토큰은 used_at으로 무효화 (only-1-active 정책).
+# - 만료 1시간 (timedelta(hours=1)). 만료/사용 토큰은 400.
+
+class PasswordResetRequest(BaseModel):
+    login_id: str = Field(min_length=1, max_length=100)
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=10, max_length=500)
+    new_password: str = Field(min_length=8, max_length=200)
+
+    @field_validator("new_password")
+    @classmethod
+    def _password_policy(cls, v: str) -> str:
+        _validate_password_policy(v)
+        return v
+
+
+@router.post("/request-password-reset")
+def request_password_reset(req: PasswordResetRequest, db: Session = Depends(get_db)):
+    """비밀번호 재설정 토큰 발급 + 이메일 발송.
+
+    응답은 항상 동일하게 200 + "재설정 메일을 발송했습니다(계정이 존재할 경우)." 를 반환한다.
+    이를 통해 외부에서 login_id 존재 여부를 추측할 수 없도록 한다 (user enumeration 방지).
+    """
+    user = db.query(User).filter(User.login_id == req.login_id).first()
+    if user and user.email:
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        # 기존 미사용 토큰을 모두 무효화 — 신규 요청 시 이전 메일의 링크는 동작하지 않게.
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.user_id,
+            PasswordResetToken.used_at.is_(None),
+        ).update({"used_at": func.now()})
+        db.add(PasswordResetToken(
+            user_id=user.user_id,
+            token_hash=token_hash,
+            expires_at=expires,
+        ))
+        db.commit()
+        # 메일 발송은 best-effort — 실패해도 응답은 동일하게 200을 유지한다.
+        try:
+            from services.email_sender import send_email
+            frontend_base = os.getenv("FRONTEND_BASE_URL", "http://localhost:8080")
+            reset_url = f"{frontend_base}/auth/reset-password?token={raw_token}"
+            send_email(user.email, "[Readyz-T] 비밀번호 재설정 안내", "password_reset", {
+                "user_name": user.name,
+                "reset_url": reset_url,
+                "expires_at": expires.isoformat(),
+            })
+        except Exception as exc:  # noqa: BLE001 — 메일 실패가 사용자 흐름을 중단시키면 안 됨
+            audit_logger.warning(
+                "[auth] reset email failed login_id=%s err=%s", req.login_id, exc
+            )
+        audit_logger.info("[auth] password reset requested login_id=%s", req.login_id)
+    else:
+        # 존재하지 않는 사용자에 대해서도 동일 응답. 타이밍 차이를 최소화하기 위해
+        # 무거운 작업(DB write, mail send)은 생략하지만 로그는 남긴다.
+        audit_logger.info(
+            "[auth] password reset requested for unknown login_id=%s", req.login_id
+        )
+    return {
+        "status": "ok",
+        "message": "재설정 메일을 발송했습니다(계정이 존재할 경우).",
+    }
+
+
+@router.post("/reset-password")
+def reset_password(req: PasswordResetConfirm, db: Session = Depends(get_db)):
+    """토큰으로 비밀번호 재설정. 성공 시 토큰을 즉시 used_at으로 마킹."""
+    token_hash = hashlib.sha256(req.token.encode()).hexdigest()
+    record = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token_hash == token_hash,
+        PasswordResetToken.used_at.is_(None),
+    ).first()
+    if not record:
+        audit_logger.warning("[auth] reset-password fail reason=invalid_token")
+        raise HTTPException(status_code=400, detail="유효하지 않은 토큰입니다.")
+
+    # MySQL DATETIME은 timezone-naive로 저장되므로 비교 전에 tz를 벗긴다.
+    now = datetime.now(timezone.utc)
+    expires = record.expires_at
+    expires_naive = expires.replace(tzinfo=None) if expires.tzinfo else expires
+    if expires_naive < now.replace(tzinfo=None):
+        audit_logger.warning(
+            "[auth] reset-password fail reason=expired token_id=%s", record.token_id
+        )
+        raise HTTPException(status_code=400, detail="만료된 토큰입니다.")
+
+    user = db.query(User).filter(User.user_id == record.user_id).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="사용자를 찾을 수 없습니다.")
+
+    user.password_hash = _hash_password(req.new_password)
+    record.used_at = now.replace(tzinfo=None)
+    db.commit()
+    _record_login_success(user.login_id or "")  # 잠금 카운터 리셋 — 사용자가 정상 복귀 가능
+    audit_logger.info("[auth] password reset completed login_id=%s", user.login_id)
+    return {"status": "ok", "message": "비밀번호가 재설정되었습니다."}
