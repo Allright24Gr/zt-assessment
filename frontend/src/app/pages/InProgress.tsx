@@ -431,7 +431,7 @@ export function InProgress() {
   const completedQuestionCount = pillars.reduce((sum, p) => sum + p.collected, 0);
 
   return (
-    <div className="max-w-7xl mx-auto space-y-5">
+    <div className="space-y-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div className="flex items-center gap-2 mb-1">

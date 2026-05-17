@@ -369,7 +369,7 @@ export function Settings() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
+    <div className="space-y-6">
       <div className="flex items-center gap-3">
         <h1>설정</h1>
         <span className="px-2.5 py-0.5 text-xs font-medium rounded bg-yellow-100 text-yellow-800 border border-yellow-200">
@@ -379,6 +379,9 @@ export function Settings() {
       <p className="text-sm text-gray-600">
         현재 설정은 백엔드와 연동되지 않고 브라우저에만 저장됩니다. 진단 임계값은 백엔드 정책 파일을 직접 수정해주세요.
       </p>
+
+      {/* 카드 2열 wrap — 임계값/목표 성숙도/알림/사용자 계정 정보 4개 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
       {/* Threshold Settings */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
@@ -547,7 +550,59 @@ export function Settings() {
         </div>
       </div>
 
-      {/* 진단 프로필 (백엔드 동기화) */}
+      {/* User Account Settings */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex items-center gap-2 mb-6">
+          <User className="text-blue-600" size={20} />
+          <h2>사용자 계정 정보</h2>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block mb-2">이름</label>
+            <input
+              type="text"
+              value={settings.name}
+              onChange={(e) => setSettings({ ...settings, name: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block mb-2">이메일</label>
+            <input
+              type="email"
+              value={settings.email}
+              onChange={(e) => setSettings({ ...settings, email: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block mb-2">소속</label>
+            <input
+              type="text"
+              value={settings.organization}
+              onChange={(e) => setSettings({ ...settings, organization: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block mb-2">비밀번호 변경</label>
+            <button
+              type="button"
+              onClick={() => setPwModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+            >
+              <KeyRound size={14} />
+              비밀번호 변경하기
+            </button>
+          </div>
+        </div>
+      </div>
+
+      </div>
+      {/* /grid 2열 wrap 끝 */}
+
+      {/* 진단 프로필 (백엔드 동기화) — full width, 내부 grid lg:cols-4 */}
       {user && (
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <div className="flex items-center justify-between mb-6">
@@ -562,7 +617,7 @@ export function Settings() {
           <p className="text-sm text-gray-600 mb-4">
             새 진단 시작 시 이 정보가 자동으로 입력됩니다. 저장 시 비밀번호 재확인이 필요합니다.
           </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             <div>
               <label className="block mb-2 text-sm text-gray-700">부서 / 직책</label>
               <input
@@ -625,7 +680,7 @@ export function Settings() {
                 placeholder="예: 50"
               />
             </div>
-            <div className="md:col-span-2">
+            <div>
               <label className="block mb-2 text-sm text-gray-700">운영 중 애플리케이션 수</label>
               <input
                 type="number"
@@ -636,7 +691,7 @@ export function Settings() {
                 placeholder="예: 30"
               />
             </div>
-            <div className="md:col-span-2">
+            <div className="md:col-span-2 lg:col-span-3 xl:col-span-4">
               <label className="block mb-2 text-sm text-gray-700">비고 / 진단 목적</label>
               <textarea
                 rows={3}
@@ -658,55 +713,6 @@ export function Settings() {
           </div>
         </div>
       )}
-
-      {/* User Account Settings */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <div className="flex items-center gap-2 mb-6">
-          <User className="text-blue-600" size={20} />
-          <h2>사용자 계정 정보</h2>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="block mb-2">이름</label>
-            <input
-              type="text"
-              value={settings.name}
-              onChange={(e) => setSettings({ ...settings, name: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-            />
-          </div>
-          <div>
-            <label className="block mb-2">이메일</label>
-            <input
-              type="email"
-              value={settings.email}
-              onChange={(e) => setSettings({ ...settings, email: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-            />
-          </div>
-          <div>
-            <label className="block mb-2">소속</label>
-            <input
-              type="text"
-              value={settings.organization}
-              onChange={(e) => setSettings({ ...settings, organization: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-            />
-          </div>
-          <div>
-            <label className="block mb-2">비밀번호 변경</label>
-            <button
-              type="button"
-              onClick={() => setPwModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-            >
-              <KeyRound size={14} />
-              비밀번호 변경하기
-            </button>
-          </div>
-        </div>
-      </div>
 
       {/* Save Button */}
       <div className="flex justify-end">

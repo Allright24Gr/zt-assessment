@@ -355,7 +355,7 @@ export function NewAssessment() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="w-full">
       {/* Step Indicator */}
       <div className="flex items-center justify-center gap-4 mb-8">
         {[1, 2, 3].map((s) => (
