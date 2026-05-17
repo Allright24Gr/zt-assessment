@@ -50,3 +50,6 @@ evidence/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# 미팅 브리프 — 로컬 전용 (github 미공개)
+MEETING_BRIEF.md
