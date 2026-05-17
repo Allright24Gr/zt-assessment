@@ -524,7 +524,7 @@ export function Reporting() {
     sourceBreakdown.autoExternal + sourceBreakdown.autoApi + sourceBreakdown.manual + sourceBreakdown.unscored;
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-screen-2xl mx-auto space-y-6">
       {usedFallback && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />

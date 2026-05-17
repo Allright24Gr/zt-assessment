@@ -355,7 +355,7 @@ export function NewAssessment() {
   };
 
   return (
-    <div className="w-full">
+    <div className="max-w-screen-2xl mx-auto">
       {/* Step Indicator */}
       <div className="flex items-center justify-center gap-4 mb-8">
         {[1, 2, 3].map((s) => (
@@ -477,7 +477,7 @@ export function NewAssessment() {
                     return (
                       <label
                         key={opt.key}
-                        className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                        className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
                           checked ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
                         }`}
                       >
@@ -514,7 +514,7 @@ export function NewAssessment() {
                     return (
                       <label
                         key={opt.key}
-                        className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                        className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
                           checked ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
                         }`}
                       >
@@ -551,7 +551,7 @@ export function NewAssessment() {
                     return (
                       <label
                         key={opt.key}
-                        className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                        className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
                           checked ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
                         }`}
                       >
@@ -583,7 +583,7 @@ export function NewAssessment() {
               <div>
                 <p className="mb-2 text-xs font-semibold text-gray-700">외부 자동 스캔 (도구 무관)</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <label className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
                     externalScanTools.nmap ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
                   }`}>
                     <input
@@ -597,7 +597,7 @@ export function NewAssessment() {
                       <p className="text-xs text-gray-500">네트워크/포트 외부 스캔</p>
                     </div>
                   </label>
-                  <label className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
                     externalScanTools.trivy ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
                   }`}>
                     <input

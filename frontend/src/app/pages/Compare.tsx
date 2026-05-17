@@ -111,7 +111,7 @@ export function Compare() {
   const { from, to, overall_delta, improved, regressed, new_in_to, unchanged_count } = data;
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-screen-2xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <GitCompare size={22} className="text-blue-600" />

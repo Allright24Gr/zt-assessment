@@ -170,7 +170,7 @@ export function Dashboard() {
   }, [trendPoints, apiSessions, avgScore]);
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-screen-2xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <h1>Dashboard</h1>
         {user?.role === "admin" && (
@@ -340,8 +340,8 @@ export function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_0.9fr] gap-6">
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <TrendingUp className="text-blue-600" size={20} />
@@ -352,7 +352,7 @@ export function Dashboard() {
               목표 평균 {targetAvg}
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={320}>
+          <ResponsiveContainer width="100%" height={420}>
             <RadarChart data={radarData}>
               <PolarGrid stroke="#e5e7eb" />
               <PolarAngleAxis dataKey="pillar" stroke="#6b7280" tick={{ fontSize: 12 }} />
