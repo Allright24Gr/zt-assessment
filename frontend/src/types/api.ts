@@ -85,42 +85,6 @@ export interface WazuhCreds {
   api_pass?: string;
 }
 
-export interface EntraCreds {
-  tenant_id?: string;
-  client_id?: string;
-  client_secret?: string;
-}
-
-export interface OktaCreds {
-  domain?: string;
-  api_token?: string;
-}
-
-export interface SplunkCreds {
-  url?: string;
-  user?: string;
-  password?: string;
-}
-
-export interface LdapCreds {
-  url?: string;
-  bind_dn?: string;
-  bind_password?: string;
-  base_dn?: string;
-}
-
-export interface CrowdstrikeCreds {
-  api_base?: string;
-  client_id?: string;
-  client_secret?: string;
-}
-
-export interface DefenderCreds {
-  tenant_id?: string;
-  client_id?: string;
-  client_secret?: string;
-}
-
 // 인증 토큰 (P0-1) — 백엔드 login/register 응답의 tokens 필드 형식
 export interface TokenPair {
   access_token: string;
@@ -213,14 +177,13 @@ export interface ManualEvidenceUploadResponse {
   uploaded_at: string;
 }
 
-export type IdpType = "keycloak" | "entra" | "okta" | "ldap" | "none";
-export type SiemType = "wazuh" | "splunk" | "elastic" | "none";
-export type EdrType = "crowdstrike" | "defender" | "none";
+// 4 오픈소스 도구만 운영 — 학생 프로젝트
+export type IdpType = "keycloak" | "none";
+export type SiemType = "wazuh" | "none";
 
 export interface ProfileSelect {
   idp_type: IdpType;
   siem_type: SiemType;
-  edr_type?: EdrType;
 }
 
 export interface AssessmentRunRequest {
@@ -240,12 +203,6 @@ export interface AssessmentRunRequest {
   scan_targets?: ScanTargets;
   keycloak_creds?: KeycloakCreds;
   wazuh_creds?: WazuhCreds;
-  entra_creds?: EntraCreds;
-  okta_creds?: OktaCreds;
-  splunk_creds?: SplunkCreds;
-  ldap_creds?: LdapCreds;
-  crowdstrike_creds?: CrowdstrikeCreds;
-  defender_creds?: DefenderCreds;
   profile_select?: ProfileSelect;
   /** "demo" | "live" — NewAssessment 토글. demo면 backend가 collector 실호출 없이 fake 결과 생성 */
   scan_mode?: "demo" | "live";

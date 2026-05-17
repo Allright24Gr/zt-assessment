@@ -1,4 +1,4 @@
-"""collector 매핑 회귀 방지 — 도구별 자동 매핑 개수 + item_id 유일성 검증.
+"""collector 매핑 회귀 방지 — 4 오픈소스 도구의 자동 매핑 개수 + item_id 유일성 검증.
 
 명시 매핑(_BASE_MAPPING_FNS) + collect_* docstring 기반 autodiscover 의 합산이
 collectors 모듈에 정의된 `collect_*` 함수 개수와 일치해야 한다.
@@ -17,9 +17,6 @@ from routers.assessment import _full_mapping
         ("wazuh",   122),
         ("nmap",     14),
         ("trivy",    11),
-        ("entra",    20),
-        ("okta",     15),
-        ("splunk",   15),
     ],
 )
 def test_full_mapping_count(tool, expected):
@@ -30,9 +27,7 @@ def test_full_mapping_count(tool, expected):
     )
 
 
-@pytest.mark.parametrize(
-    "tool", ["keycloak", "wazuh", "nmap", "trivy", "entra", "okta", "splunk"],
-)
+@pytest.mark.parametrize("tool", ["keycloak", "wazuh", "nmap", "trivy"])
 def test_item_id_unique_within_tool(tool):
     items = _full_mapping(tool)
     iids = [i[1] for i in items]

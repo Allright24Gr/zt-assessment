@@ -27,14 +27,6 @@ from routers.validators import (
     validate_trivy_image,
     validate_https_url,
     validate_cred_field,
-    validate_entra_tenant_id,
-    validate_okta_domain,
-    validate_ldap_url,
-    validate_ldap_dn,
-    validate_aws_access_key,
-    validate_aws_region,
-    validate_azure_subscription,
-    validate_cf_account_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,30 +46,14 @@ SHUFFLE_WF = {
     "wazuh":    os.getenv("SHUFFLE_WORKFLOW_WAZUH",    ""),
     "nmap":     os.getenv("SHUFFLE_WORKFLOW_NMAP",     ""),
     "trivy":    os.getenv("SHUFFLE_WORKFLOW_TRIVY",    ""),
-    "entra":    os.getenv("SHUFFLE_WORKFLOW_ENTRA",    ""),
-    "okta":     os.getenv("SHUFFLE_WORKFLOW_OKTA",     ""),
-    "splunk":   os.getenv("SHUFFLE_WORKFLOW_SPLUNK",   ""),
-    "ldap":     os.getenv("SHUFFLE_WORKFLOW_LDAP",     ""),
-    "crowdstrike": os.getenv("SHUFFLE_WORKFLOW_CROWDSTRIKE", ""),
-    "defender":    os.getenv("SHUFFLE_WORKFLOW_DEFENDER",    ""),
-    "aws_securityhub":  os.getenv("SHUFFLE_WORKFLOW_AWS_SECURITYHUB",  ""),
-    "azure_defender":   os.getenv("SHUFFLE_WORKFLOW_AZURE_DEFENDER",   ""),
-    "zscaler":          os.getenv("SHUFFLE_WORKFLOW_ZSCALER",          ""),
-    "cloudflare_access":os.getenv("SHUFFLE_WORKFLOW_CLOUDFLARE_ACCESS",""),
 }
+# 학생 프로젝트 — 라이선스 비용 없이 실제 검증 가능한 4개 오픈소스만 사용.
+# IdP=Keycloak / SIEM=Wazuh / 외부 스캔=Nmap, Trivy.
 ALL_TOOLS = (
-    # IdP
-    "keycloak", "entra", "okta", "ldap",
-    # SIEM
-    "wazuh", "splunk",
-    # EDR
-    "crowdstrike", "defender",
-    # 클라우드 자세 (B-6 / B-7')
-    "aws_securityhub", "azure_defender",
-    # ZTNA (B-8)
-    "zscaler", "cloudflare_access",
-    # 외부 스캔 (도구 무관)
-    "nmap", "trivy",
+    "keycloak",
+    "wazuh",
+    "nmap",
+    "trivy",
 )
 
 
@@ -119,81 +95,10 @@ def _mask_creds(extra: dict) -> dict:
         val = safe.get(key)
         if isinstance(val, dict):
             masked = dict(val)
-            for pw_field in ("admin_pass", "api_pass"):
+            for pw_field in ("admin_pass", "api_pass", "password"):
                 if masked.get(pw_field):
                     masked[pw_field] = "***"
             safe[key] = masked
-    # entra_creds: client_secret 마스킹 (tenant_id/client_id 는 식별자라 노출 가능)
-    ec = safe.get("entra_creds")
-    if isinstance(ec, dict):
-        masked = dict(ec)
-        if masked.get("client_secret"):
-            masked["client_secret"] = "***"
-        safe["entra_creds"] = masked
-    # okta_creds: api_token 마스킹 (domain 은 식별자라 노출 가능)
-    oc = safe.get("okta_creds")
-    if isinstance(oc, dict):
-        masked = dict(oc)
-        if masked.get("api_token"):
-            masked["api_token"] = "***"
-        safe["okta_creds"] = masked
-    # splunk_creds: password / token 마스킹 (url/user 는 식별자)
-    sc = safe.get("splunk_creds")
-    if isinstance(sc, dict):
-        masked = dict(sc)
-        for pw_field in ("password", "token"):
-            if masked.get(pw_field):
-                masked[pw_field] = "***"
-        safe["splunk_creds"] = masked
-    # ldap_creds: bind_password 마스킹 (url/bind_dn/base_dn 은 식별자)
-    lc = safe.get("ldap_creds")
-    if isinstance(lc, dict):
-        masked = dict(lc)
-        if masked.get("bind_password"):
-            masked["bind_password"] = "***"
-        safe["ldap_creds"] = masked
-    # crowdstrike_creds: client_secret 마스킹 (api_base/client_id 는 식별자)
-    cs = safe.get("crowdstrike_creds")
-    if isinstance(cs, dict):
-        masked = dict(cs)
-        if masked.get("client_secret"):
-            masked["client_secret"] = "***"
-        safe["crowdstrike_creds"] = masked
-    # defender_creds: client_secret 마스킹 (tenant_id/client_id 는 식별자)
-    dc = safe.get("defender_creds")
-    if isinstance(dc, dict):
-        masked = dict(dc)
-        if masked.get("client_secret"):
-            masked["client_secret"] = "***"
-        safe["defender_creds"] = masked
-    # aws_creds: aws_secret_access_key 마스킹 (access_key_id/region 은 식별자)
-    aws = safe.get("aws_creds")
-    if isinstance(aws, dict):
-        masked = dict(aws)
-        if masked.get("aws_secret_access_key"):
-            masked["aws_secret_access_key"] = "***"
-        safe["aws_creds"] = masked
-    # azure_defender_creds: client_secret 마스킹 (tenant_id/client_id/subscription_id 는 식별자)
-    az = safe.get("azure_defender_creds")
-    if isinstance(az, dict):
-        masked = dict(az)
-        if masked.get("client_secret"):
-            masked["client_secret"] = "***"
-        safe["azure_defender_creds"] = masked
-    # zscaler_creds: client_secret 마스킹 (api_base/client_id/customer_id 는 식별자)
-    zs = safe.get("zscaler_creds")
-    if isinstance(zs, dict):
-        masked = dict(zs)
-        if masked.get("client_secret"):
-            masked["client_secret"] = "***"
-        safe["zscaler_creds"] = masked
-    # cloudflare_creds: api_token 마스킹 (account_id 는 식별자)
-    cf = safe.get("cloudflare_creds")
-    if isinstance(cf, dict):
-        masked = dict(cf)
-        if masked.get("api_token"):
-            masked["api_token"] = "***"
-        safe["cloudflare_creds"] = masked
     return safe
 
 
@@ -209,32 +114,12 @@ def _store_session_secrets(
     session_id: int,
     kc_creds: dict,
     wz_creds: dict,
-    entra_creds: dict = None,
-    okta_creds: dict = None,
-    splunk_creds: dict = None,
-    ldap_creds: dict = None,
-    crowdstrike_creds: dict = None,
-    defender_creds: dict = None,
-    aws_creds: dict = None,
-    azure_defender_creds: dict = None,
-    zscaler_creds: dict = None,
-    cloudflare_creds: dict = None,
 ) -> None:
     """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
     with _session_creds_lock:
         _session_creds_store[session_id] = {
-            "keycloak":          dict(kc_creds or {}),
-            "wazuh":             dict(wz_creds or {}),
-            "entra":             dict(entra_creds or {}),
-            "okta":              dict(okta_creds or {}),
-            "splunk":            dict(splunk_creds or {}),
-            "ldap":              dict(ldap_creds or {}),
-            "crowdstrike":       dict(crowdstrike_creds or {}),
-            "defender":          dict(defender_creds or {}),
-            "aws_securityhub":   dict(aws_creds or {}),
-            "azure_defender":    dict(azure_defender_creds or {}),
-            "zscaler":           dict(zscaler_creds or {}),
-            "cloudflare_access": dict(cloudflare_creds or {}),
+            "keycloak": dict(kc_creds or {}),
+            "wazuh":    dict(wz_creds or {}),
         }
 
 
@@ -331,17 +216,15 @@ def _build_session_errors(db: Session, session_id: int) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ProfileSelect(BaseModel):
-    """Step 0 사전 환경 프로파일링 — 사용자가 쓰는 IdP/SIEM/EDR/클라우드/ZTNA 종류.
+    """Step 0 사전 환경 프로파일링 — 사용자 환경의 IdP/SIEM 종류.
 
+    4개 오픈소스 도구만 지원 (학생 프로젝트, 라이선스 비용 0).
     값에 따라 _resolve_supported_tools 가 tool_scope 를 자동 보정한다.
-    예: idp_type='entra' → keycloak collector 비활성, entra 매핑만 평가.
-         cloud_type='aws' → azure_defender 비활성, aws_securityhub 만.
+    예: idp_type='keycloak' → keycloak 매핑 활성.
+         idp_type='none' / 기타 → 자동 항목 수동 폴백.
     """
-    idp_type:   Optional[str] = None  # keycloak | entra | okta | ldap | none
-    siem_type:  Optional[str] = None  # wazuh | splunk | elastic | none
-    edr_type:   Optional[str] = None  # crowdstrike | defender | none
-    cloud_type: Optional[str] = None  # aws | azure | none      (B-6 / B-7')
-    ztna_type:  Optional[str] = None  # zscaler | cloudflare | none (B-8)
+    idp_type:   Optional[str] = None  # keycloak | none
+    siem_type:  Optional[str] = None  # wazuh | none
 
 
 class AssessmentRunRequest(BaseModel):
@@ -363,78 +246,27 @@ class AssessmentRunRequest(BaseModel):
     # 외부 스캔 대상 (사용자가 NewAssessment에서 직접 입력)
     # 예: {"nmap": "scanme.nmap.org", "trivy": "nginx:1.25"}
     scan_targets: dict = Field(default_factory=dict)
-    # 사용자 환경 IdP/SIEM 자격 (NewAssessment에서 직접 입력)
+    # 사용자 환경 IdP/SIEM 자격 (NewAssessment에서 직접 입력) — 4 도구만
     # 예: {"url": "https://idp.example.com", "admin_user": "...", "admin_pass": "..."}
     keycloak_creds: Optional[dict] = None
     # 예: {"url": "https://wazuh.example.com:55000", "api_user": "...", "api_pass": "..."}
     wazuh_creds: Optional[dict] = None
-    # 예: {"tenant_id": "<guid or domain>", "client_id": "...", "client_secret": "..."}
-    entra_creds: Optional[dict] = None
-    # 예: {"domain": "dev-12345.okta.com", "api_token": "<SSWS token>"}
-    okta_creds: Optional[dict] = None
-    # 예: {"url": "https://splunk.example.com:8089", "user": "...", "password": "..."}
-    splunk_creds: Optional[dict] = None
-    # 예: {"url": "ldap://dc.example.local:389", "bind_dn": "CN=zt,DC=example,DC=local",
-    #      "bind_password": "...", "base_dn": "DC=example,DC=local"}
-    ldap_creds: Optional[dict] = None
-    # 예: {"api_base": "https://api.crowdstrike.com", "client_id": "...", "client_secret": "..."}
-    crowdstrike_creds: Optional[dict] = None
-    # 예: {"tenant_id": "<guid>", "client_id": "...", "client_secret": "..."}
-    defender_creds: Optional[dict] = None
-    # B-6 AWS Security Hub
-    # 예: {"aws_access_key_id": "AKIA...", "aws_secret_access_key": "...", "aws_region": "ap-northeast-2"}
-    aws_creds: Optional[dict] = None
-    # B-7' Azure Defender for Cloud
-    # 예: {"tenant_id": "<guid>", "client_id": "...", "client_secret": "...", "subscription_id": "<guid>"}
-    azure_defender_creds: Optional[dict] = None
-    # B-8 Zscaler Internet Access (OneAPI)
-    # 예: {"api_base": "https://api.zsapi.net", "client_id": "...", "client_secret": "...", "customer_id": "..."}
-    zscaler_creds: Optional[dict] = None
-    # B-8 Cloudflare Access
-    # 예: {"api_token": "<bearer>", "account_id": "<32 hex>"}
-    cloudflare_creds: Optional[dict] = None
     # 시연/실 스캔 토글 — "demo" 면 collector 실호출 없이 fake 결과 생성, "live" 면 실제 외부 호출.
     # frontend의 scanMode 토글(NewAssessment Step 1)에서 전달.
     scan_mode: Optional[str] = "demo"
 
 
-# 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑. 신규 도구 자동화가 생기면 여기에 추가.
+# 4 오픈소스 도구만 운영. 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑.
 _IDP_TOOL_OF = {
     "keycloak": "keycloak",
-    "entra":    "entra",
-    "okta":     "okta",
-    "ldap":     "ldap",
-    # "none" / 미선택 → IdP 자동 도구 전체 비활성 (전부 수동 폴백)
+    # "none" / 미선택 → IdP 자동 도구 비활성 (수동 폴백)
 }
 _SIEM_TOOL_OF = {
-    "wazuh":  "wazuh",
-    "splunk": "splunk",
-    # "elastic": "elastic",
+    "wazuh": "wazuh",
+    # "none" / 미선택 → SIEM 자동 도구 비활성 (수동 폴백)
 }
-_IDP_AUTO_TOOLS = {"keycloak", "entra", "okta", "ldap"}
-_SIEM_AUTO_TOOLS = {"wazuh", "splunk"}
-
-# EDR(엔드포인트 위협 탐지·대응) — Pillar 2 핵심. IdP/SIEM 과 같은 단일 선택 패턴.
-_EDR_TOOL_OF = {
-    "crowdstrike": "crowdstrike",
-    "defender":    "defender",
-    # "none" / 미선택 → EDR 자동 도구 전체 비활성 (수동 폴백)
-}
-_EDR_AUTO_TOOLS = {"crowdstrike", "defender"}
-
-# 클라우드 자세(CSPM) — AWS Security Hub / Azure Defender for Cloud (B-6 / B-7')
-_CLOUD_TOOL_OF = {
-    "aws":   "aws_securityhub",
-    "azure": "azure_defender",
-}
-_CLOUD_AUTO_TOOLS = {"aws_securityhub", "azure_defender"}
-
-# ZTNA(Zero Trust Network Access) — Zscaler / Cloudflare Access (B-8)
-_ZTNA_TOOL_OF = {
-    "zscaler":    "zscaler",
-    "cloudflare": "cloudflare_access",
-}
-_ZTNA_AUTO_TOOLS = {"zscaler", "cloudflare_access"}
+_IDP_AUTO_TOOLS = {"keycloak"}
+_SIEM_AUTO_TOOLS = {"wazuh"}
 
 
 def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) -> dict:
@@ -447,25 +279,16 @@ def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) ->
     if not requested:
         requested = {t: True for t in ALL_TOOLS}
     ps = profile_select or {}
-    sel_idp   = (ps.get("idp_type")   or "").lower()
-    sel_siem  = (ps.get("siem_type")  or "").lower()
-    sel_edr   = (ps.get("edr_type")   or "").lower()
-    sel_cloud = (ps.get("cloud_type") or "").lower()
-    sel_ztna  = (ps.get("ztna_type")  or "").lower()
-    allowed_idp   = _IDP_TOOL_OF.get(sel_idp)
-    allowed_siem  = _SIEM_TOOL_OF.get(sel_siem)
-    allowed_edr   = _EDR_TOOL_OF.get(sel_edr)
-    allowed_cloud = _CLOUD_TOOL_OF.get(sel_cloud)
-    allowed_ztna  = _ZTNA_TOOL_OF.get(sel_ztna)
+    sel_idp  = (ps.get("idp_type")  or "").lower()
+    sel_siem = (ps.get("siem_type") or "").lower()
+    allowed_idp  = _IDP_TOOL_OF.get(sel_idp)
+    allowed_siem = _SIEM_TOOL_OF.get(sel_siem)
 
     result: dict = {}
     for t in ALL_TOOLS:
         ok = bool(requested.get(t))
-        if t in _IDP_AUTO_TOOLS   and sel_idp   and allowed_idp   != t: ok = False
-        if t in _SIEM_AUTO_TOOLS  and sel_siem  and allowed_siem  != t: ok = False
-        if t in _EDR_AUTO_TOOLS   and sel_edr   and allowed_edr   != t: ok = False
-        if t in _CLOUD_AUTO_TOOLS and sel_cloud and allowed_cloud != t: ok = False
-        if t in _ZTNA_AUTO_TOOLS  and sel_ztna  and allowed_ztna  != t: ok = False
+        if t in _IDP_AUTO_TOOLS  and sel_idp  and allowed_idp  != t: ok = False
+        if t in _SIEM_AUTO_TOOLS and sel_siem and allowed_siem != t: ok = False
         result[t] = ok
     return result
 
@@ -531,138 +354,6 @@ def run_assessment(
                 wz_in.get("api_pass") or "", "wazuh_creds.api_pass"
             )
 
-        en_in = dict(req.entra_creds or {}) if req.entra_creds else {}
-        if en_in:
-            en_in["tenant_id"] = validate_entra_tenant_id(
-                en_in.get("tenant_id") or "", "entra_creds.tenant_id"
-            )
-            en_in["client_id"] = validate_cred_field(
-                en_in.get("client_id") or "", "entra_creds.client_id"
-            )
-            en_in["client_secret"] = validate_cred_field(
-                en_in.get("client_secret") or "", "entra_creds.client_secret", max_len=200
-            )
-
-        ok_in = dict(req.okta_creds or {}) if req.okta_creds else {}
-        if ok_in:
-            ok_in["domain"] = validate_okta_domain(
-                ok_in.get("domain") or "", "okta_creds.domain"
-            )
-            ok_in["api_token"] = validate_cred_field(
-                ok_in.get("api_token") or "", "okta_creds.api_token", max_len=200
-            )
-
-        sp_in = dict(req.splunk_creds or {}) if req.splunk_creds else {}
-        if sp_in:
-            sp_in["url"] = validate_https_url(sp_in.get("url") or "", "splunk_creds.url")
-            sp_in["user"] = validate_cred_field(
-                sp_in.get("user") or "", "splunk_creds.user"
-            )
-            sp_in["password"] = validate_cred_field(
-                sp_in.get("password") or "", "splunk_creds.password", max_len=200
-            )
-            if sp_in.get("token"):
-                sp_in["token"] = validate_cred_field(
-                    sp_in.get("token") or "", "splunk_creds.token", max_len=200
-                )
-
-        ld_in = dict(req.ldap_creds or {}) if req.ldap_creds else {}
-        if ld_in:
-            ld_in["url"] = validate_ldap_url(ld_in.get("url") or "", "ldap_creds.url")
-            ld_in["bind_dn"] = validate_ldap_dn(
-                ld_in.get("bind_dn") or "", "ldap_creds.bind_dn"
-            )
-            ld_in["base_dn"] = validate_ldap_dn(
-                ld_in.get("base_dn") or "", "ldap_creds.base_dn"
-            )
-            ld_in["bind_password"] = validate_cred_field(
-                ld_in.get("bind_password") or "", "ldap_creds.bind_password", max_len=200
-            )
-
-        cs_in = dict(req.crowdstrike_creds or {}) if req.crowdstrike_creds else {}
-        if cs_in:
-            cs_in["api_base"] = validate_https_url(
-                cs_in.get("api_base") or "", "crowdstrike_creds.api_base"
-            )
-            cs_in["client_id"] = validate_cred_field(
-                cs_in.get("client_id") or "", "crowdstrike_creds.client_id"
-            )
-            cs_in["client_secret"] = validate_cred_field(
-                cs_in.get("client_secret") or "", "crowdstrike_creds.client_secret",
-                max_len=200,
-            )
-
-        df_in = dict(req.defender_creds or {}) if req.defender_creds else {}
-        if df_in:
-            df_in["tenant_id"] = validate_entra_tenant_id(
-                df_in.get("tenant_id") or "", "defender_creds.tenant_id"
-            )
-            df_in["client_id"] = validate_cred_field(
-                df_in.get("client_id") or "", "defender_creds.client_id"
-            )
-            df_in["client_secret"] = validate_cred_field(
-                df_in.get("client_secret") or "", "defender_creds.client_secret",
-                max_len=200,
-            )
-
-        # B-6 AWS Security Hub
-        aws_in = dict(req.aws_creds or {}) if req.aws_creds else {}
-        if aws_in:
-            aws_in["aws_access_key_id"] = validate_aws_access_key(
-                aws_in.get("aws_access_key_id") or "", "aws_creds.aws_access_key_id"
-            )
-            aws_in["aws_secret_access_key"] = validate_cred_field(
-                aws_in.get("aws_secret_access_key") or "", "aws_creds.aws_secret_access_key",
-                max_len=200,
-            )
-            aws_in["aws_region"] = validate_aws_region(
-                aws_in.get("aws_region") or "", "aws_creds.aws_region"
-            )
-
-        # B-7' Azure Defender for Cloud
-        az_in = dict(req.azure_defender_creds or {}) if req.azure_defender_creds else {}
-        if az_in:
-            az_in["tenant_id"] = validate_entra_tenant_id(
-                az_in.get("tenant_id") or "", "azure_defender_creds.tenant_id"
-            )
-            az_in["client_id"] = validate_cred_field(
-                az_in.get("client_id") or "", "azure_defender_creds.client_id"
-            )
-            az_in["client_secret"] = validate_cred_field(
-                az_in.get("client_secret") or "", "azure_defender_creds.client_secret",
-                max_len=200,
-            )
-            az_in["subscription_id"] = validate_azure_subscription(
-                az_in.get("subscription_id") or "", "azure_defender_creds.subscription_id"
-            )
-
-        # B-8 Zscaler
-        zs_in = dict(req.zscaler_creds or {}) if req.zscaler_creds else {}
-        if zs_in:
-            zs_in["api_base"] = validate_https_url(
-                zs_in.get("api_base") or "", "zscaler_creds.api_base"
-            )
-            zs_in["client_id"] = validate_cred_field(
-                zs_in.get("client_id") or "", "zscaler_creds.client_id"
-            )
-            zs_in["client_secret"] = validate_cred_field(
-                zs_in.get("client_secret") or "", "zscaler_creds.client_secret",
-                max_len=200,
-            )
-            if zs_in.get("customer_id"):
-                zs_in["customer_id"] = validate_cred_field(
-                    zs_in.get("customer_id") or "", "zscaler_creds.customer_id"
-                )
-
-        # B-8 Cloudflare Access
-        cf_in = dict(req.cloudflare_creds or {}) if req.cloudflare_creds else {}
-        if cf_in:
-            cf_in["api_token"] = validate_cred_field(
-                cf_in.get("api_token") or "", "cloudflare_creds.api_token", max_len=200
-            )
-            cf_in["account_id"] = validate_cf_account_id(
-                cf_in.get("account_id") or "", "cloudflare_creds.account_id"
-            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -705,20 +396,10 @@ def run_assessment(
     live_mode = (req.scan_mode or "demo").strip().lower() == "live"
     if live_mode:
         creds_required = {
-            "keycloak":          bool(kc_in.get("url") and kc_in.get("admin_pass")),
-            "wazuh":             bool(wz_in.get("url") and wz_in.get("api_pass")),
-            "entra":             bool(en_in.get("tenant_id") and en_in.get("client_secret")),
-            "okta":              bool(ok_in.get("domain") and ok_in.get("api_token")),
-            "splunk":            bool(sp_in.get("url") and (sp_in.get("password") or sp_in.get("token"))),
-            "ldap":              bool(ld_in.get("url") and ld_in.get("bind_password")),
-            "crowdstrike":       bool(cs_in.get("client_id") and cs_in.get("client_secret")),
-            "defender":          bool(df_in.get("tenant_id") and df_in.get("client_secret")),
-            "aws_securityhub":   bool(aws_in.get("aws_access_key_id") and aws_in.get("aws_secret_access_key")),
-            "azure_defender":    bool(az_in.get("tenant_id") and az_in.get("client_secret") and az_in.get("subscription_id")),
-            "zscaler":           bool(zs_in.get("api_base") and zs_in.get("client_secret")),
-            "cloudflare_access": bool(cf_in.get("api_token") and cf_in.get("account_id")),
-            "nmap":              bool((scan_targets_in.get("nmap") or "").strip()),
-            "trivy":             bool((scan_targets_in.get("trivy") or "").strip()),
+            "keycloak": bool(kc_in.get("url") and kc_in.get("admin_pass")),
+            "wazuh":    bool(wz_in.get("url") and wz_in.get("api_pass")),
+            "nmap":     bool((scan_targets_in.get("nmap") or "").strip()),
+            "trivy":    bool((scan_targets_in.get("trivy") or "").strip()),
         }
         missing = [t for t in selected_tools if not creds_required.get(t, True)]
         if missing:
@@ -735,28 +416,6 @@ def run_assessment(
     # URL/사용자명만 extra에 남기고, 비밀번호는 _store_session_secrets 로 메모리에만 보관.
     kc_meta = {k: v for k, v in kc_in.items() if k in ("url", "admin_user") and v}
     wz_meta = {k: v for k, v in wz_in.items() if k in ("url", "api_user") and v}
-    # entra: client_secret 은 DB에 저장하지 않는다. tenant_id/client_id 만 extra 에 남김.
-    en_meta = {k: v for k, v in en_in.items() if k in ("tenant_id", "client_id") and v}
-    # okta: api_token 은 DB 저장 금지. domain 만 extra 에 남김.
-    ok_meta = {k: v for k, v in ok_in.items() if k in ("domain",) and v}
-    # splunk: password/token 은 DB 저장 금지. url/user 만 extra 에 남김.
-    sp_meta = {k: v for k, v in sp_in.items() if k in ("url", "user") and v}
-    # ldap: bind_password 는 DB 저장 금지. url/bind_dn/base_dn 만 extra 에 남김.
-    ld_meta = {k: v for k, v in ld_in.items() if k in ("url", "bind_dn", "base_dn") and v}
-    # crowdstrike: client_secret 은 DB 저장 금지. api_base/client_id 만 extra 에 남김.
-    cs_meta = {k: v for k, v in cs_in.items() if k in ("api_base", "client_id") and v}
-    # defender: client_secret 은 DB 저장 금지. tenant_id/client_id 만 extra 에 남김.
-    df_meta = {k: v for k, v in df_in.items() if k in ("tenant_id", "client_id") and v}
-    # B-6 AWS: secret 은 DB 저장 금지. access_key/region 만 extra 에 남김.
-    aws_meta = {k: v for k, v in aws_in.items() if k in ("aws_access_key_id", "aws_region") and v}
-    # B-7' Azure Defender: client_secret 은 DB 저장 금지. tenant_id/client_id/subscription_id 만.
-    az_meta = {k: v for k, v in az_in.items()
-               if k in ("tenant_id", "client_id", "subscription_id") and v}
-    # B-8 Zscaler: client_secret 은 DB 저장 금지. api_base/client_id/customer_id 만.
-    zs_meta = {k: v for k, v in zs_in.items()
-               if k in ("api_base", "client_id", "customer_id") and v}
-    # B-8 Cloudflare Access: api_token 은 DB 저장 금지. account_id 만.
-    cf_meta = {k: v for k, v in cf_in.items() if k in ("account_id",) and v}
     # scan_mode 정규화. frontend의 demo/live 토글. 미지정 시 안전한 demo.
     scan_mode = (req.scan_mode or "demo").strip().lower()
     if scan_mode not in ("demo", "live"):
@@ -773,16 +432,6 @@ def run_assessment(
         "scan_targets": scan_targets_in,
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
-        "entra_creds":    en_meta,
-        "okta_creds":     ok_meta,
-        "splunk_creds":   sp_meta,
-        "ldap_creds":     ld_meta,
-        "crowdstrike_creds": cs_meta,
-        "defender_creds":    df_meta,
-        "aws_creds":          aws_meta,
-        "azure_defender_creds": az_meta,
-        "zscaler_creds":      zs_meta,
-        "cloudflare_creds":   cf_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
     }
@@ -800,10 +449,7 @@ def run_assessment(
     db.refresh(session)
 
     # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
-    _store_session_secrets(
-        session.session_id, kc_in, wz_in, en_in, ok_in, sp_in, ld_in,
-        cs_in, df_in, aws_in, az_in, zs_in, cf_in,
-    )
+    _store_session_secrets(session.session_id, kc_in, wz_in)
 
     # Shuffle 경로 우선, 미설정 시 직접 collector 실행
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
@@ -1414,284 +1060,6 @@ def _nm_mapping():
     ]
 
 
-def _entra_mapping():
-    from collectors.entra_collector import (
-        collect_user_role_ratio, collect_idp_inventory, collect_idp_registered,
-        collect_active_idp_multi, collect_mfa_required, collect_otp_flow,
-        collect_webauthn_status, collect_conditional_auth, collect_session_policy,
-        collect_stepup_auth, collect_realm_count, collect_icam_inventory,
-        collect_webauthn_users, collect_authz_clients, collect_rbac_policy,
-        collect_aggregate_policy, collect_resource_permission, collect_password_policy,
-        collect_central_authz_policy, collect_abac_policy,
-    )
-    return [
-        (collect_user_role_ratio,      "1.1.1.2_1", "초기"),
-        (collect_idp_inventory,        "1.1.1.3_1", "향상"),
-        (collect_idp_registered,       "1.1.2.1_1", "기존"),
-        (collect_active_idp_multi,     "1.1.2.2_1", "초기"),
-        (collect_mfa_required,         "1.2.1.1_1", "기존"),
-        (collect_otp_flow,             "1.2.1.2_1", "초기"),
-        (collect_webauthn_status,      "1.2.1.2_2", "초기"),
-        (collect_conditional_auth,     "1.2.1.3_1", "향상"),
-        (collect_session_policy,       "1.2.2.1_1", "기존"),
-        (collect_stepup_auth,          "1.2.2.2_1", "초기"),
-        (collect_realm_count,          "1.3.1.1_1", "기존"),
-        (collect_icam_inventory,       "1.3.1.2_1", "초기"),
-        # 1.3.2.2_1 의 4번째 segment 가 2 → "초기"
-        (collect_webauthn_users,       "1.3.2.2_1", "초기"),
-        (collect_authz_clients,        "1.4.1.1_3", "기존"),
-        (collect_rbac_policy,          "1.4.1.2_1", "초기"),
-        (collect_aggregate_policy,     "1.4.1.3_2", "향상"),
-        (collect_resource_permission,  "1.4.1.3_3", "향상"),
-        (collect_password_policy,      "1.4.2.2_1", "초기"),
-        (collect_central_authz_policy, "4.1.1.2_1", "초기"),
-        (collect_abac_policy,          "4.1.1.3_1", "향상"),
-    ]
-
-
-def _okta_mapping():
-    from collectors.okta_collector import (
-        collect_user_role_ratio, collect_idp_inventory, collect_idp_registered,
-        collect_active_idp_multi, collect_mfa_required, collect_otp_flow,
-        collect_webauthn_status, collect_conditional_auth, collect_session_policy,
-        collect_stepup_auth, collect_realm_count, collect_icam_inventory,
-        collect_authz_clients, collect_rbac_policy, collect_password_policy,
-    )
-    return [
-        (collect_user_role_ratio,   "1.1.1.2_1", "초기"),
-        (collect_idp_inventory,     "1.1.1.3_1", "향상"),
-        (collect_idp_registered,    "1.1.2.1_1", "기존"),
-        (collect_active_idp_multi,  "1.1.2.2_1", "초기"),
-        (collect_mfa_required,      "1.2.1.1_1", "기존"),
-        (collect_otp_flow,          "1.2.1.2_1", "초기"),
-        (collect_webauthn_status,   "1.2.1.2_2", "초기"),
-        (collect_conditional_auth,  "1.2.1.3_1", "향상"),
-        (collect_session_policy,    "1.2.2.1_1", "기존"),
-        (collect_stepup_auth,       "1.2.2.2_1", "초기"),
-        (collect_realm_count,       "1.3.1.1_1", "기존"),
-        (collect_icam_inventory,    "1.3.1.2_1", "초기"),
-        (collect_authz_clients,     "1.4.1.1_3", "기존"),
-        (collect_rbac_policy,       "1.4.1.2_1", "초기"),
-        (collect_password_policy,   "1.4.2.2_1", "초기"),
-    ]
-
-
-def _splunk_mapping():
-    from collectors.splunk_collector import (
-        collect_auth_failure_alerts, collect_active_response_auth,
-        collect_high_risk_alerts, collect_behavior_alerts, collect_activity_rules,
-        collect_privilege_change_alerts, collect_policy_violation_alerts,
-        collect_os_inventory, collect_agent_registration,
-        collect_segment_policy_alerts, collect_lateral_movement_alerts,
-        collect_ids_alerts, collect_realtime_threat_alerts,
-        collect_dlp_alerts, collect_threat_detection_alerts,
-    )
-    return [
-        (collect_auth_failure_alerts,     "1.1.1.3_2", "향상"),
-        (collect_active_response_auth,    "1.2.1.4_1", "최적화"),
-        (collect_high_risk_alerts,        "1.3.1.4_2", "최적화"),
-        (collect_behavior_alerts,         "1.3.2.3_1", "향상"),
-        (collect_activity_rules,          "1.4.1.1_1", "기존"),
-        (collect_privilege_change_alerts, "1.4.2.3_2", "향상"),
-        (collect_policy_violation_alerts, "2.1.1.2_2", "초기"),
-        (collect_os_inventory,            "2.2.1.1_1", "기존"),
-        (collect_agent_registration,      "2.3.1.1_2", "기존"),
-        # xlsx 정정(2026-05-17): 3.1.2.1_2 / 3.4.1.1_2 / 4.4.1.1_2 / 5.2.1.4_2 는
-        # xlsx에서 "수동" 또는 존재하지 않는 item_id → 가까운 자동 항목으로 재매핑.
-        (collect_segment_policy_alerts,   "3.1.2.3_1", "향상"),
-        (collect_lateral_movement_alerts, "3.4.1.3_1", "향상"),
-        (collect_ids_alerts,              "4.3.1.3_2", "향상"),
-        (collect_realtime_threat_alerts,  "4.4.1.3_2", "향상"),
-        (collect_dlp_alerts,              "5.1.1.4_1", "최적화"),
-        (collect_threat_detection_alerts, "5.2.1.4_1", "최적화"),
-    ]
-
-
-def _ldap_mapping():
-    from collectors.ldap_collector import (
-        collect_user_role_ratio, collect_idp_inventory, collect_idp_registered,
-        collect_active_idp_multi, collect_mfa_required, collect_conditional_auth,
-        collect_session_policy, collect_stepup_auth, collect_realm_count,
-        collect_icam_inventory, collect_authz_clients, collect_rbac_policy,
-        collect_password_policy, collect_role_change_events,
-        collect_central_authz_policy,
-    )
-    return [
-        (collect_user_role_ratio,      "1.1.1.2_1", "초기"),
-        (collect_idp_inventory,        "1.1.1.3_1", "향상"),
-        (collect_idp_registered,       "1.1.2.1_1", "기존"),
-        (collect_active_idp_multi,     "1.1.2.2_1", "초기"),
-        (collect_mfa_required,         "1.2.1.1_1", "기존"),
-        (collect_conditional_auth,     "1.2.1.3_1", "향상"),
-        (collect_session_policy,       "1.2.2.1_1", "기존"),
-        (collect_stepup_auth,          "1.2.2.2_1", "초기"),
-        (collect_realm_count,          "1.3.1.1_1", "기존"),
-        (collect_icam_inventory,       "1.3.1.2_1", "초기"),
-        (collect_authz_clients,        "1.4.1.1_3", "기존"),
-        (collect_rbac_policy,          "1.4.1.2_1", "초기"),
-        (collect_password_policy,      "1.4.2.2_1", "초기"),
-        (collect_role_change_events,   "1.4.2.2_2", "초기"),
-        (collect_central_authz_policy, "4.1.1.2_1", "초기"),
-    ]
-
-
-def _crowdstrike_mapping():
-    from collectors.crowdstrike_collector import (
-        collect_endpoint_inventory, collect_agent_registration, collect_edr_agents,
-        collect_auto_block, collect_policy_violation_alerts,
-        collect_realtime_threat_alerts, collect_threat_detection_alerts,
-        collect_privilege_escalation_alerts, collect_lateral_movement_alerts,
-        collect_malware_blocked, collect_quarantine_actions,
-        collect_realtime_monitoring, collect_vuln_summary,
-        collect_critical_unfixed_vulns, collect_sca_access_control,
-    )
-    return [
-        (collect_endpoint_inventory,         "2.2.1.1_1", "기존"),
-        (collect_agent_registration,         "2.3.1.1_2", "기존"),
-        (collect_edr_agents,                 "2.3.1.2_1", "초기"),
-        (collect_auto_block,                 "2.2.1.4_1", "최적화"),
-        (collect_policy_violation_alerts,    "2.1.1.2_2", "초기"),
-        (collect_realtime_threat_alerts,     "4.4.1.3_2", "향상"),
-        (collect_threat_detection_alerts,    "5.2.1.4_1", "최적화"),
-        (collect_privilege_escalation_alerts,"1.4.2.3_2", "향상"),
-        (collect_lateral_movement_alerts,    "3.4.1.3_1", "향상"),
-        (collect_malware_blocked,            "2.1.1.3_1", "향상"),
-        (collect_quarantine_actions,         "2.4.2.2_1", "초기"),
-        (collect_realtime_monitoring,        "2.2.1.3_1", "향상"),
-        (collect_vuln_summary,               "5.5.2.2_1", "초기"),
-        (collect_critical_unfixed_vulns,     "5.5.1.3_1", "향상"),
-        (collect_sca_access_control,         "2.1.1.3_2", "향상"),
-    ]
-
-
-def _defender_mapping():
-    from collectors.defender_collector import (
-        collect_endpoint_inventory, collect_agent_registration, collect_edr_agents,
-        collect_policy_violation_alerts, collect_realtime_threat_alerts,
-        collect_threat_detection_alerts, collect_privilege_escalation_alerts,
-        collect_lateral_movement_alerts, collect_malware_blocked,
-        collect_auto_block, collect_vuln_summary, collect_critical_unfixed_vulns,
-        collect_realtime_monitoring, collect_active_response_auth,
-        collect_agent_keepalive,
-    )
-    return [
-        (collect_endpoint_inventory,          "2.2.1.1_1", "기존"),
-        (collect_agent_registration,          "2.3.1.1_2", "기존"),
-        (collect_edr_agents,                  "2.3.1.2_1", "초기"),
-        (collect_policy_violation_alerts,     "2.1.1.2_2", "초기"),
-        (collect_realtime_threat_alerts,      "4.4.1.3_2", "향상"),
-        (collect_threat_detection_alerts,     "5.2.1.4_1", "최적화"),
-        (collect_privilege_escalation_alerts, "1.4.2.3_2", "향상"),
-        (collect_lateral_movement_alerts,     "3.4.1.3_1", "향상"),
-        (collect_malware_blocked,             "2.1.1.3_1", "향상"),
-        (collect_auto_block,                  "2.2.1.4_1", "최적화"),
-        (collect_vuln_summary,                "5.5.2.2_1", "초기"),
-        (collect_critical_unfixed_vulns,      "5.5.1.3_1", "향상"),
-        (collect_realtime_monitoring,         "2.2.1.3_1", "향상"),
-        (collect_active_response_auth,        "1.2.1.4_1", "최적화"),
-        # collect_agent_keepalive: xlsx 2.3.1.1_3 없음 → 2.3.1.3_1 (자동 인벤토리 관리)로 재매핑
-        (collect_agent_keepalive,             "2.3.1.3_1", "향상"),
-    ]
-
-
-def _aws_securityhub_mapping():
-    from collectors.aws_security_hub_collector import (
-        collect_sca_compliance, collect_policy_violation_alerts,
-        collect_sca_auto_remediation, collect_agent_registration, collect_ids_alerts,
-        collect_threat_detection_alerts, collect_vuln_summary,
-        collect_critical_unfixed_vulns, collect_icam_inventory, collect_authz_clients,
-        collect_auto_block, collect_tls_services, collect_perimeter_model,
-        collect_central_authz_policy, collect_full_component_scan,
-    )
-    return [
-        (collect_sca_compliance,           "2.1.1.2_1", "초기"),
-        (collect_policy_violation_alerts,  "2.1.1.2_2", "초기"),
-        (collect_sca_auto_remediation,     "2.1.1.3_1", "향상"),
-        (collect_agent_registration,       "2.3.1.1_2", "기존"),
-        (collect_ids_alerts,               "4.3.1.3_2", "향상"),
-        (collect_threat_detection_alerts,  "5.2.1.4_1", "최적화"),
-        (collect_vuln_summary,             "5.5.2.2_1", "초기"),
-        (collect_critical_unfixed_vulns,   "5.5.1.3_1", "향상"),
-        (collect_icam_inventory,           "1.3.1.2_1", "초기"),
-        (collect_authz_clients,            "1.4.1.1_3", "기존"),
-        (collect_auto_block,               "2.2.1.4_1", "최적화"),
-        (collect_tls_services,             "3.3.1.1_2", "기존"),
-        (collect_perimeter_model,          "4.3.1.1_2", "기존"),
-        (collect_central_authz_policy,     "4.1.1.2_1", "초기"),
-        (collect_full_component_scan,      "5.4.1.3_4", "향상"),
-    ]
-
-
-def _azure_defender_mapping():
-    from collectors.azure_defender_cloud_collector import (
-        collect_sca_compliance, collect_policy_violation_alerts,
-        collect_realtime_threat_alerts, collect_threat_detection_alerts,
-        collect_vuln_summary, collect_critical_unfixed_vulns,
-        collect_endpoint_inventory, collect_sca_auto_remediation,
-        collect_auto_block, collect_ids_alerts, collect_icam_inventory,
-        collect_privilege_change_alerts, collect_rbac_policy,
-        collect_tls_services, collect_data_abac_policy,
-    )
-    return [
-        (collect_sca_compliance,           "2.1.1.2_1", "초기"),
-        (collect_policy_violation_alerts,  "2.1.1.2_2", "초기"),
-        (collect_realtime_threat_alerts,   "4.4.1.3_2", "향상"),
-        (collect_threat_detection_alerts,  "5.2.1.4_1", "최적화"),
-        (collect_vuln_summary,             "5.5.2.2_1", "초기"),
-        (collect_critical_unfixed_vulns,   "5.5.1.3_1", "향상"),
-        (collect_endpoint_inventory,       "2.2.1.1_1", "기존"),
-        (collect_sca_auto_remediation,     "2.1.1.3_1", "향상"),
-        (collect_auto_block,               "2.2.1.4_1", "최적화"),
-        (collect_ids_alerts,               "4.3.1.3_2", "향상"),
-        (collect_icam_inventory,           "1.3.1.2_1", "초기"),
-        (collect_privilege_change_alerts,  "1.4.2.3_2", "향상"),
-        (collect_rbac_policy,              "1.4.1.2_1", "초기"),
-        (collect_tls_services,             "3.3.1.1_2", "기존"),
-        (collect_data_abac_policy,         "6.2.1.3_1", "향상"),
-    ]
-
-
-def _zscaler_mapping():
-    from collectors.zscaler_collector import (
-        collect_subnet_topology, collect_micro_segment_ports, collect_tls_ratio,
-        collect_tls_services, collect_subnet_segmentation, collect_perimeter_model,
-        collect_dlp_alerts, collect_ids_alerts, collect_conditional_auth,
-        collect_central_authz_policy,
-    )
-    return [
-        (collect_subnet_topology,       "3.1.1.1_1", "기존"),
-        (collect_micro_segment_ports,   "3.1.2.1_1", "기존"),
-        (collect_tls_ratio,             "3.3.1.1_1", "기존"),
-        (collect_tls_services,          "3.3.1.1_2", "기존"),
-        (collect_subnet_segmentation,   "4.3.1.1_1", "기존"),
-        (collect_perimeter_model,       "4.3.1.1_2", "기존"),
-        (collect_dlp_alerts,            "5.1.1.4_1", "최적화"),
-        (collect_ids_alerts,            "4.3.1.3_2", "향상"),
-        (collect_conditional_auth,      "1.2.1.3_1", "향상"),
-        (collect_central_authz_policy,  "4.1.1.2_1", "초기"),
-    ]
-
-
-def _cloudflare_access_mapping():
-    from collectors.cloudflare_access_collector import (
-        collect_idp_inventory, collect_mfa_required, collect_conditional_auth,
-        collect_authz_clients, collect_central_authz_policy, collect_perimeter_model,
-        collect_ids_alerts, collect_tls_ratio, collect_session_policy,
-        collect_privilege_change_alerts,
-    )
-    return [
-        (collect_idp_inventory,          "1.1.1.3_1", "향상"),
-        (collect_mfa_required,           "1.2.1.1_1", "기존"),
-        (collect_conditional_auth,       "1.2.1.3_1", "향상"),
-        (collect_authz_clients,          "1.4.1.1_3", "기존"),
-        (collect_central_authz_policy,   "4.1.1.2_1", "초기"),
-        (collect_perimeter_model,        "4.3.1.1_2", "기존"),
-        (collect_ids_alerts,             "4.3.1.3_2", "향상"),
-        (collect_tls_ratio,              "3.3.1.1_1", "기존"),
-        (collect_session_policy,         "1.2.2.1_1", "기존"),
-        (collect_privilege_change_alerts,"1.4.2.3_2", "향상"),
-    ]
-
 
 def _tr_mapping():
     from collectors.trivy_collector import (
@@ -1770,38 +1138,18 @@ def _autodiscover(module_name: str, base: list) -> list:
 
 
 _TOOL_MODULE = {
-    "keycloak":    "collectors.keycloak_collector",
-    "wazuh":       "collectors.wazuh_collector",
-    "nmap":        "collectors.nmap_collector",
-    "trivy":       "collectors.trivy_collector",
-    "entra":       "collectors.entra_collector",
-    "okta":        "collectors.okta_collector",
-    "splunk":      "collectors.splunk_collector",
-    "ldap":        "collectors.ldap_collector",
-    "crowdstrike": "collectors.crowdstrike_collector",
-    "defender":    "collectors.defender_collector",
-    "aws_securityhub":   "collectors.aws_security_hub_collector",
-    "azure_defender":    "collectors.azure_defender_cloud_collector",
-    "zscaler":           "collectors.zscaler_collector",
-    "cloudflare_access": "collectors.cloudflare_access_collector",
+    "keycloak": "collectors.keycloak_collector",
+    "wazuh":    "collectors.wazuh_collector",
+    "nmap":     "collectors.nmap_collector",
+    "trivy":    "collectors.trivy_collector",
 }
 
-# 명시 매핑 함수 캐시(원본 함수)
+# 명시 매핑 함수 캐시(원본 함수) — 4 오픈소스 도구만
 _BASE_MAPPING_FNS = {
-    "keycloak":    _kc_mapping,
-    "wazuh":       _wz_mapping,
-    "nmap":        _nm_mapping,
-    "trivy":       _tr_mapping,
-    "entra":       _entra_mapping,
-    "okta":        _okta_mapping,
-    "splunk":      _splunk_mapping,
-    "ldap":        _ldap_mapping,
-    "crowdstrike": _crowdstrike_mapping,
-    "defender":    _defender_mapping,
-    "aws_securityhub":   _aws_securityhub_mapping,
-    "azure_defender":    _azure_defender_mapping,
-    "zscaler":           _zscaler_mapping,
-    "cloudflare_access": _cloudflare_access_mapping,
+    "keycloak": _kc_mapping,
+    "wazuh":    _wz_mapping,
+    "nmap":     _nm_mapping,
+    "trivy":    _tr_mapping,
 }
 
 
@@ -1846,20 +1194,10 @@ def _full_mapping(tool: str) -> list:
 
 # 외부 노출용: 기존 _TOOL_DISPATCH 구조 유지 (mapping_fn, takes_args)
 _TOOL_DISPATCH = {
-    "keycloak":    (lambda: _full_mapping("keycloak"),    True),
-    "wazuh":       (lambda: _full_mapping("wazuh"),       True),
-    "nmap":        (lambda: _full_mapping("nmap"),        False),
-    "trivy":       (lambda: _full_mapping("trivy"),       False),
-    "entra":       (lambda: _full_mapping("entra"),       True),
-    "okta":        (lambda: _full_mapping("okta"),        True),
-    "splunk":      (lambda: _full_mapping("splunk"),      True),
-    "ldap":        (lambda: _full_mapping("ldap"),        True),
-    "crowdstrike": (lambda: _full_mapping("crowdstrike"), True),
-    "defender":    (lambda: _full_mapping("defender"),    True),
-    "aws_securityhub":   (lambda: _full_mapping("aws_securityhub"),   True),
-    "azure_defender":    (lambda: _full_mapping("azure_defender"),    True),
-    "zscaler":           (lambda: _full_mapping("zscaler"),           True),
-    "cloudflare_access": (lambda: _full_mapping("cloudflare_access"), True),
+    "keycloak": (lambda: _full_mapping("keycloak"), True),
+    "wazuh":    (lambda: _full_mapping("wazuh"),    True),
+    "nmap":     (lambda: _full_mapping("nmap"),     False),
+    "trivy":    (lambda: _full_mapping("trivy"),    False),
 }
 
 
@@ -1944,120 +1282,6 @@ def _tool_configured(tool: str) -> Optional[str]:
             return f"Trivy 미연결: TRIVY_TARGET이 placeholder('{target or 'empty'}'). .env에 진단 대상 이미지/경로 설정 필요"
         return None
 
-    if tool == "entra":
-        # session-level 자격(set_session_creds 로 주입됨)이 살아있으면 통과.
-        # _run_collectors 가 _tool_health 보다 먼저 set_session_creds 를 호출한다.
-        try:
-            from collectors import entra_collector as _ec
-            if _ec._session_creds and (
-                _ec._session_creds.get("tenant_id")
-                and _ec._session_creds.get("client_id")
-                and _ec._session_creds.get("client_secret")
-            ):
-                return None
-        except Exception:
-            pass
-        tenant = os.getenv("ENTRA_TENANT_ID", "")
-        cid = os.getenv("ENTRA_CLIENT_ID", "")
-        cs = os.getenv("ENTRA_CLIENT_SECRET", "")
-        if not (tenant and cid and cs):
-            return "Entra 미연결: ENTRA_TENANT_ID/CLIENT_ID/CLIENT_SECRET 미설정"
-        return None
-
-    if tool == "okta":
-        try:
-            from collectors import okta_collector as _ok
-            if _ok._session_creds and _ok._session_creds.get("domain") and _ok._session_creds.get("api_token"):
-                return None
-        except Exception:
-            pass
-        domain = os.getenv("OKTA_DOMAIN", "")
-        token = os.getenv("OKTA_API_TOKEN", "")
-        if not domain:
-            return "Okta 미연결: OKTA_DOMAIN 미설정"
-        if not token:
-            return "Okta 미연결: OKTA_API_TOKEN 미설정"
-        return None
-
-    if tool == "splunk":
-        try:
-            from collectors import splunk_collector as _sp
-            if _sp._session_creds and _sp._session_creds.get("url"):
-                creds = _sp._session_creds
-                if creds.get("token") or (creds.get("user") and creds.get("password")):
-                    return None
-        except Exception:
-            pass
-        url = os.getenv("SPLUNK_URL", "")
-        user = os.getenv("SPLUNK_USER", "")
-        pw = os.getenv("SPLUNK_PASSWORD", "")
-        token = os.getenv("SPLUNK_TOKEN", "")
-        if not url:
-            return "Splunk 미연결: SPLUNK_URL 미설정"
-        if not (token or (user and pw)):
-            return "Splunk 미연결: SPLUNK_TOKEN 또는 SPLUNK_USER/SPLUNK_PASSWORD 미설정"
-        return None
-
-    if tool == "ldap":
-        try:
-            from collectors import ldap_collector as _ld
-            if _ld._session_creds:
-                creds = _ld._session_creds
-                if creds.get("url") and creds.get("bind_dn") \
-                        and creds.get("bind_password") and creds.get("base_dn"):
-                    return None
-        except Exception:
-            pass
-        url = os.getenv("LDAP_URL", "")
-        bind_dn = os.getenv("LDAP_BIND_DN", "")
-        bind_pw = os.getenv("LDAP_BIND_PASSWORD", "")
-        base_dn = os.getenv("LDAP_BASE_DN", "")
-        if not url:
-            return "LDAP 미연결: LDAP_URL 미설정"
-        if not (bind_dn and bind_pw):
-            return "LDAP 미연결: LDAP_BIND_DN/LDAP_BIND_PASSWORD 미설정"
-        if not base_dn:
-            return "LDAP 미연결: LDAP_BASE_DN 미설정"
-        return None
-
-    if tool == "crowdstrike":
-        try:
-            from collectors import crowdstrike_collector as _cs
-            if _cs._session_creds and (
-                _cs._session_creds.get("api_base")
-                and _cs._session_creds.get("client_id")
-                and _cs._session_creds.get("client_secret")
-            ):
-                return None
-        except Exception:
-            pass
-        api_base = os.getenv("CROWDSTRIKE_API_BASE", "")
-        cid = os.getenv("CROWDSTRIKE_CLIENT_ID", "")
-        cs = os.getenv("CROWDSTRIKE_CLIENT_SECRET", "")
-        if not api_base:
-            return "CrowdStrike 미연결: CROWDSTRIKE_API_BASE 미설정"
-        if not (cid and cs):
-            return "CrowdStrike 미연결: CROWDSTRIKE_CLIENT_ID/CLIENT_SECRET 미설정"
-        return None
-
-    if tool == "defender":
-        try:
-            from collectors import defender_collector as _df
-            if _df._session_creds and (
-                _df._session_creds.get("tenant_id")
-                and _df._session_creds.get("client_id")
-                and _df._session_creds.get("client_secret")
-            ):
-                return None
-        except Exception:
-            pass
-        tenant = os.getenv("DEFENDER_TENANT_ID", "")
-        cid = os.getenv("DEFENDER_CLIENT_ID", "")
-        cs = os.getenv("DEFENDER_CLIENT_SECRET", "")
-        if not (tenant and cid and cs):
-            return "Defender 미연결: DEFENDER_TENANT_ID/CLIENT_ID/CLIENT_SECRET 미설정"
-        return None
-
     return f"unknown tool: {tool}"
 
 
@@ -2079,76 +1303,6 @@ def _tool_health(tool: str) -> Optional[str]:
         return _probe_tcp(os.getenv("NMAP_WRAPPER_URL", "http://localhost:8001"))
     if tool == "trivy":
         return _probe_tcp(os.getenv("TRIVY_WRAPPER_URL", "http://localhost:8002"))
-    if tool == "entra":
-        # Microsoft Graph 도달성 확인. 인증 토큰은 collector 호출 시 발급된다.
-        return _probe_tcp("https://login.microsoftonline.com")
-    if tool == "okta":
-        # session-creds 또는 env 의 domain 으로 TCP 도달성 확인.
-        domain = ""
-        try:
-            from collectors import okta_collector as _ok
-            if _ok._session_creds and _ok._session_creds.get("domain"):
-                domain = str(_ok._session_creds["domain"])
-        except Exception:
-            pass
-        domain = domain or os.getenv("OKTA_DOMAIN", "")
-        if not domain:
-            return "Okta 미연결: OKTA_DOMAIN 미설정"
-        host = domain
-        if "://" not in host:
-            host = f"https://{host}"
-        return _probe_tcp(host)
-    if tool == "splunk":
-        url = ""
-        try:
-            from collectors import splunk_collector as _sp
-            if _sp._session_creds and _sp._session_creds.get("url"):
-                url = str(_sp._session_creds["url"])
-        except Exception:
-            pass
-        url = url or os.getenv("SPLUNK_URL", "")
-        if not url:
-            return "Splunk 미연결: SPLUNK_URL 미설정"
-        return _probe_tcp(url)
-    if tool == "ldap":
-        # ldap[s]://host[:port] → host/port 추출 후 TCP probe
-        url = ""
-        try:
-            from collectors import ldap_collector as _ld
-            if _ld._session_creds and _ld._session_creds.get("url"):
-                url = str(_ld._session_creds["url"])
-        except Exception:
-            pass
-        url = url or os.getenv("LDAP_URL", "")
-        if not url:
-            return "LDAP 미연결: LDAP_URL 미설정"
-        # ldap:// → port 389, ldaps:// → 636 디폴트
-        try:
-            from urllib.parse import urlparse as _up
-            p = _up(url)
-            host = p.hostname or ""
-            port = p.port or (636 if p.scheme == "ldaps" else 389)
-            if not host:
-                return "LDAP 미연결: host 추출 실패"
-            return _probe_tcp(f"{host}:{port}")
-        except Exception as exc:
-            return f"LDAP URL 파싱 실패: {exc}"
-    if tool == "crowdstrike":
-        # api_base 도달성 확인. 인증 토큰은 collector 호출 시 발급.
-        api_base = ""
-        try:
-            from collectors import crowdstrike_collector as _cs
-            if _cs._session_creds and _cs._session_creds.get("api_base"):
-                api_base = str(_cs._session_creds["api_base"])
-        except Exception:
-            pass
-        api_base = api_base or os.getenv("CROWDSTRIKE_API_BASE", "")
-        if not api_base:
-            return "CrowdStrike 미연결: CROWDSTRIKE_API_BASE 미설정"
-        return _probe_tcp(api_base)
-    if tool == "defender":
-        # Microsoft Entra 토큰 엔드포인트 도달성 확인.
-        return _probe_tcp("https://login.microsoftonline.com")
     return f"unknown tool: {tool}"
 
 
@@ -2356,16 +1510,6 @@ def _run_collectors(session_id: int, tools: list[str]):
     scan_targets: dict = {}
     keycloak_creds: dict = {}
     wazuh_creds: dict = {}
-    entra_creds: dict = {}
-    okta_creds: dict = {}
-    splunk_creds: dict = {}
-    ldap_creds: dict = {}
-    crowdstrike_creds: dict = {}
-    defender_creds: dict = {}
-    aws_creds: dict = {}
-    azure_defender_creds: dict = {}
-    zscaler_creds: dict = {}
-    cloudflare_creds: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -2375,43 +1519,12 @@ def _run_collectors(session_id: int, tools: list[str]):
             raw = sess.extra.get("scan_targets") or {}
             if isinstance(raw, dict):
                 scan_targets = {k: (v or "").strip() for k, v in raw.items() if v}
-            # extra 에는 URL/user 만 들어있다 (Phase 3 이후). 비번은 메모리에서 합칠 것.
             kc_meta = sess.extra.get("keycloak_creds") or {}
             if isinstance(kc_meta, dict):
                 keycloak_creds = {k: v for k, v in kc_meta.items() if v}
             wz_meta = sess.extra.get("wazuh_creds") or {}
             if isinstance(wz_meta, dict):
                 wazuh_creds = {k: v for k, v in wz_meta.items() if v}
-            en_meta = sess.extra.get("entra_creds") or {}
-            if isinstance(en_meta, dict):
-                entra_creds = {k: v for k, v in en_meta.items() if v}
-            ok_meta = sess.extra.get("okta_creds") or {}
-            if isinstance(ok_meta, dict):
-                okta_creds = {k: v for k, v in ok_meta.items() if v}
-            sp_meta = sess.extra.get("splunk_creds") or {}
-            if isinstance(sp_meta, dict):
-                splunk_creds = {k: v for k, v in sp_meta.items() if v}
-            ld_meta = sess.extra.get("ldap_creds") or {}
-            if isinstance(ld_meta, dict):
-                ldap_creds = {k: v for k, v in ld_meta.items() if v}
-            cs_meta = sess.extra.get("crowdstrike_creds") or {}
-            if isinstance(cs_meta, dict):
-                crowdstrike_creds = {k: v for k, v in cs_meta.items() if v}
-            df_meta = sess.extra.get("defender_creds") or {}
-            if isinstance(df_meta, dict):
-                defender_creds = {k: v for k, v in df_meta.items() if v}
-            aws_meta = sess.extra.get("aws_creds") or {}
-            if isinstance(aws_meta, dict):
-                aws_creds = {k: v for k, v in aws_meta.items() if v}
-            az_meta = sess.extra.get("azure_defender_creds") or {}
-            if isinstance(az_meta, dict):
-                azure_defender_creds = {k: v for k, v in az_meta.items() if v}
-            zs_meta = sess.extra.get("zscaler_creds") or {}
-            if isinstance(zs_meta, dict):
-                zscaler_creds = {k: v for k, v in zs_meta.items() if v}
-            cf_meta = sess.extra.get("cloudflare_creds") or {}
-            if isinstance(cf_meta, dict):
-                cloudflare_creds = {k: v for k, v in cf_meta.items() if v}
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
@@ -2421,16 +1534,6 @@ def _run_collectors(session_id: int, tools: list[str]):
     secrets_blob = _pop_session_secrets(session_id)
     kc_secret = secrets_blob.get("keycloak") if isinstance(secrets_blob, dict) else None
     wz_secret = secrets_blob.get("wazuh") if isinstance(secrets_blob, dict) else None
-    en_secret = secrets_blob.get("entra") if isinstance(secrets_blob, dict) else None
-    ok_secret = secrets_blob.get("okta") if isinstance(secrets_blob, dict) else None
-    sp_secret = secrets_blob.get("splunk") if isinstance(secrets_blob, dict) else None
-    ld_secret = secrets_blob.get("ldap") if isinstance(secrets_blob, dict) else None
-    cs_secret = secrets_blob.get("crowdstrike") if isinstance(secrets_blob, dict) else None
-    df_secret = secrets_blob.get("defender") if isinstance(secrets_blob, dict) else None
-    aws_secret = secrets_blob.get("aws_securityhub") if isinstance(secrets_blob, dict) else None
-    az_secret  = secrets_blob.get("azure_defender") if isinstance(secrets_blob, dict) else None
-    zs_secret  = secrets_blob.get("zscaler") if isinstance(secrets_blob, dict) else None
-    cf_secret  = secrets_blob.get("cloudflare_access") if isinstance(secrets_blob, dict) else None
     if isinstance(kc_secret, dict):
         for k, v in kc_secret.items():
             if v:
@@ -2439,42 +1542,6 @@ def _run_collectors(session_id: int, tools: list[str]):
         for k, v in wz_secret.items():
             if v:
                 wazuh_creds[k] = v
-    if isinstance(en_secret, dict):
-        for k, v in en_secret.items():
-            if v:
-                entra_creds[k] = v
-    if isinstance(ok_secret, dict):
-        for k, v in ok_secret.items():
-            if v:
-                okta_creds[k] = v
-    if isinstance(sp_secret, dict):
-        for k, v in sp_secret.items():
-            if v:
-                splunk_creds[k] = v
-    if isinstance(ld_secret, dict):
-        for k, v in ld_secret.items():
-            if v:
-                ldap_creds[k] = v
-    if isinstance(cs_secret, dict):
-        for k, v in cs_secret.items():
-            if v:
-                crowdstrike_creds[k] = v
-    if isinstance(df_secret, dict):
-        for k, v in df_secret.items():
-            if v:
-                defender_creds[k] = v
-    if isinstance(aws_secret, dict):
-        for k, v in aws_secret.items():
-            if v: aws_creds[k] = v
-    if isinstance(az_secret, dict):
-        for k, v in az_secret.items():
-            if v: azure_defender_creds[k] = v
-    if isinstance(zs_secret, dict):
-        for k, v in zs_secret.items():
-            if v: zscaler_creds[k] = v
-    if isinstance(cf_secret, dict):
-        for k, v in cf_secret.items():
-            if v: cloudflare_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -2506,118 +1573,16 @@ def _run_collectors(session_id: int, tools: list[str]):
                     from collectors import wazuh_collector as _wz
                     explicit_creds = wazuh_creds or None
                     _wz.set_session_creds(explicit_creds)
-                elif tool == "entra":
-                    from collectors import entra_collector as _ec
-                    explicit_creds = entra_creds or None
-                    _ec.set_session_creds(explicit_creds)
-                elif tool == "okta":
-                    from collectors import okta_collector as _ok
-                    explicit_creds = okta_creds or None
-                    _ok.set_session_creds(explicit_creds)
-                elif tool == "splunk":
-                    from collectors import splunk_collector as _sp
-                    explicit_creds = splunk_creds or None
-                    _sp.set_session_creds(explicit_creds)
-                elif tool == "ldap":
-                    from collectors import ldap_collector as _ld
-                    explicit_creds = ldap_creds or None
-                    _ld.set_session_creds(explicit_creds)
-                elif tool == "crowdstrike":
-                    from collectors import crowdstrike_collector as _cs
-                    explicit_creds = crowdstrike_creds or None
-                    _cs.set_session_creds(explicit_creds)
-                elif tool == "defender":
-                    from collectors import defender_collector as _df
-                    explicit_creds = defender_creds or None
-                    _df.set_session_creds(explicit_creds)
-                elif tool == "aws_securityhub":
-                    from collectors import aws_security_hub_collector as _aws
-                    explicit_creds = aws_creds or None
-                    _aws.set_session_creds(explicit_creds)
-                elif tool == "azure_defender":
-                    from collectors import azure_defender_cloud_collector as _az
-                    explicit_creds = azure_defender_creds or None
-                    _az.set_session_creds(explicit_creds)
-                elif tool == "zscaler":
-                    from collectors import zscaler_collector as _zs
-                    explicit_creds = zscaler_creds or None
-                    _zs.set_session_creds(explicit_creds)
-                elif tool == "cloudflare_access":
-                    from collectors import cloudflare_access_collector as _cf
-                    explicit_creds = cloudflare_creds or None
-                    _cf.set_session_creds(explicit_creds)
 
                 # 가용성 체크:
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
                 # - keycloak/wazuh: 사용자가 URL을 직접 줬으면 그 URL TCP probe만 확인
                 #   (placeholder 가드는 .env 디폴트값에만 의미가 있으므로 우회).
-                # - entra: tenant/client/secret 모두 있으면 Microsoft Graph 도달성만 확인.
-                # - okta: domain + api_token 모두 있으면 domain TCP probe.
-                # - splunk: url + (token 또는 user/password) 있으면 url TCP probe.
                 if tool in ("nmap", "trivy") and explicit_target:
                     wrapper_env = "NMAP_WRAPPER_URL" if tool == "nmap" else "TRIVY_WRAPPER_URL"
                     health_err = _probe_tcp(os.getenv(wrapper_env, ""))
                 elif tool in ("keycloak", "wazuh") and explicit_creds and explicit_creds.get("url"):
                     health_err = _probe_tcp(explicit_creds["url"])
-                elif tool == "entra" and explicit_creds and explicit_creds.get("tenant_id") \
-                        and explicit_creds.get("client_id") and explicit_creds.get("client_secret"):
-                    health_err = _probe_tcp("https://login.microsoftonline.com")
-                elif tool == "okta" and explicit_creds and explicit_creds.get("domain") \
-                        and explicit_creds.get("api_token"):
-                    host = str(explicit_creds["domain"])
-                    if "://" not in host:
-                        host = f"https://{host}"
-                    health_err = _probe_tcp(host)
-                elif tool == "splunk" and explicit_creds and explicit_creds.get("url") \
-                        and (explicit_creds.get("token") or (
-                            explicit_creds.get("user") and explicit_creds.get("password")
-                        )):
-                    health_err = _probe_tcp(explicit_creds["url"])
-                elif tool == "ldap" and explicit_creds and explicit_creds.get("url") \
-                        and explicit_creds.get("bind_dn") \
-                        and explicit_creds.get("bind_password") \
-                        and explicit_creds.get("base_dn"):
-                    # ldap[s]://host[:port] → host:port 추출 후 TCP probe
-                    try:
-                        from urllib.parse import urlparse as _up
-                        _p = _up(explicit_creds["url"])
-                        _host = _p.hostname or ""
-                        _port = _p.port or (636 if _p.scheme == "ldaps" else 389)
-                        health_err = _probe_tcp(f"{_host}:{_port}") if _host else "LDAP URL host 추출 실패"
-                    except Exception as _exc:
-                        health_err = f"LDAP URL 파싱 실패: {_exc}"
-                elif tool == "crowdstrike" and explicit_creds \
-                        and explicit_creds.get("api_base") \
-                        and explicit_creds.get("client_id") \
-                        and explicit_creds.get("client_secret"):
-                    health_err = _probe_tcp(explicit_creds["api_base"])
-                elif tool == "defender" and explicit_creds \
-                        and explicit_creds.get("tenant_id") \
-                        and explicit_creds.get("client_id") \
-                        and explicit_creds.get("client_secret"):
-                    health_err = _probe_tcp("https://login.microsoftonline.com")
-                elif tool == "aws_securityhub" and explicit_creds \
-                        and explicit_creds.get("aws_access_key_id") \
-                        and explicit_creds.get("aws_secret_access_key") \
-                        and explicit_creds.get("aws_region"):
-                    health_err = _probe_tcp(
-                        f"https://securityhub.{explicit_creds['aws_region']}.amazonaws.com"
-                    )
-                elif tool == "azure_defender" and explicit_creds \
-                        and explicit_creds.get("tenant_id") \
-                        and explicit_creds.get("client_id") \
-                        and explicit_creds.get("client_secret") \
-                        and explicit_creds.get("subscription_id"):
-                    health_err = _probe_tcp("https://management.azure.com")
-                elif tool == "zscaler" and explicit_creds \
-                        and explicit_creds.get("api_base") \
-                        and explicit_creds.get("client_id") \
-                        and explicit_creds.get("client_secret"):
-                    health_err = _probe_tcp(explicit_creds["api_base"])
-                elif tool == "cloudflare_access" and explicit_creds \
-                        and explicit_creds.get("api_token") \
-                        and explicit_creds.get("account_id"):
-                    health_err = _probe_tcp("https://api.cloudflare.com")
                 else:
                     health_err = _tool_health(tool)
 
@@ -2662,56 +1627,6 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import wazuh_collector as _wz
                 _wz.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import entra_collector as _ec
-                _ec.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import okta_collector as _ok
-                _ok.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import splunk_collector as _sp
-                _sp.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import ldap_collector as _ld
-                _ld.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import crowdstrike_collector as _cs
-                _cs.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import defender_collector as _df
-                _df.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import aws_security_hub_collector as _aws
-                _aws.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import azure_defender_cloud_collector as _az
-                _az.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import zscaler_collector as _zs
-                _zs.set_session_creds(None)
-            except Exception:
-                pass
-            try:
-                from collectors import cloudflare_access_collector as _cf
-                _cf.set_session_creds(None)
             except Exception:
                 pass
 

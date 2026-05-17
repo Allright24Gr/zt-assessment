@@ -5,28 +5,29 @@
 
 작성: 2026-05-17 / 기준 브랜치 `dev` (Y 트랙 후속까지 반영)
 
-> **변경 요약 (2026-05-17 후속 누적)**
-> - P0 6개 모두 완료 (JWT, 비번재설정, audit DB, IP 잠금, 약관 동의, 회원 탈퇴+SMTP)
-> - P1 6개 모두 완료 (Okta+Splunk collector, 증적 업로드, 비교, 공유, retry, frontend 통합)
-> - STEP 1 운영 셋업 완료 (docker-compose.prod, nginx, DEPLOY.md, e2e_smoke.sh, **bootstrap.sh 한 줄 자동화**)
-> - STEP 2 pytest 66 케이스 완료
-> - **세션 삭제** UI/DB cascade + **PDF 다운로드 fix** (fetch+blob)
-> - **데모 점진 진행률** (ZTA_DEMO_DELAY_MS)
+> **변경 요약 (2026-05-17 최종)**
+> - **도구 4개 오픈소스로 환원 (학생 프로젝트 — 라이선스 비용 0)**:
+>   Keycloak (Apache 2.0) + Wazuh (GPL v2) + Nmap (GPL v2) + Trivy (Apache 2.0)
+>   상용 SaaS(Entra/Okta/Splunk/CrowdStrike/Defender/AWS SH/Azure Defender/Zscaler/Cloudflare)
+>   collector 10개 모두 삭제. 코드 정합성·실 검증 가능한 도구만 운영.
+> - **자동 진단 항목**: **212** (4 도구 = base 98 + autodiscover 114 / unique item_id 212)
+>   xlsx 자동 진단 212항목과 1:1 정합. 잘못된 매핑 0·수동 충돌 0·다중 매핑 0.
+> - **scan_mode 토글 (demo/live)** — demo 모드는 deterministic fake 결과(60/25/15)로
+>   시연 즉시 점수·차트 표시. live 모드는 실제 외부 호출 + 자격 누락 시 400 가드.
+> - **finalize 가드** — 수집 미완료 시 409.
+> - P0 6개 모두 완료 (JWT, 비번재설정 — 보여주기용, audit DB, IP 잠금, 약관 동의, 회원 탈퇴)
+> - P1 핵심 완료 (증적 업로드, 비교, 공유, retry, frontend 통합)
+> - STEP 1 운영 셋업 완료 (docker-compose.prod, nginx, DEPLOY.md, e2e_smoke.sh, bootstrap.sh)
+> - STEP 2 pytest 케이스 4 도구 기준 갱신
+> - 세션 삭제 UI/DB cascade + PDF 다운로드 fix (fetch+blob)
+> - 데모 점진 진행률 (ZTA_DEMO_DELAY_MS)
 > - **Y 트랙 본질**:
->   · B-1 매핑 정확성 — 5건 maturity 불일치 정정 + `_validate_mapping` 회귀 가드
+>   · B-1 매핑 정확성 — maturity 불일치 정정 + `_validate_mapping` 회귀 가드
 >   · B-2 점수 알고리즘 재설계 — 평가불가 분모 제외 + 가중 평균 + confidence
 >   · B-3 신뢰도 시각화 — Reporting 진단 신뢰도 카드 + pillar별 평가불가
->   · B-4 권고 사용자 환경 맞춤 — improvement_customizer (IDP/SIEM/EDR 12개 프로파일)
->   · B-5 LDAP/AD collector — 한국 공공·제조 시장 진입
->   · B-7 EDR collector — CrowdStrike + Defender for Endpoint
->   · B-6/B-7'/B-8 도구 추가 (`57689c3`) — AWS Security Hub + Azure Defender + Zscaler + Cloudflare Access
-> - **도구 추가 종료 결정 (2026-05-17 후속)**: 14개에서 종료. 이후 작업은 매핑 정확성 + 체크리스트 보완 우선.
-> - **매핑 학술 검증 (2026-05-17 최종)**:
->   · `backend/scripts/validate_checklist_mapping.py` 신설
->   · xlsx 자동 진단 212개 = 우리 매핑 unique item_id 212개 (1:1 정합)
->   · 잘못된 매핑 6건 정정 (`2.3.1.1_3 / 2.3.1.2_2 / 5.2.1.4_2 / 3.1.2.1_2 / 3.4.1.1_2 / 4.4.1.1_2` → 가까운 자동 항목으로 재매핑)
->   · 누락 0건, 잘못된 매핑 0건, 수동 충돌 0건, 다중 매핑(의도된 카테고리 다중) 54건
-> - **자동 진단 항목**: 307 → **357** (14 도구 = base 243 + autodiscover 114 / unique item_id 212)
+>   · B-4 권고 사용자 환경 맞춤 — improvement_customizer (Keycloak/Wazuh 프로파일)
+> - **매핑 학술 검증**: `backend/scripts/validate_checklist_mapping.py`
+> - **이메일 흐름은 보여주기용**: EMAIL_DRY_RUN=true 기본, 실제 발송 안 함
 > - **남은 결정**: P3-20 LLM·P3-26 PDF는 사용자 결정으로 보류.
 
 ---
