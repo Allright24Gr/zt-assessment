@@ -29,5 +29,6 @@ echo "CORS_ORIGINS=${CORS_ORIGINS}"
 
 # docker-compose.yml 에서 빠진 옛 서비스(예: shuffle-opensearch)가 컨테이너로 남아
 # 포트(9201 등)를 잡고 있으면 신규 컨테이너 기동이 실패한다 → --remove-orphans 로 자동 정리.
-# 또한 --force-recreate 로 코드 변경 후 항상 새 이미지로 컨테이너 재기동을 보장.
-docker compose up -d --build --force-recreate --remove-orphans
+# --force-recreate 로 코드 변경 후 항상 새 이미지로 컨테이너 재기동.
+# --profile shuffle 로 Shuffle SOAR 4종(backend/frontend/orborus/database)까지 한 번에 기동.
+docker compose --profile shuffle up -d --build --force-recreate --remove-orphans
