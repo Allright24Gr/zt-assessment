@@ -31,7 +31,7 @@ const DEFAULT_SETTINGS: PersistedSettings = {
   coverageThreshold: 90,
   completeNotification: true,
   errorNotification: true,
-  name: "관리자",
+  name: "담당자",
   email: "admin@example.com",
   organization: "보안팀",
 };
