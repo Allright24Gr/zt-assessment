@@ -19,7 +19,7 @@ logging.basicConfig(
 logging.getLogger("zt.audit").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
-from routers import assessment, score, improvement, report, manual, checklist, auth
+from routers import assessment, score, improvement, report, manual, checklist, auth, admin
 from scripts.cleanup_old_sessions import cleanup_old_sessions
 
 # 세션 보관 정책: 24시간 주기로 cleanup_old_sessions 실행 (기본 90일 retention).
@@ -83,6 +83,7 @@ app.include_router(report.router,     prefix="/api/report",     tags=["report"])
 app.include_router(manual.router,     prefix="/api/manual",     tags=["manual"])
 app.include_router(checklist.router,  prefix="/api/checklist",  tags=["checklist"])
 app.include_router(auth.router,       prefix="/api/auth",       tags=["auth"])
+app.include_router(admin.router,      prefix="/api/admin",      tags=["admin"])
 
 
 @app.get("/health")

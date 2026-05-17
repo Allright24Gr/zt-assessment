@@ -6,6 +6,7 @@ from database import get_db
 from models import ImprovementGuide, DiagnosisResult, Checklist, DiagnosisSession, User
 from routers.auth import get_current_user, assert_session_access
 from services.improvement_customizer import customize_guide
+from services.risk_effort_matrix import sort_guides_by_matrix, matrix_summary
 
 router = APIRouter()
 
@@ -92,7 +93,7 @@ def get_session_improvements(
         if isinstance(ps, dict):
             profile_select = ps
 
-    return [
+    customized = [
         customize_guide(
             {
                 "guide_id": g.guide_id,
@@ -101,6 +102,7 @@ def get_session_improvements(
                 "task": g.task,
                 "priority": g.priority,
                 "term": g.term,
+                "difficulty": g.difficulty,
                 "recommended_tool": g.recommended_tool,
                 "expected_gain": g.expected_gain,
             },
@@ -108,6 +110,63 @@ def get_session_improvements(
         )
         for g in guides
     ]
+    # 위험-노력 매트릭스 정렬 + 각 item 에 quadrant / risk_score / effort_score 부착.
+    # 응답 형식은 list 그대로 (frontend 호환성 유지). matrix summary 는 별도 endpoint.
+    return sort_guides_by_matrix(customized)
+
+
+@router.get("/session/{session_id}/matrix")
+def get_session_improvement_matrix(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """세션 개선 가이드의 위험-노력 매트릭스 요약 (사분면별 카운트 + Quick Win 상위 3개)."""
+    session = db.query(DiagnosisSession).filter(DiagnosisSession.session_id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
+    failed_check_ids = {
+        r.check_id
+        for r in db.query(DiagnosisResult).filter(
+            DiagnosisResult.session_id == session_id,
+            DiagnosisResult.result.in_(["미충족", "부분충족"]),
+        ).all()
+    }
+    if not failed_check_ids:
+        return {"quadrant_counts": {}, "top_quick_wins": []}
+
+    guides = (
+        db.query(ImprovementGuide)
+        .filter(ImprovementGuide.check_id.in_(failed_check_ids))
+        .all()
+    )
+
+    profile_select = None
+    if isinstance(session.extra, dict):
+        ps = session.extra.get("profile_select")
+        if isinstance(ps, dict):
+            profile_select = ps
+
+    customized = [
+        customize_guide(
+            {
+                "guide_id": g.guide_id,
+                "check_id": g.check_id,
+                "pillar": g.pillar,
+                "task": g.task,
+                "priority": g.priority,
+                "term": g.term,
+                "difficulty": g.difficulty,
+                "recommended_tool": g.recommended_tool,
+                "expected_gain": g.expected_gain,
+            },
+            profile_select,
+        )
+        for g in guides
+    ]
+    return matrix_summary(customized)
 
 
 @router.get("/{guide_id}")
