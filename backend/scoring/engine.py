@@ -55,6 +55,14 @@ def score_session(
     collected_results: List[CollectedResult],
     checklist_meta: List[dict],
 ) -> ScoringOutput:
+    """B-2 개선 (2026-05-17):
+
+    - 평가불가 항목은 pillar 점수 산정에서 **제외** (이전: 0점으로 들어가 평균 깎음)
+    - pillar 점수 = Σ(maturity_score × weight) / Σ(maturity_score) × 4
+      → 가이드라인 4단계(기존1/초기2/향상3/최적화4) 의도가 반영된 가중 평균 (0~4 정규화)
+    - total = 평가 가능한 pillar 점수의 평균 (평가불가만 있는 pillar 는 제외)
+    - 결과 dict 에 evaluable / unevaluable 카운트도 함께 노출 → 신뢰도 표시용 (B-3 기반)
+    """
     meta_by_check_id: Dict[int, dict] = {}
     meta_by_item_id: Dict[str, dict] = {}
     for m in checklist_meta:
@@ -64,7 +72,8 @@ def score_session(
             meta_by_item_id[m["item_id"]] = m
 
     checklist_results = []
-    pillar_score_lists: Dict[str, List[float]] = {}
+    # pillar → {"score_sum": Σ(maturity_score × weight), "weight_sum": Σ(maturity_score), "unevaluable": cnt}
+    pillar_agg: Dict[str, dict] = {}
 
     for collected in collected_results:
         check_id = collected.get("check_id")
@@ -75,11 +84,18 @@ def score_session(
             or {}
         )
 
-        merged = {**collected, "maturity_score": meta.get("maturity_score", 1)}
+        maturity_score = meta.get("maturity_score", 1) or 1
+        merged = {**collected, "maturity_score": maturity_score}
         item_result = score_single_item(merged)
 
         pillar = meta.get("pillar", "미분류")
-        pillar_score_lists.setdefault(pillar, []).append(item_result["score"])
+        agg = pillar_agg.setdefault(pillar, {"score_sum": 0.0, "weight_sum": 0.0, "unevaluable": 0})
+
+        if item_result["result"] == "평가불가":
+            agg["unevaluable"] += 1  # 분모에 포함 X — 평균에서 빠짐
+        else:
+            agg["score_sum"] += item_result["score"]
+            agg["weight_sum"] += maturity_score
 
         checklist_results.append({
             "item_id": item_id or meta.get("item_id"),
@@ -90,20 +106,33 @@ def score_session(
             "recommendation": item_result.get("recommendation", ""),
         })
 
-    pillar_scores: Dict[str, float] = {
-        pillar: sum(scores) / len(scores)
-        for pillar, scores in pillar_score_lists.items()
-        if scores
-    }
+    # pillar 점수 0~4 정규화 (가이드라인 4단계 일치)
+    pillar_scores: Dict[str, float] = {}
+    pillar_unevaluable: Dict[str, int] = {}
+    for pillar, agg in pillar_agg.items():
+        pillar_unevaluable[pillar] = agg["unevaluable"]
+        if agg["weight_sum"] > 0:
+            pillar_scores[pillar] = round(agg["score_sum"] / agg["weight_sum"] * 4.0, 4)
+        # weight_sum == 0 → 그 pillar 는 전부 평가불가. pillar_scores 에 등록 안 함 (총점 계산서 제외).
 
-    all_values = list(pillar_scores.values())
-    total_score = sum(all_values) / len(all_values) if all_values else 0.0
+    # 총점 = 평가 가능한 pillar 들의 평균. 모든 pillar 가 평가불가면 0.0
+    evaluable_scores = list(pillar_scores.values())
+    total_score = sum(evaluable_scores) / len(evaluable_scores) if evaluable_scores else 0.0
+
+    # 신뢰도: 전체 결과 중 평가 가능한 항목 비율
+    total_items = len(collected_results)
+    evaluable_items = sum(1 for r in checklist_results if r["result"] != "평가불가")
+    confidence = (evaluable_items / total_items) if total_items > 0 else 0.0
 
     return {
         "session_id": session_id,
         "pillar_scores": pillar_scores,
+        "pillar_unevaluable": pillar_unevaluable,
         "total_score": round(total_score, 4),
         "maturity_level": determine_maturity_level(total_score),
+        "evaluable_items": evaluable_items,
+        "unevaluable_items": total_items - evaluable_items,
+        "confidence": round(confidence, 4),  # 0~1 — UI 에 % 로 표시
         "checklist_results": checklist_results,
         "assessed_at": datetime.now(timezone.utc).isoformat(),
     }

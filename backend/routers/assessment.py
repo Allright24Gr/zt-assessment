@@ -8,6 +8,7 @@ import httpx
 import logging
 import os
 import threading
+import time
 
 from database import SessionLocal, get_db
 from models import (
@@ -28,6 +29,8 @@ from routers.validators import (
     validate_cred_field,
     validate_entra_tenant_id,
     validate_okta_domain,
+    validate_ldap_url,
+    validate_ldap_dn,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,8 +53,9 @@ SHUFFLE_WF = {
     "entra":    os.getenv("SHUFFLE_WORKFLOW_ENTRA",    ""),
     "okta":     os.getenv("SHUFFLE_WORKFLOW_OKTA",     ""),
     "splunk":   os.getenv("SHUFFLE_WORKFLOW_SPLUNK",   ""),
+    "ldap":     os.getenv("SHUFFLE_WORKFLOW_LDAP",     ""),
 }
-ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy", "entra", "okta", "splunk")
+ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy", "entra", "okta", "splunk", "ldap")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -118,6 +122,13 @@ def _mask_creds(extra: dict) -> dict:
             if masked.get(pw_field):
                 masked[pw_field] = "***"
         safe["splunk_creds"] = masked
+    # ldap_creds: bind_password 마스킹 (url/bind_dn/base_dn 은 식별자)
+    lc = safe.get("ldap_creds")
+    if isinstance(lc, dict):
+        masked = dict(lc)
+        if masked.get("bind_password"):
+            masked["bind_password"] = "***"
+        safe["ldap_creds"] = masked
     return safe
 
 
@@ -136,6 +147,7 @@ def _store_session_secrets(
     entra_creds: dict = None,
     okta_creds: dict = None,
     splunk_creds: dict = None,
+    ldap_creds: dict = None,
 ) -> None:
     """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
     with _session_creds_lock:
@@ -145,6 +157,7 @@ def _store_session_secrets(
             "entra":    dict(entra_creds or {}),
             "okta":     dict(okta_creds or {}),
             "splunk":   dict(splunk_creds or {}),
+            "ldap":     dict(ldap_creds or {}),
         }
 
 
@@ -280,6 +293,9 @@ class AssessmentRunRequest(BaseModel):
     okta_creds: Optional[dict] = None
     # 예: {"url": "https://splunk.example.com:8089", "user": "...", "password": "..."}
     splunk_creds: Optional[dict] = None
+    # 예: {"url": "ldap://dc.example.local:389", "bind_dn": "CN=zt,DC=example,DC=local",
+    #      "bind_password": "...", "base_dn": "DC=example,DC=local"}
+    ldap_creds: Optional[dict] = None
 
 
 # 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑. 신규 도구 자동화가 생기면 여기에 추가.
@@ -287,7 +303,7 @@ _IDP_TOOL_OF = {
     "keycloak": "keycloak",
     "entra":    "entra",
     "okta":     "okta",
-    # "ldap": "ldap",
+    "ldap":     "ldap",
     # "none" / 미선택 → IdP 자동 도구 전체 비활성 (전부 수동 폴백)
 }
 _SIEM_TOOL_OF = {
@@ -295,7 +311,7 @@ _SIEM_TOOL_OF = {
     "splunk": "splunk",
     # "elastic": "elastic",
 }
-_IDP_AUTO_TOOLS = {"keycloak", "entra", "okta"}
+_IDP_AUTO_TOOLS = {"keycloak", "entra", "okta", "ldap"}
 _SIEM_AUTO_TOOLS = {"wazuh", "splunk"}
 
 
@@ -421,6 +437,19 @@ def run_assessment(
                 sp_in["token"] = validate_cred_field(
                     sp_in.get("token") or "", "splunk_creds.token", max_len=200
                 )
+
+        ld_in = dict(req.ldap_creds or {}) if req.ldap_creds else {}
+        if ld_in:
+            ld_in["url"] = validate_ldap_url(ld_in.get("url") or "", "ldap_creds.url")
+            ld_in["bind_dn"] = validate_ldap_dn(
+                ld_in.get("bind_dn") or "", "ldap_creds.bind_dn"
+            )
+            ld_in["base_dn"] = validate_ldap_dn(
+                ld_in.get("base_dn") or "", "ldap_creds.base_dn"
+            )
+            ld_in["bind_password"] = validate_cred_field(
+                ld_in.get("bind_password") or "", "ldap_creds.bind_password", max_len=200
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -469,6 +498,8 @@ def run_assessment(
     ok_meta = {k: v for k, v in ok_in.items() if k in ("domain",) and v}
     # splunk: password/token 은 DB 저장 금지. url/user 만 extra 에 남김.
     sp_meta = {k: v for k, v in sp_in.items() if k in ("url", "user") and v}
+    # ldap: bind_password 는 DB 저장 금지. url/bind_dn/base_dn 만 extra 에 남김.
+    ld_meta = {k: v for k, v in ld_in.items() if k in ("url", "bind_dn", "base_dn") and v}
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -483,6 +514,7 @@ def run_assessment(
         "entra_creds":    en_meta,
         "okta_creds":     ok_meta,
         "splunk_creds":   sp_meta,
+        "ldap_creds":     ld_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
     }
@@ -500,7 +532,7 @@ def run_assessment(
     db.refresh(session)
 
     # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
-    _store_session_secrets(session.session_id, kc_in, wz_in, en_in, ok_in, sp_in)
+    _store_session_secrets(session.session_id, kc_in, wz_in, en_in, ok_in, sp_in, ld_in)
 
     # Shuffle 경로 우선, 미설정 시 직접 collector 실행
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
@@ -902,11 +934,24 @@ def _trigger_scoring(session_id: int, db: Session):
         else:                           c["na"]   += 1
 
     db.query(MaturityScore).filter(MaturityScore.session_id == session_id).delete()
-    for pillar, score in output["pillar_scores"].items():
+    # B-2 보완: 평가 가능 pillar + 전부 평가불가 pillar 모두 행 생성
+    # (전부 평가불가는 score=0 + level="평가불가" 로 frontend 가 명시 표시 가능)
+    pillar_unev = output.get("pillar_unevaluable", {})
+    all_pillars = (
+        set(output["pillar_scores"].keys())
+        | set(pillar_unev.keys())
+        | set(pillar_counts.keys())
+    )
+    for pillar in all_pillars:
         c = pillar_counts.get(pillar, {"pass": 0, "fail": 0, "na": 0})
+        if pillar in output["pillar_scores"]:
+            score = output["pillar_scores"][pillar]
+            level = determine_maturity_level(score)
+        else:
+            score = 0.0
+            level = "평가불가"
         db.add(MaturityScore(
-            session_id=session_id, pillar=pillar, score=score,
-            level=determine_maturity_level(score),
+            session_id=session_id, pillar=pillar, score=score, level=level,
             pass_cnt=c["pass"], fail_cnt=c["fail"], na_cnt=c["na"],
         ))
 
@@ -959,8 +1004,10 @@ def _kc_mapping():
         (collect_realm_count,               "1.3.1.1_1",  "기존"),
         (collect_icam_inventory,            "1.3.1.2_1",  "초기"),
         (collect_custom_auth_flow,          "1.3.1.2_2",  "초기"),
-        (collect_webauthn_users,            "1.3.2.2_1",  "향상"),
-        (collect_context_policy,            "1.3.2.2_2",  "향상"),
+        # item_id 형식 X.X.X.{maturity_num}_N — 4번째 segment = 1(기존)/2(초기)/3(향상)/4(최적화)
+        # 1.3.2.2_* 의 4번째 segment가 2 → maturity 는 "초기" (이전 "향상"은 매핑 버그)
+        (collect_webauthn_users,            "1.3.2.2_1",  "초기"),
+        (collect_context_policy,            "1.3.2.2_2",  "초기"),
         (collect_authz_clients,             "1.4.1.1_3",  "기존"),
         (collect_rbac_policy,               "1.4.1.2_1",  "초기"),
         (collect_session_policy_advanced,   "1.4.1.3_1",  "향상"),
@@ -1091,7 +1138,8 @@ def _entra_mapping():
         (collect_stepup_auth,          "1.2.2.2_1", "초기"),
         (collect_realm_count,          "1.3.1.1_1", "기존"),
         (collect_icam_inventory,       "1.3.1.2_1", "초기"),
-        (collect_webauthn_users,       "1.3.2.2_1", "향상"),
+        # 1.3.2.2_1 의 4번째 segment 가 2 → "초기"
+        (collect_webauthn_users,       "1.3.2.2_1", "초기"),
         (collect_authz_clients,        "1.4.1.1_3", "기존"),
         (collect_rbac_policy,          "1.4.1.2_1", "초기"),
         (collect_aggregate_policy,     "1.4.1.3_2", "향상"),
@@ -1149,12 +1197,41 @@ def _splunk_mapping():
         (collect_policy_violation_alerts, "2.1.1.2_2", "초기"),
         (collect_os_inventory,            "2.2.1.1_1", "기존"),
         (collect_agent_registration,      "2.3.1.1_2", "기존"),
-        (collect_segment_policy_alerts,   "3.1.2.1_2", "초기"),
-        (collect_lateral_movement_alerts, "3.4.1.1_2", "초기"),
+        # 3.1.2.1_2 / 3.4.1.1_2 의 4번째 segment 가 1 → "기존" (이전 "초기"는 매핑 버그)
+        (collect_segment_policy_alerts,   "3.1.2.1_2", "기존"),
+        (collect_lateral_movement_alerts, "3.4.1.1_2", "기존"),
         (collect_ids_alerts,              "4.3.1.3_2", "향상"),
         (collect_realtime_threat_alerts,  "4.4.1.1_2", "기존"),
         (collect_dlp_alerts,              "5.1.1.4_1", "최적화"),
         (collect_threat_detection_alerts, "5.2.1.4_2", "최적화"),
+    ]
+
+
+def _ldap_mapping():
+    from collectors.ldap_collector import (
+        collect_user_role_ratio, collect_idp_inventory, collect_idp_registered,
+        collect_active_idp_multi, collect_mfa_required, collect_conditional_auth,
+        collect_session_policy, collect_stepup_auth, collect_realm_count,
+        collect_icam_inventory, collect_authz_clients, collect_rbac_policy,
+        collect_password_policy, collect_role_change_events,
+        collect_central_authz_policy,
+    )
+    return [
+        (collect_user_role_ratio,      "1.1.1.2_1", "초기"),
+        (collect_idp_inventory,        "1.1.1.3_1", "향상"),
+        (collect_idp_registered,       "1.1.2.1_1", "기존"),
+        (collect_active_idp_multi,     "1.1.2.2_1", "초기"),
+        (collect_mfa_required,         "1.2.1.1_1", "기존"),
+        (collect_conditional_auth,     "1.2.1.3_1", "향상"),
+        (collect_session_policy,       "1.2.2.1_1", "기존"),
+        (collect_stepup_auth,          "1.2.2.2_1", "초기"),
+        (collect_realm_count,          "1.3.1.1_1", "기존"),
+        (collect_icam_inventory,       "1.3.1.2_1", "초기"),
+        (collect_authz_clients,        "1.4.1.1_3", "기존"),
+        (collect_rbac_policy,          "1.4.1.2_1", "초기"),
+        (collect_password_policy,      "1.4.2.2_1", "초기"),
+        (collect_role_change_events,   "1.4.2.2_2", "초기"),
+        (collect_central_authz_policy, "4.1.1.2_1", "초기"),
     ]
 
 
@@ -1242,6 +1319,7 @@ _TOOL_MODULE = {
     "entra":    "collectors.entra_collector",
     "okta":     "collectors.okta_collector",
     "splunk":   "collectors.splunk_collector",
+    "ldap":     "collectors.ldap_collector",
 }
 
 # 명시 매핑 함수 캐시(원본 함수)
@@ -1253,7 +1331,33 @@ _BASE_MAPPING_FNS = {
     "entra":    _entra_mapping,
     "okta":     _okta_mapping,
     "splunk":   _splunk_mapping,
+    "ldap":     _ldap_mapping,
 }
+
+
+# B-1 회귀 방지: item_id 4번째 segment ↔ 매핑 maturity 일치 강제
+_MATURITY_BY_NUM = {1: "기존", 2: "초기", 3: "향상", 4: "최적화"}
+
+
+def _validate_mapping(tool: str, mapping: list) -> list:
+    """매핑의 (item_id, maturity) 정합성 검증. 불일치 시 item_id 기준으로 자동 보정 + 경고."""
+    fixed = []
+    for entry in mapping:
+        fn, item_id, maturity = entry
+        try:
+            mat_num = int(item_id.split(".")[3].split("_")[0])
+            expected = _MATURITY_BY_NUM.get(mat_num)
+        except (IndexError, ValueError):
+            expected = None
+        if expected and maturity != expected:
+            logger.warning(
+                "[mapping] %s/%s maturity 불일치 — 등록값=%r, item_id 기준=%r → 자동 보정",
+                tool, item_id, maturity, expected,
+            )
+            fixed.append((fn, item_id, expected))
+        else:
+            fixed.append(entry)
+    return fixed
 
 
 def _full_mapping(tool: str) -> list:
@@ -1266,9 +1370,8 @@ def _full_mapping(tool: str) -> list:
         logger.warning("[mapping] %s base load failed: %s", tool, exc)
         base = []
     module_name = _TOOL_MODULE.get(tool)
-    if not module_name:
-        return base
-    return _autodiscover(module_name, base)
+    full = _autodiscover(module_name, base) if module_name else base
+    return _validate_mapping(tool, full)
 
 
 # 외부 노출용: 기존 _TOOL_DISPATCH 구조 유지 (mapping_fn, takes_args)
@@ -1280,6 +1383,7 @@ _TOOL_DISPATCH = {
     "entra":    (lambda: _full_mapping("entra"),    True),
     "okta":     (lambda: _full_mapping("okta"),     True),
     "splunk":   (lambda: _full_mapping("splunk"),   True),
+    "ldap":     (lambda: _full_mapping("ldap"),     True),
 }
 
 
@@ -1418,6 +1522,28 @@ def _tool_configured(tool: str) -> Optional[str]:
             return "Splunk 미연결: SPLUNK_TOKEN 또는 SPLUNK_USER/SPLUNK_PASSWORD 미설정"
         return None
 
+    if tool == "ldap":
+        try:
+            from collectors import ldap_collector as _ld
+            if _ld._session_creds:
+                creds = _ld._session_creds
+                if creds.get("url") and creds.get("bind_dn") \
+                        and creds.get("bind_password") and creds.get("base_dn"):
+                    return None
+        except Exception:
+            pass
+        url = os.getenv("LDAP_URL", "")
+        bind_dn = os.getenv("LDAP_BIND_DN", "")
+        bind_pw = os.getenv("LDAP_BIND_PASSWORD", "")
+        base_dn = os.getenv("LDAP_BASE_DN", "")
+        if not url:
+            return "LDAP 미연결: LDAP_URL 미설정"
+        if not (bind_dn and bind_pw):
+            return "LDAP 미연결: LDAP_BIND_DN/LDAP_BIND_PASSWORD 미설정"
+        if not base_dn:
+            return "LDAP 미연결: LDAP_BASE_DN 미설정"
+        return None
+
     return f"unknown tool: {tool}"
 
 
@@ -1470,6 +1596,29 @@ def _tool_health(tool: str) -> Optional[str]:
         if not url:
             return "Splunk 미연결: SPLUNK_URL 미설정"
         return _probe_tcp(url)
+    if tool == "ldap":
+        # ldap[s]://host[:port] → host/port 추출 후 TCP probe
+        url = ""
+        try:
+            from collectors import ldap_collector as _ld
+            if _ld._session_creds and _ld._session_creds.get("url"):
+                url = str(_ld._session_creds["url"])
+        except Exception:
+            pass
+        url = url or os.getenv("LDAP_URL", "")
+        if not url:
+            return "LDAP 미연결: LDAP_URL 미설정"
+        # ldap:// → port 389, ldaps:// → 636 디폴트
+        try:
+            from urllib.parse import urlparse as _up
+            p = _up(url)
+            host = p.hostname or ""
+            port = p.port or (636 if p.scheme == "ldaps" else 389)
+            if not host:
+                return "LDAP 미연결: host 추출 실패"
+            return _probe_tcp(f"{host}:{port}")
+        except Exception as exc:
+            return f"LDAP URL 파싱 실패: {exc}"
     return f"unknown tool: {tool}"
 
 
@@ -1535,6 +1684,33 @@ def _safe_call(fn, item_id: str, maturity: str, takes_args: bool, tool_name: str
 _collector_lock = threading.Lock()
 
 
+# 데모 시연 자연스러움용 — unavailable 항목당 sleep + 단건 commit.
+# 0 (기본) 이면 운영 모드처럼 모아서 한 번에 commit.
+# 시연 권장: 50~200ms (212 항목 기준 11~42초 progress).
+DEMO_DELAY_MS = int(os.getenv("ZTA_DEMO_DELAY_MS", "0"))
+
+
+def _persist_one_result(session_id: int, item: dict) -> bool:
+    """단건 commit — 데모 모드에서 점진적 진행률용. True if persisted."""
+    item_id_str = item.get("item_id")
+    if not item_id_str:
+        return False
+    db = SessionLocal()
+    try:
+        checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
+        if not checklist:
+            return False
+        _upsert_collected(db, session_id, checklist.check_id, item)
+        db.commit()
+        return True
+    except Exception as exc:
+        db.rollback()
+        logger.warning("[collector] persist failed item=%s: %s", item_id_str, exc)
+        return False
+    finally:
+        db.close()
+
+
 def _run_collectors(session_id: int, tools: list[str]):
     """선택된 도구들로 collector 실행 후 결과를 DB에 직접 저장 (httpx 자기호출 없음).
 
@@ -1542,6 +1718,9 @@ def _run_collectors(session_id: int, tools: list[str]):
     그 도구의 모든 매핑을 '평가불가'로 일괄 표시하고 함수 호출은 스킵한다.
     사용자가 nmap/trivy 스캔 대상 또는 Keycloak/Wazuh 자격을 직접 입력한
     경우 session.extra 의 해당 키를 각 collector 모듈 전역에 주입한다.
+
+    ZTA_DEMO_DELAY_MS > 0 이면 데모(unavailable) 항목을 단건 commit + sleep 하여
+    InProgress 화면의 progress 가 자연스럽게 차오르게 한다.
     """
     if not tools:
         return
@@ -1556,6 +1735,7 @@ def _run_collectors(session_id: int, tools: list[str]):
     entra_creds: dict = {}
     okta_creds: dict = {}
     splunk_creds: dict = {}
+    ldap_creds: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -1581,6 +1761,9 @@ def _run_collectors(session_id: int, tools: list[str]):
             sp_meta = sess.extra.get("splunk_creds") or {}
             if isinstance(sp_meta, dict):
                 splunk_creds = {k: v for k, v in sp_meta.items() if v}
+            ld_meta = sess.extra.get("ldap_creds") or {}
+            if isinstance(ld_meta, dict):
+                ldap_creds = {k: v for k, v in ld_meta.items() if v}
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
@@ -1593,6 +1776,7 @@ def _run_collectors(session_id: int, tools: list[str]):
     en_secret = secrets_blob.get("entra") if isinstance(secrets_blob, dict) else None
     ok_secret = secrets_blob.get("okta") if isinstance(secrets_blob, dict) else None
     sp_secret = secrets_blob.get("splunk") if isinstance(secrets_blob, dict) else None
+    ld_secret = secrets_blob.get("ldap") if isinstance(secrets_blob, dict) else None
     if isinstance(kc_secret, dict):
         for k, v in kc_secret.items():
             if v:
@@ -1613,6 +1797,10 @@ def _run_collectors(session_id: int, tools: list[str]):
         for k, v in sp_secret.items():
             if v:
                 splunk_creds[k] = v
+    if isinstance(ld_secret, dict):
+        for k, v in ld_secret.items():
+            if v:
+                ldap_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -1656,6 +1844,10 @@ def _run_collectors(session_id: int, tools: list[str]):
                     from collectors import splunk_collector as _sp
                     explicit_creds = splunk_creds or None
                     _sp.set_session_creds(explicit_creds)
+                elif tool == "ldap":
+                    from collectors import ldap_collector as _ld
+                    explicit_creds = ldap_creds or None
+                    _ld.set_session_creds(explicit_creds)
 
                 # 가용성 체크:
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
@@ -1683,6 +1875,19 @@ def _run_collectors(session_id: int, tools: list[str]):
                             explicit_creds.get("user") and explicit_creds.get("password")
                         )):
                     health_err = _probe_tcp(explicit_creds["url"])
+                elif tool == "ldap" and explicit_creds and explicit_creds.get("url") \
+                        and explicit_creds.get("bind_dn") \
+                        and explicit_creds.get("bind_password") \
+                        and explicit_creds.get("base_dn"):
+                    # ldap[s]://host[:port] → host:port 추출 후 TCP probe
+                    try:
+                        from urllib.parse import urlparse as _up
+                        _p = _up(explicit_creds["url"])
+                        _host = _p.hostname or ""
+                        _port = _p.port or (636 if _p.scheme == "ldaps" else 389)
+                        health_err = _probe_tcp(f"{_host}:{_port}") if _host else "LDAP URL host 추출 실패"
+                    except Exception as _exc:
+                        health_err = f"LDAP URL 파싱 실패: {_exc}"
                 else:
                     health_err = _tool_health(tool)
 
@@ -1690,11 +1895,23 @@ def _run_collectors(session_id: int, tools: list[str]):
                     logger.info("[collector] %s unavailable (%s) → %d items 평가불가 처리",
                                 tool, health_err, len(mapping))
                     for _fn, item_id, maturity in mapping:
-                        results.append(_unavailable_result(tool, item_id, maturity, health_err))
+                        unavail = _unavailable_result(tool, item_id, maturity, health_err)
+                        if DEMO_DELAY_MS > 0:
+                            # 데모 모드: 단건 commit + sleep → InProgress 점진적 채움
+                            if _persist_one_result(session_id, unavail):
+                                logger.debug("[demo] %s/%s 평가불가", tool, item_id)
+                            time.sleep(DEMO_DELAY_MS / 1000.0)
+                        else:
+                            results.append(unavail)
                     continue
 
                 for fn, item_id, maturity in mapping:
-                    results.append(_safe_call(fn, item_id, maturity, takes_args, tool))
+                    result = _safe_call(fn, item_id, maturity, takes_args, tool)
+                    if DEMO_DELAY_MS > 0:
+                        # 실 collector 호출도 데모 모드면 단건 commit (자체 호출 시간이 sleep 역할)
+                        _persist_one_result(session_id, result)
+                    else:
+                        results.append(result)
         finally:
             # 모듈-전역 target / creds 는 다음 세션에 누수되지 않도록 항상 해제.
             try:
@@ -1730,6 +1947,11 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import splunk_collector as _sp
                 _sp.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import ldap_collector as _ld
+                _ld.set_session_creds(None)
             except Exception:
                 pass
 

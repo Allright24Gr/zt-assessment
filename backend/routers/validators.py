@@ -152,3 +152,47 @@ def validate_okta_domain(value: str, field_name: str = "okta_creds.domain") -> s
     if "." not in candidate:
         raise ValueError(f"{field_name}: 도메인에 점(.)이 포함되어야 합니다")
     return value
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LDAP / Active Directory (URL / DN)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ldap[s]://host[:port] 만 허용. 경로/쿼리는 금지.
+_LDAP_URL_RE = re.compile(r"^ldaps?://[a-zA-Z0-9.\-]+(?::\d{1,5})?$")
+
+# 단순 DN 형태: RDN(attr=value) 콤마 연결. value 안에 쉘 메타·세미콜론 금지.
+_LDAP_DN_RE = re.compile(
+    r"^(?:[a-zA-Z]+=[^,;|&`$<>\\\"']+,)*[a-zA-Z]+=[^,;|&`$<>\\\"']+$"
+)
+
+
+def validate_ldap_url(value: str, field_name: str = "ldap_url") -> str:
+    """ldap:// 또는 ldaps:// 형식 검증. 셸 메타·공백 차단. 빈 값은 통과."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _LDAP_URL_RE.match(value):
+        raise ValueError(f"{field_name}: ldap:// 또는 ldaps:// 형식만 허용")
+    if any(c in value for c in ";|&`$<>\\\"' "):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자")
+    return value
+
+
+def validate_ldap_dn(value: str, field_name: str = "ldap_dn") -> str:
+    """DN(예: CN=user,OU=ou,DC=example,DC=local) 형식 검증.
+
+    셸 메타·세미콜론·공백 RDN value 차단. 빈 값은 통과(선택 입력).
+    """
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) > 1024:
+        raise ValueError(f"{field_name}: 1024자 초과")
+    if not _LDAP_DN_RE.match(value):
+        raise ValueError(
+            f"{field_name}: 잘못된 DN 형식 (예: CN=user,OU=ou,DC=example,DC=local)"
+        )
+    if any(c in value for c in ";|&`$<>\\\"'"):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자")
+    return value
