@@ -300,6 +300,7 @@ export function NewAssessment() {
       pillar_scope: pillarScope,
       tool_scope: toolScope,
       profile_select: profileSelect,
+      scan_mode: scanMode,
       ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),

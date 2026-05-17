@@ -247,6 +247,8 @@ export interface AssessmentRunRequest {
   crowdstrike_creds?: CrowdstrikeCreds;
   defender_creds?: DefenderCreds;
   profile_select?: ProfileSelect;
+  /** "demo" | "live" — NewAssessment 토글. demo면 backend가 collector 실호출 없이 fake 결과 생성 */
+  scan_mode?: "demo" | "live";
 }
 
 export interface AssessmentRunResponse {

@@ -393,6 +393,9 @@ class AssessmentRunRequest(BaseModel):
     # B-8 Cloudflare Access
     # 예: {"api_token": "<bearer>", "account_id": "<32 hex>"}
     cloudflare_creds: Optional[dict] = None
+    # 시연/실 스캔 토글 — "demo" 면 collector 실호출 없이 fake 결과 생성, "live" 면 실제 외부 호출.
+    # frontend의 scanMode 토글(NewAssessment Step 1)에서 전달.
+    scan_mode: Optional[str] = "demo"
 
 
 # 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑. 신규 도구 자동화가 생기면 여기에 추가.
@@ -697,6 +700,36 @@ def run_assessment(
     resolved_scope = _resolve_supported_tools(profile_select_dict, req.tool_scope or {})
     selected_tools = sorted(t for t in ALL_TOOLS if resolved_scope.get(t))
 
+    # live 모드 자격 미입력 가드 — 사용자가 실 스캔을 선택했는데 자격을 안 넣은 경우.
+    # 데모(미지정 포함)는 가드 면제. 외부 스캔 도구(nmap/trivy)는 target 으로 검사.
+    live_mode = (req.scan_mode or "demo").strip().lower() == "live"
+    if live_mode:
+        creds_required = {
+            "keycloak":          bool(kc_in.get("url") and kc_in.get("admin_pass")),
+            "wazuh":             bool(wz_in.get("url") and wz_in.get("api_pass")),
+            "entra":             bool(en_in.get("tenant_id") and en_in.get("client_secret")),
+            "okta":              bool(ok_in.get("domain") and ok_in.get("api_token")),
+            "splunk":            bool(sp_in.get("url") and (sp_in.get("password") or sp_in.get("token"))),
+            "ldap":              bool(ld_in.get("url") and ld_in.get("bind_password")),
+            "crowdstrike":       bool(cs_in.get("client_id") and cs_in.get("client_secret")),
+            "defender":          bool(df_in.get("tenant_id") and df_in.get("client_secret")),
+            "aws_securityhub":   bool(aws_in.get("aws_access_key_id") and aws_in.get("aws_secret_access_key")),
+            "azure_defender":    bool(az_in.get("tenant_id") and az_in.get("client_secret") and az_in.get("subscription_id")),
+            "zscaler":           bool(zs_in.get("api_base") and zs_in.get("client_secret")),
+            "cloudflare_access": bool(cf_in.get("api_token") and cf_in.get("account_id")),
+            "nmap":              bool((scan_targets_in.get("nmap") or "").strip()),
+            "trivy":             bool((scan_targets_in.get("trivy") or "").strip()),
+        }
+        missing = [t for t in selected_tools if not creds_required.get(t, True)]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"실 스캔(live) 모드는 자격이 필요합니다. 누락: {', '.join(missing)}. "
+                    f"자격을 입력하거나 데모 모드로 시작하세요."
+                ),
+            )
+
     # 세션 메타데이터
     # 자격 비밀번호(admin_pass/api_pass)는 DB에 저장하지 않는다.
     # URL/사용자명만 extra에 남기고, 비밀번호는 _store_session_secrets 로 메모리에만 보관.
@@ -724,6 +757,10 @@ def run_assessment(
                if k in ("api_base", "client_id", "customer_id") and v}
     # B-8 Cloudflare Access: api_token 은 DB 저장 금지. account_id 만.
     cf_meta = {k: v for k, v in cf_in.items() if k in ("account_id",) and v}
+    # scan_mode 정규화. frontend의 demo/live 토글. 미지정 시 안전한 demo.
+    scan_mode = (req.scan_mode or "demo").strip().lower()
+    if scan_mode not in ("demo", "live"):
+        scan_mode = "demo"
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -732,6 +769,7 @@ def run_assessment(
         "applications": req.applications,
         "note":         req.note,
         "pillar_scope": req.pillar_scope,
+        "scan_mode":    scan_mode,
         "scan_targets": scan_targets_in,
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
@@ -873,11 +911,39 @@ def finalize_assessment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """수동 제출 완료 후 채점을 명시적으로 트리거한다."""
+    """수동 제출 완료 후 채점을 명시적으로 트리거한다.
+
+    수집 미완료 가드: selected_tools 의 expected 합과 실제 CollectedData 행 수를 비교.
+    부족하면 409 — frontend 가 InProgress 폴링을 더 기다리도록 유도.
+    """
     session = _get_session_or_404(db, session_id)
     assert_session_access(current_user, session)
     if session.status == "완료":
         return {"status": "already_completed", "session_id": session_id}
+
+    # 수집 미완료 가드 — 데모 모드는 collector 완료 후 자동 채점되므로 일반적으로 여기 안 옴.
+    # live 모드에서 사용자가 일찍 finalize 누른 경우만 막는다.
+    tools = sorted(_selected_tools_set(session))
+    if tools:
+        expected = 0
+        for t in tools:
+            try:
+                expected += len(_full_mapping(t))
+            except Exception:
+                pass
+        if expected > 0:
+            collected = db.query(CollectedData).filter(
+                CollectedData.session_id == session_id
+            ).count()
+            if collected < expected:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"수집 진행 중입니다 ({collected}/{expected}). "
+                        f"완료 후 다시 시도하세요."
+                    ),
+                )
+
     _trigger_scoring(session_id, db)
     return {"status": "ok", "session_id": session_id}
 
@@ -2154,6 +2220,70 @@ _collector_lock = threading.Lock()
 DEMO_DELAY_MS = int(os.getenv("ZTA_DEMO_DELAY_MS", "0"))
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 데모 모드(fake 결과) — scan_mode=="demo" 일 때 collector 실호출 대신 사용.
+# 항목별로 충족/부분충족/미충족을 deterministic 하게 섞어 점수·차트·권고가 의미 있게.
+# item_id 의 hash 로 분포를 결정 → 같은 item_id 는 항상 같은 결과.
+# 비율: 충족 60% / 부분충족 25% / 미충족 15% (시연 시 적정 점수 ~2.5~3.0).
+# 평가불가 0% — 데모는 모두 측정 가능.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_DEMO_VERDICTS = (
+    ("충족",   0.60, 1.00),
+    ("부분충족", 0.85, 0.50),  # 누적 0.85 까지 → 25% 비중
+    ("미충족",  1.00, 0.10),
+)
+
+
+def _demo_result(tool: str, item_id: str, maturity: str) -> dict:
+    """항목별 deterministic fake 결과. scan_mode='demo' 전용.
+
+    metric_value/threshold 는 verdict 와 일치하는 합리적 값으로 채운다.
+    """
+    h = abs(hash(f"{item_id}|{tool}")) % 1000 / 1000.0
+    verdict = "미충족"
+    value = 0.10
+    for v, cutoff, val in _DEMO_VERDICTS:
+        if h <= cutoff:
+            verdict, value = v, val
+            break
+    return {
+        "item_id":      item_id,
+        "maturity":     maturity,
+        "tool":         tool,
+        "result":       verdict,
+        "metric_key":   "demo_simulation",
+        "metric_value": value,
+        "threshold":    0.80,
+        "raw_json":     {"demo": True, "deterministic_hash": h},
+        "error":        None,
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _run_demo_mode(session_id: int, tools: list[str]) -> None:
+    """scan_mode='demo' 일 때의 _run_collectors 대체 경로.
+
+    각 도구의 base+autodiscover 매핑을 순회하며 _demo_result 를 단건 persist.
+    DEMO_DELAY_MS 가 있으면 점진 진행률 효과.
+    """
+    import time as _t
+    for tool in tools:
+        try:
+            mapping = _full_mapping(tool)
+        except Exception as exc:
+            logger.warning("[demo] mapping load failed tool=%s: %s", tool, exc)
+            continue
+        for entry in mapping:
+            if len(entry) < 3:
+                continue
+            _, item_id, maturity = entry[0], entry[1], entry[2]
+            result = _demo_result(tool, item_id, maturity)
+            _persist_one_result(session_id, result)
+            if DEMO_DELAY_MS > 0:
+                _t.sleep(DEMO_DELAY_MS / 1000.0)
+
+
 def _persist_one_result(session_id: int, item: dict) -> bool:
     """단건 commit — 데모 모드에서 점진적 진행률용. True if persisted."""
     item_id_str = item.get("item_id")
@@ -2187,6 +2317,36 @@ def _run_collectors(session_id: int, tools: list[str]):
     InProgress 화면의 progress 가 자연스럽게 차오르게 한다.
     """
     if not tools:
+        return
+
+    # scan_mode=='demo' 이면 collector 실호출 없이 fake 결과 생성.
+    # 자격·외부 호출 모두 불필요하므로 메모리 자격도 pop 해서 폐기만.
+    db_mode = SessionLocal()
+    try:
+        sess_mode = db_mode.query(DiagnosisSession).filter(
+            DiagnosisSession.session_id == session_id
+        ).first()
+        scan_mode = "demo"
+        if sess_mode and isinstance(sess_mode.extra, dict):
+            scan_mode = (sess_mode.extra.get("scan_mode") or "demo").strip().lower()
+    except Exception:
+        scan_mode = "demo"
+    finally:
+        db_mode.close()
+
+    if scan_mode == "demo":
+        # 메모리 자격 폐기 (보관된 게 있다면).
+        _pop_session_secrets(session_id)
+        with _collector_lock:
+            _run_demo_mode(session_id, tools)
+        # 채점 — finalize 별도 호출 없이 자동으로 점수 계산.
+        db_score = SessionLocal()
+        try:
+            _trigger_scoring(session_id, db_score)
+        except Exception as exc:
+            logger.warning("[demo] scoring failed session=%s: %s", session_id, exc)
+        finally:
+            db_score.close()
         return
 
     # 세션의 사용자 입력 조회.
