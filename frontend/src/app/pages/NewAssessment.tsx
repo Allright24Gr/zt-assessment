@@ -5,7 +5,11 @@ import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
-import type { ScanTargets, KeycloakCreds, WazuhCreds, EntraCreds, OktaCreds, SplunkCreds, IdpType, SiemType } from "../../types/api";
+import type {
+  ScanTargets, KeycloakCreds, WazuhCreds, EntraCreds, OktaCreds, SplunkCreds,
+  LdapCreds, CrowdstrikeCreds, DefenderCreds,
+  IdpType, SiemType, EdrType,
+} from "../../types/api";
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
 const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"];
@@ -15,7 +19,7 @@ const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported:
   { key: "keycloak", label: "Keycloak",                desc: "오픈소스 IAM/SSO",        supported: true  },
   { key: "entra",    label: "MS Entra ID (Azure AD)",  desc: "Microsoft 클라우드 IdP",   supported: true  },
   { key: "okta",     label: "Okta",                    desc: "SaaS IdP",                supported: true  },
-  { key: "ldap",     label: "자체 LDAP / AD",          desc: "온프레미스 디렉터리",      supported: false },
+  { key: "ldap",     label: "자체 LDAP / AD",          desc: "온프레미스 디렉터리",      supported: true  },
   { key: "none",     label: "사용 안 함 / 기타",       desc: "수동 진단으로 폴백",       supported: false },
 ];
 
@@ -25,6 +29,13 @@ const SIEM_OPTIONS: Array<{ key: SiemType; label: string; desc: string; supporte
   { key: "splunk",  label: "Splunk",       desc: "상용 SIEM",          supported: true  },
   { key: "elastic", label: "Elastic SIEM", desc: "Elastic Stack",      supported: false },
   { key: "none",    label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백", supported: false },
+];
+
+// 사전 프로파일링 — EDR 선택지
+const EDR_OPTIONS: Array<{ key: EdrType; label: string; desc: string; supported: boolean }> = [
+  { key: "crowdstrike", label: "CrowdStrike Falcon",       desc: "SaaS EDR",                supported: true  },
+  { key: "defender",    label: "MS Defender for Endpoint", desc: "Microsoft 365 EDR",       supported: true  },
+  { key: "none",        label: "사용 안 함 / 기타",        desc: "수동 진단으로 폴백",       supported: false },
 ];
 
 export function NewAssessment() {
@@ -80,10 +91,11 @@ export function NewAssessment() {
   const [pillarScope, setPillarScope] = useState<Record<string, boolean>>(
     Object.fromEntries(PILLARS.map((p) => [p.key, true]))
   );
-  // 사전 프로파일링 선택 — 기본은 현재 동작과 동일(Keycloak + Wazuh)
-  const [profileSelect, setProfileSelect] = useState<{ idp_type: IdpType; siem_type: SiemType }>({
+  // 사전 프로파일링 선택 — 기본은 현재 동작과 동일(Keycloak + Wazuh + EDR 미선택)
+  const [profileSelect, setProfileSelect] = useState<{ idp_type: IdpType; siem_type: SiemType; edr_type: EdrType }>({
     idp_type: "keycloak",
     siem_type: "wazuh",
+    edr_type: "none",
   });
   // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy
   const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean }>({
@@ -91,13 +103,16 @@ export function NewAssessment() {
   });
   // 내부적으로 백엔드에 보내는 tool_scope는 profileSelect + externalScanTools에서 파생
   const toolScope: Record<string, boolean> = {
-    keycloak: profileSelect.idp_type === "keycloak",
-    entra:    profileSelect.idp_type === "entra",
-    okta:     profileSelect.idp_type === "okta",
-    wazuh:    profileSelect.siem_type === "wazuh",
-    splunk:   profileSelect.siem_type === "splunk",
-    nmap:     externalScanTools.nmap,
-    trivy:    externalScanTools.trivy,
+    keycloak:    profileSelect.idp_type === "keycloak",
+    entra:       profileSelect.idp_type === "entra",
+    okta:        profileSelect.idp_type === "okta",
+    ldap:        profileSelect.idp_type === "ldap",
+    wazuh:       profileSelect.siem_type === "wazuh",
+    splunk:      profileSelect.siem_type === "splunk",
+    crowdstrike: profileSelect.edr_type === "crowdstrike",
+    defender:    profileSelect.edr_type === "defender",
+    nmap:        externalScanTools.nmap,
+    trivy:       externalScanTools.trivy,
   };
   const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string }>({
     nmap: "", trivy: "",
@@ -127,6 +142,18 @@ export function NewAssessment() {
   // Splunk 자격 카드 입력값 (P0/P1 기타)
   const [splunkCreds, setSplunkCreds] = useState<{ url: string; user: string; password: string }>({
     url: "", user: "", password: "",
+  });
+  // LDAP / AD 자격 카드 (신규)
+  const [ldapCreds, setLdapCreds] = useState<{ url: string; bind_dn: string; bind_password: string; base_dn: string }>({
+    url: "", bind_dn: "", bind_password: "", base_dn: "",
+  });
+  // CrowdStrike Falcon 자격 카드 (신규)
+  const [crowdstrikeCreds, setCrowdstrikeCreds] = useState<{ api_base: string; client_id: string; client_secret: string }>({
+    api_base: "", client_id: "", client_secret: "",
+  });
+  // MS Defender for Endpoint 자격 카드 (신규)
+  const [defenderCreds, setDefenderCreds] = useState<{ tenant_id: string; client_id: string; client_secret: string }>({
+    tenant_id: "", client_id: "", client_secret: "",
   });
 
   const togglePillar = (key: string) => {
@@ -230,6 +257,34 @@ export function NewAssessment() {
     }
     const hasSplunk = Object.keys(splunkPayload).length > 0;
 
+    // LDAP / AD 자격: 실 스캔 모드 + IdP=ldap + 입력값이 있을 때만 전송
+    const ldapPayload: LdapCreds = {};
+    if (isLive && toolScope.ldap) {
+      if (ldapCreds.url.trim())          ldapPayload.url           = ldapCreds.url.trim();
+      if (ldapCreds.bind_dn.trim())      ldapPayload.bind_dn       = ldapCreds.bind_dn.trim();
+      if (ldapCreds.bind_password)       ldapPayload.bind_password = ldapCreds.bind_password;
+      if (ldapCreds.base_dn.trim())      ldapPayload.base_dn       = ldapCreds.base_dn.trim();
+    }
+    const hasLdap = Object.keys(ldapPayload).length > 0;
+
+    // CrowdStrike Falcon: 실 스캔 모드 + EDR=crowdstrike
+    const crowdstrikePayload: CrowdstrikeCreds = {};
+    if (isLive && toolScope.crowdstrike) {
+      if (crowdstrikeCreds.api_base.trim())     crowdstrikePayload.api_base     = crowdstrikeCreds.api_base.trim();
+      if (crowdstrikeCreds.client_id.trim())    crowdstrikePayload.client_id    = crowdstrikeCreds.client_id.trim();
+      if (crowdstrikeCreds.client_secret)        crowdstrikePayload.client_secret = crowdstrikeCreds.client_secret;
+    }
+    const hasCrowdstrike = Object.keys(crowdstrikePayload).length > 0;
+
+    // MS Defender for Endpoint: 실 스캔 모드 + EDR=defender
+    const defenderPayload: DefenderCreds = {};
+    if (isLive && toolScope.defender) {
+      if (defenderCreds.tenant_id.trim())  defenderPayload.tenant_id     = defenderCreds.tenant_id.trim();
+      if (defenderCreds.client_id.trim())  defenderPayload.client_id     = defenderCreds.client_id.trim();
+      if (defenderCreds.client_secret)     defenderPayload.client_secret = defenderCreds.client_secret;
+    }
+    const hasDefender = Object.keys(defenderPayload).length > 0;
+
     runAssessment({
       org_name: formData.orgName,
       manager: formData.manager,
@@ -251,6 +306,9 @@ export function NewAssessment() {
       ...(hasEntra ? { entra_creds: entraPayload } : {}),
       ...(hasOkta ? { okta_creds: oktaPayload } : {}),
       ...(hasSplunk ? { splunk_creds: splunkPayload } : {}),
+      ...(hasLdap ? { ldap_creds: ldapPayload } : {}),
+      ...(hasCrowdstrike ? { crowdstrike_creds: crowdstrikePayload } : {}),
+      ...(hasDefender ? { defender_creds: defenderPayload } : {}),
     })
       .then((res) =>
         navigate(`/in-progress/${res.session_id}`, {
@@ -284,6 +342,9 @@ export function NewAssessment() {
           entraCreds:    { tenant_id: entraCreds.tenant_id, client_id: entraCreds.client_id },
           oktaCreds:     { domain: oktaCreds.domain },
           splunkCreds:   { url: splunkCreds.url, user: splunkCreds.user },
+          ldapCreds:     { url: ldapCreds.url, bind_dn: ldapCreds.bind_dn, base_dn: ldapCreds.base_dn },
+          crowdstrikeCreds: { api_base: crowdstrikeCreds.api_base, client_id: crowdstrikeCreds.client_id },
+          defenderCreds:    { tenant_id: defenderCreds.tenant_id, client_id: defenderCreds.client_id },
         }),
       );
       toast.success("입력한 내용이 임시저장되었습니다. (비밀번호는 저장되지 않습니다)");
@@ -481,6 +542,43 @@ export function NewAssessment() {
                 </div>
               </div>
 
+              {/* EDR (엔드포인트 보호) */}
+              <div className="mb-4">
+                <p className="mb-2 text-xs font-semibold text-gray-700">엔드포인트 보호 (EDR)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" role="radiogroup" aria-label="EDR 도구">
+                  {EDR_OPTIONS.map((opt) => {
+                    const checked = profileSelect.edr_type === opt.key;
+                    return (
+                      <label
+                        key={opt.key}
+                        className={`flex items-start gap-2 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                          checked ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="edrType"
+                          className="mt-0.5 w-4 h-4"
+                          checked={checked}
+                          onChange={() => setProfileSelect((prev) => ({ ...prev, edr_type: opt.key }))}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-800 flex items-center gap-1.5">
+                            {opt.label}
+                            {!opt.supported && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
+                                자동 미지원
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-500">{opt.desc}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* 외부 자동 스캔 (도구 무관) */}
               <div>
                 <p className="mb-2 text-xs font-semibold text-gray-700">외부 자동 스캔 (도구 무관)</p>
@@ -517,8 +615,9 @@ export function NewAssessment() {
               </div>
 
               {/* 폴백 안내 */}
-              {(profileSelect.idp_type === "ldap" || profileSelect.idp_type === "none" ||
-                profileSelect.siem_type === "elastic" || profileSelect.siem_type === "none") && (
+              {(profileSelect.idp_type === "none" ||
+                profileSelect.siem_type === "elastic" || profileSelect.siem_type === "none" ||
+                profileSelect.edr_type === "none") && (
                 <div className="mt-4 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
                   <Info size={14} className="mt-0.5 shrink-0" />
                   <span>
@@ -744,8 +843,10 @@ export function NewAssessment() {
               </div>
             )}
 
-            {/* IdP / SIEM 연결 카드 (작업 E-fe + Entra/Okta/Splunk) */}
-            {(toolScope.keycloak || toolScope.entra || toolScope.okta || toolScope.wazuh || toolScope.splunk) && (
+            {/* IdP / SIEM / EDR 연결 카드 */}
+            {(toolScope.keycloak || toolScope.entra || toolScope.okta || toolScope.ldap ||
+              toolScope.wazuh || toolScope.splunk ||
+              toolScope.crowdstrike || toolScope.defender) && (
               <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <KeyRound size={16} className="text-blue-600" />
@@ -919,6 +1020,140 @@ export function NewAssessment() {
                           disabled={!isLive}
                           aria-label="Splunk 비밀번호"
                         />
+                      </div>
+                    </div>
+                  )}
+                  {/* LDAP / AD 카드 (신규) */}
+                  {toolScope.ldap && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">LDAP / AD</span>
+                        <span className="text-[10px] text-gray-400">온프레미스 디렉터리</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={ldapCreds.url}
+                          onChange={(e) => setLdapCreds({ ...ldapCreds, url: e.target.value })}
+                          placeholder="ldap://host:389 또는 ldaps://host:636"
+                          disabled={!isLive}
+                          aria-label="LDAP URL"
+                        />
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={ldapCreds.bind_dn}
+                          onChange={(e) => setLdapCreds({ ...ldapCreds, bind_dn: e.target.value })}
+                          placeholder="cn=admin,dc=example,dc=com"
+                          disabled={!isLive}
+                          aria-label="LDAP Bind DN"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={ldapCreds.bind_password}
+                          onChange={(e) => setLdapCreds({ ...ldapCreds, bind_password: e.target.value })}
+                          placeholder="Bind 비밀번호"
+                          disabled={!isLive}
+                          aria-label="LDAP Bind Password"
+                        />
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={ldapCreds.base_dn}
+                          onChange={(e) => setLdapCreds({ ...ldapCreds, base_dn: e.target.value })}
+                          placeholder="dc=example,dc=com"
+                          disabled={!isLive}
+                          aria-label="LDAP Base DN"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {/* CrowdStrike Falcon 카드 (신규) */}
+                  {toolScope.crowdstrike && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">CrowdStrike Falcon</span>
+                        <span className="text-[10px] text-gray-400">SaaS EDR</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={crowdstrikeCreds.api_base}
+                          onChange={(e) => setCrowdstrikeCreds({ ...crowdstrikeCreds, api_base: e.target.value })}
+                          placeholder="https://api.crowdstrike.com"
+                          disabled={!isLive}
+                          aria-label="CrowdStrike API Base"
+                        />
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={crowdstrikeCreds.client_id}
+                          onChange={(e) => setCrowdstrikeCreds({ ...crowdstrikeCreds, client_id: e.target.value })}
+                          placeholder="OAuth2 Client ID"
+                          disabled={!isLive}
+                          aria-label="CrowdStrike Client ID"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={crowdstrikeCreds.client_secret}
+                          onChange={(e) => setCrowdstrikeCreds({ ...crowdstrikeCreds, client_secret: e.target.value })}
+                          placeholder="Client Secret"
+                          disabled={!isLive}
+                          aria-label="CrowdStrike Client Secret"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {/* MS Defender for Endpoint 카드 (신규) */}
+                  {toolScope.defender && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">MS Defender for Endpoint</span>
+                        <span className="text-[10px] text-gray-400">Microsoft 365 EDR</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={defenderCreds.tenant_id}
+                          onChange={(e) => setDefenderCreds({ ...defenderCreds, tenant_id: e.target.value })}
+                          placeholder="00000000-0000-0000-0000-000000000000"
+                          disabled={!isLive}
+                          aria-label="Defender Tenant ID"
+                        />
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={defenderCreds.client_id}
+                          onChange={(e) => setDefenderCreds({ ...defenderCreds, client_id: e.target.value })}
+                          placeholder="App registration Client ID"
+                          disabled={!isLive}
+                          aria-label="Defender Client ID"
+                        />
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          value={defenderCreds.client_secret}
+                          onChange={(e) => setDefenderCreds({ ...defenderCreds, client_secret: e.target.value })}
+                          placeholder="Client Secret"
+                          disabled={!isLive}
+                          aria-label="Defender Client Secret"
+                        />
+                        <p className="text-[11px] text-gray-500 leading-relaxed">
+                          Microsoft 365 Defender 포털 → API 앱 등록에
+                          <strong className="text-gray-700"> Machine.Read.All, AdvancedQuery.Read.All</strong> 권한 부여 필요
+                        </p>
                       </div>
                     </div>
                   )}

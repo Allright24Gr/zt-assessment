@@ -3,15 +3,24 @@
 > 본 문서는 **무엇이 끝났고 무엇이 남았는지** 헷갈리지 않도록 기능별·우선순위별로 정리한다.
 > 현재 상태 스냅샷은 `STATUS.md`, 운영 정책·아키텍처는 `CLAUDE.md`를 본다.
 
-작성: 2026-05-17 / 기준 브랜치 `dev` @ `2ec8457`
+작성: 2026-05-17 / 기준 브랜치 `dev` (Y 트랙 후속까지 반영)
 
-> **변경 요약 (2026-05-17 후속)**
+> **변경 요약 (2026-05-17 후속 누적)**
 > - P0 6개 모두 완료 (JWT, 비번재설정, audit DB, IP 잠금, 약관 동의, 회원 탈퇴+SMTP)
 > - P1 6개 모두 완료 (Okta+Splunk collector, 증적 업로드, 비교, 공유, retry, frontend 통합)
-> - STEP 1 운영 셋업 완료 (docker-compose.prod.yml, nginx, DEPLOY.md, e2e_smoke.sh)
-> - STEP 2 pytest 66 케이스 완료 (multi-tenant는 test_idor.py로 보증, 별도 SQLAlchemy guard 미추가)
-> - **자동 진단 항목 211 → 262 (Entra +20, Okta +15, Splunk +15)**
-> - **남은 결정**: P3-20 LLM·P3-26 PDF는 사용자 결정으로 보류. STEP 3 차별화 자체 보류.
+> - STEP 1 운영 셋업 완료 (docker-compose.prod, nginx, DEPLOY.md, e2e_smoke.sh, **bootstrap.sh 한 줄 자동화**)
+> - STEP 2 pytest 66 케이스 완료
+> - **세션 삭제** UI/DB cascade + **PDF 다운로드 fix** (fetch+blob)
+> - **데모 점진 진행률** (ZTA_DEMO_DELAY_MS)
+> - **Y 트랙 본질**:
+>   · B-1 매핑 정확성 — 5건 maturity 불일치 정정 + `_validate_mapping` 회귀 가드
+>   · B-2 점수 알고리즘 재설계 — 평가불가 분모 제외 + 가중 평균 + confidence
+>   · B-3 신뢰도 시각화 — Reporting 진단 신뢰도 카드 + pillar별 평가불가
+>   · B-4 권고 사용자 환경 맞춤 — improvement_customizer (IDP/SIEM/EDR 12개 프로파일)
+>   · B-5 LDAP/AD collector — 한국 공공·제조 시장 진입
+>   · B-7 EDR collector — CrowdStrike + Defender for Endpoint
+> - **자동 진단 항목**: 262 → **307** (LDAP +15, CrowdStrike +15, Defender +15, base 합 193)
+> - **남은 결정**: P3-20 LLM·P3-26 PDF는 사용자 결정으로 보류.
 
 ---
 

@@ -134,30 +134,37 @@ POST /api/assessment/finalize/{id}
 
 InProgress 페이지가 250ms 폴링으로 진행률을 표시 (frontend가 평균 속도로 동적 ETA 추정).
 
-### B-4. 지원 도구 매트릭스 (2026-05 기준)
+### B-4. 지원 도구 매트릭스 (2026-05-17 기준)
 
 #### IdP (신원)
 | 도구 | 상태 | 자동 항목 수 | 비고 |
 |---|---|---|---|
-| Keycloak | ✅ 지원 | 65 | 1차 구현, 한국 대학/공공/금융 일부 |
-| **MS Entra ID** | ✅ 지원 (Phase A) | 20 | 한국 기업 점유율 1위. Microsoft Graph |
-| Okta | ⏳ 미지원 (PLAN.md P1-10) | 0 → 100% 수동 폴백 | |
-| 자체 LDAP / AD | ⏳ 미지원 | 0 → 100% 수동 폴백 | |
-| 기타 / 사용 안 함 | — | 0 → 100% 수동 폴백 | |
+| Keycloak | ✅ | 65 | admin REST API. 대학/공공/금융 일부 |
+| MS Entra ID | ✅ | 20 | Microsoft Graph + OAuth client_credentials. 한국 기업 점유율 1위 |
+| Okta | ✅ | 15 | SSWS API token. 글로벌 SaaS |
+| **자체 LDAP / AD** | ✅ | 15 | ldap3 simple bind. AD/OpenLDAP. 한국 공공·제조 핵심 |
+| 기타 / 사용 안 함 | — | 0 → 수동 폴백 | |
 
 #### SIEM (보안 정보)
 | 도구 | 상태 | 자동 항목 수 |
 |---|---|---|
-| Wazuh | ✅ 지원 | 122 |
-| Splunk | ⏳ 미지원 (PLAN.md P1-10) | 0 → 수동 |
-| Elastic SIEM | ⏳ 미지원 | 0 → 수동 |
+| Wazuh | ✅ | 122 |
+| Splunk | ✅ | 15 |
+| Elastic SIEM | ⏳ | 0 → 수동 |
+| 기타 | — | 0 → 수동 |
+
+#### EDR (엔드포인트)
+| 도구 | 상태 | 자동 항목 수 |
+|---|---|---|
+| **CrowdStrike Falcon** | ✅ | 15 |
+| **MS Defender for Endpoint** | ✅ | 15 |
 | 기타 | — | 0 → 수동 |
 
 #### 도구 무관 (항상 가능)
 - Nmap (외부 IP/포트 스캔) — 14 항목
 - Trivy (컨테이너 이미지 스캔) — 11 항목
 
-**현재 자동 진단 합계: 211 → 231 (Entra +20).**
+**현재 자동 진단 합계: base 193 + autodiscover 114 = 307** (10 도구).
 
 ### B-5. 데이터 보관 정책
 

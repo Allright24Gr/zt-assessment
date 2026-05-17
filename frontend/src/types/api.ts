@@ -102,6 +102,25 @@ export interface SplunkCreds {
   password?: string;
 }
 
+export interface LdapCreds {
+  url?: string;
+  bind_dn?: string;
+  bind_password?: string;
+  base_dn?: string;
+}
+
+export interface CrowdstrikeCreds {
+  api_base?: string;
+  client_id?: string;
+  client_secret?: string;
+}
+
+export interface DefenderCreds {
+  tenant_id?: string;
+  client_id?: string;
+  client_secret?: string;
+}
+
 // 인증 토큰 (P0-1) — 백엔드 login/register 응답의 tokens 필드 형식
 export interface TokenPair {
   access_token: string;
@@ -196,10 +215,12 @@ export interface ManualEvidenceUploadResponse {
 
 export type IdpType = "keycloak" | "entra" | "okta" | "ldap" | "none";
 export type SiemType = "wazuh" | "splunk" | "elastic" | "none";
+export type EdrType = "crowdstrike" | "defender" | "none";
 
 export interface ProfileSelect {
   idp_type: IdpType;
   siem_type: SiemType;
+  edr_type?: EdrType;
 }
 
 export interface AssessmentRunRequest {
@@ -222,6 +243,9 @@ export interface AssessmentRunRequest {
   entra_creds?: EntraCreds;
   okta_creds?: OktaCreds;
   splunk_creds?: SplunkCreds;
+  ldap_creds?: LdapCreds;
+  crowdstrike_creds?: CrowdstrikeCreds;
+  defender_creds?: DefenderCreds;
   profile_select?: ProfileSelect;
 }
 
@@ -239,6 +263,13 @@ export interface AssessmentResultResponse {
   overall_level: MaturityLevel | string;
   checklist_results: ChecklistItemResult[];
   errors?: AssessmentError[];
+  // B-3: pillar별 평가불가 카운트 / 진단 신뢰도
+  pillar_unevaluable?: Record<string, number>;
+  total_score?: number;
+  maturity_level?: MaturityLevel | string;
+  evaluable_items?: number;
+  unevaluable_items?: number;
+  confidence?: number;
 }
 
 export interface AssessmentHistoryResponse {

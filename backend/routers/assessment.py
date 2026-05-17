@@ -54,8 +54,14 @@ SHUFFLE_WF = {
     "okta":     os.getenv("SHUFFLE_WORKFLOW_OKTA",     ""),
     "splunk":   os.getenv("SHUFFLE_WORKFLOW_SPLUNK",   ""),
     "ldap":     os.getenv("SHUFFLE_WORKFLOW_LDAP",     ""),
+    "crowdstrike": os.getenv("SHUFFLE_WORKFLOW_CROWDSTRIKE", ""),
+    "defender":    os.getenv("SHUFFLE_WORKFLOW_DEFENDER",    ""),
 }
-ALL_TOOLS = ("keycloak", "wazuh", "nmap", "trivy", "entra", "okta", "splunk", "ldap")
+ALL_TOOLS = (
+    "keycloak", "wazuh", "nmap", "trivy",
+    "entra", "okta", "splunk", "ldap",
+    "crowdstrike", "defender",
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -129,6 +135,20 @@ def _mask_creds(extra: dict) -> dict:
         if masked.get("bind_password"):
             masked["bind_password"] = "***"
         safe["ldap_creds"] = masked
+    # crowdstrike_creds: client_secret 마스킹 (api_base/client_id 는 식별자)
+    cs = safe.get("crowdstrike_creds")
+    if isinstance(cs, dict):
+        masked = dict(cs)
+        if masked.get("client_secret"):
+            masked["client_secret"] = "***"
+        safe["crowdstrike_creds"] = masked
+    # defender_creds: client_secret 마스킹 (tenant_id/client_id 는 식별자)
+    dc = safe.get("defender_creds")
+    if isinstance(dc, dict):
+        masked = dict(dc)
+        if masked.get("client_secret"):
+            masked["client_secret"] = "***"
+        safe["defender_creds"] = masked
     return safe
 
 
@@ -148,16 +168,20 @@ def _store_session_secrets(
     okta_creds: dict = None,
     splunk_creds: dict = None,
     ldap_creds: dict = None,
+    crowdstrike_creds: dict = None,
+    defender_creds: dict = None,
 ) -> None:
     """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
     with _session_creds_lock:
         _session_creds_store[session_id] = {
-            "keycloak": dict(kc_creds or {}),
-            "wazuh":    dict(wz_creds or {}),
-            "entra":    dict(entra_creds or {}),
-            "okta":     dict(okta_creds or {}),
-            "splunk":   dict(splunk_creds or {}),
-            "ldap":     dict(ldap_creds or {}),
+            "keycloak":    dict(kc_creds or {}),
+            "wazuh":       dict(wz_creds or {}),
+            "entra":       dict(entra_creds or {}),
+            "okta":        dict(okta_creds or {}),
+            "splunk":      dict(splunk_creds or {}),
+            "ldap":        dict(ldap_creds or {}),
+            "crowdstrike": dict(crowdstrike_creds or {}),
+            "defender":    dict(defender_creds or {}),
         }
 
 
@@ -261,6 +285,7 @@ class ProfileSelect(BaseModel):
     """
     idp_type: Optional[str] = None   # keycloak | entra | okta | ldap | none
     siem_type: Optional[str] = None  # wazuh | splunk | elastic | none
+    edr_type: Optional[str] = None   # crowdstrike | defender | none
 
 
 class AssessmentRunRequest(BaseModel):
@@ -296,6 +321,10 @@ class AssessmentRunRequest(BaseModel):
     # 예: {"url": "ldap://dc.example.local:389", "bind_dn": "CN=zt,DC=example,DC=local",
     #      "bind_password": "...", "base_dn": "DC=example,DC=local"}
     ldap_creds: Optional[dict] = None
+    # 예: {"api_base": "https://api.crowdstrike.com", "client_id": "...", "client_secret": "..."}
+    crowdstrike_creds: Optional[dict] = None
+    # 예: {"tenant_id": "<guid>", "client_id": "...", "client_secret": "..."}
+    defender_creds: Optional[dict] = None
 
 
 # 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑. 신규 도구 자동화가 생기면 여기에 추가.
@@ -314,6 +343,14 @@ _SIEM_TOOL_OF = {
 _IDP_AUTO_TOOLS = {"keycloak", "entra", "okta", "ldap"}
 _SIEM_AUTO_TOOLS = {"wazuh", "splunk"}
 
+# EDR(엔드포인트 위협 탐지·대응) — Pillar 2 핵심. IdP/SIEM 과 같은 단일 선택 패턴.
+_EDR_TOOL_OF = {
+    "crowdstrike": "crowdstrike",
+    "defender":    "defender",
+    # "none" / 미선택 → EDR 자동 도구 전체 비활성 (수동 폴백)
+}
+_EDR_AUTO_TOOLS = {"crowdstrike", "defender"}
+
 
 def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) -> dict:
     """tool_scope 와 사용자 환경(profile_select) 교집합으로 실제 실행할 도구 결정.
@@ -328,8 +365,10 @@ def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) ->
         requested = {t: True for t in ALL_TOOLS}
     sel_idp = ((profile_select or {}).get("idp_type") or "").lower() if profile_select else ""
     sel_siem = ((profile_select or {}).get("siem_type") or "").lower() if profile_select else ""
-    allowed_idp = _IDP_TOOL_OF.get(sel_idp)  # 매칭되는 자동 도구 (없으면 None=전체 폴백)
+    sel_edr = ((profile_select or {}).get("edr_type") or "").lower() if profile_select else ""
+    allowed_idp = _IDP_TOOL_OF.get(sel_idp)   # 매칭되는 자동 도구 (없으면 None=전체 폴백)
     allowed_siem = _SIEM_TOOL_OF.get(sel_siem)
+    allowed_edr = _EDR_TOOL_OF.get(sel_edr)
 
     result: dict = {}
     for t in ALL_TOOLS:
@@ -337,6 +376,8 @@ def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) ->
         if t in _IDP_AUTO_TOOLS and sel_idp and allowed_idp != t:
             ok = False
         if t in _SIEM_AUTO_TOOLS and sel_siem and allowed_siem != t:
+            ok = False
+        if t in _EDR_AUTO_TOOLS and sel_edr and allowed_edr != t:
             ok = False
         result[t] = ok
     return result
@@ -450,6 +491,32 @@ def run_assessment(
             ld_in["bind_password"] = validate_cred_field(
                 ld_in.get("bind_password") or "", "ldap_creds.bind_password", max_len=200
             )
+
+        cs_in = dict(req.crowdstrike_creds or {}) if req.crowdstrike_creds else {}
+        if cs_in:
+            cs_in["api_base"] = validate_https_url(
+                cs_in.get("api_base") or "", "crowdstrike_creds.api_base"
+            )
+            cs_in["client_id"] = validate_cred_field(
+                cs_in.get("client_id") or "", "crowdstrike_creds.client_id"
+            )
+            cs_in["client_secret"] = validate_cred_field(
+                cs_in.get("client_secret") or "", "crowdstrike_creds.client_secret",
+                max_len=200,
+            )
+
+        df_in = dict(req.defender_creds or {}) if req.defender_creds else {}
+        if df_in:
+            df_in["tenant_id"] = validate_entra_tenant_id(
+                df_in.get("tenant_id") or "", "defender_creds.tenant_id"
+            )
+            df_in["client_id"] = validate_cred_field(
+                df_in.get("client_id") or "", "defender_creds.client_id"
+            )
+            df_in["client_secret"] = validate_cred_field(
+                df_in.get("client_secret") or "", "defender_creds.client_secret",
+                max_len=200,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -500,6 +567,10 @@ def run_assessment(
     sp_meta = {k: v for k, v in sp_in.items() if k in ("url", "user") and v}
     # ldap: bind_password 는 DB 저장 금지. url/bind_dn/base_dn 만 extra 에 남김.
     ld_meta = {k: v for k, v in ld_in.items() if k in ("url", "bind_dn", "base_dn") and v}
+    # crowdstrike: client_secret 은 DB 저장 금지. api_base/client_id 만 extra 에 남김.
+    cs_meta = {k: v for k, v in cs_in.items() if k in ("api_base", "client_id") and v}
+    # defender: client_secret 은 DB 저장 금지. tenant_id/client_id 만 extra 에 남김.
+    df_meta = {k: v for k, v in df_in.items() if k in ("tenant_id", "client_id") and v}
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -515,6 +586,8 @@ def run_assessment(
         "okta_creds":     ok_meta,
         "splunk_creds":   sp_meta,
         "ldap_creds":     ld_meta,
+        "crowdstrike_creds": cs_meta,
+        "defender_creds":    df_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
     }
@@ -532,7 +605,10 @@ def run_assessment(
     db.refresh(session)
 
     # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
-    _store_session_secrets(session.session_id, kc_in, wz_in, en_in, ok_in, sp_in, ld_in)
+    _store_session_secrets(
+        session.session_id, kc_in, wz_in, en_in, ok_in, sp_in, ld_in,
+        cs_in, df_in,
+    )
 
     # Shuffle 경로 우선, 미설정 시 직접 collector 실행
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
@@ -1235,6 +1311,64 @@ def _ldap_mapping():
     ]
 
 
+def _crowdstrike_mapping():
+    from collectors.crowdstrike_collector import (
+        collect_endpoint_inventory, collect_agent_registration, collect_edr_agents,
+        collect_auto_block, collect_policy_violation_alerts,
+        collect_realtime_threat_alerts, collect_threat_detection_alerts,
+        collect_privilege_escalation_alerts, collect_lateral_movement_alerts,
+        collect_malware_blocked, collect_quarantine_actions,
+        collect_realtime_monitoring, collect_vuln_summary,
+        collect_critical_unfixed_vulns, collect_sca_access_control,
+    )
+    return [
+        (collect_endpoint_inventory,         "2.2.1.1_1", "기존"),
+        (collect_agent_registration,         "2.3.1.1_2", "기존"),
+        (collect_edr_agents,                 "2.3.1.2_2", "초기"),
+        (collect_auto_block,                 "2.2.1.4_1", "최적화"),
+        (collect_policy_violation_alerts,    "2.1.1.2_2", "초기"),
+        (collect_realtime_threat_alerts,     "4.4.1.1_2", "기존"),
+        (collect_threat_detection_alerts,    "5.2.1.4_2", "최적화"),
+        (collect_privilege_escalation_alerts,"1.4.2.3_2", "향상"),
+        (collect_lateral_movement_alerts,    "3.4.1.1_2", "기존"),
+        (collect_malware_blocked,            "2.1.1.3_1", "향상"),
+        (collect_quarantine_actions,         "2.4.2.2_1", "초기"),
+        (collect_realtime_monitoring,        "2.2.1.3_1", "향상"),
+        (collect_vuln_summary,               "5.5.2.2_1", "초기"),
+        (collect_critical_unfixed_vulns,     "5.5.1.3_1", "향상"),
+        (collect_sca_access_control,         "2.1.1.3_2", "향상"),
+    ]
+
+
+def _defender_mapping():
+    from collectors.defender_collector import (
+        collect_endpoint_inventory, collect_agent_registration, collect_edr_agents,
+        collect_policy_violation_alerts, collect_realtime_threat_alerts,
+        collect_threat_detection_alerts, collect_privilege_escalation_alerts,
+        collect_lateral_movement_alerts, collect_malware_blocked,
+        collect_auto_block, collect_vuln_summary, collect_critical_unfixed_vulns,
+        collect_realtime_monitoring, collect_active_response_auth,
+        collect_agent_keepalive,
+    )
+    return [
+        (collect_endpoint_inventory,          "2.2.1.1_1", "기존"),
+        (collect_agent_registration,          "2.3.1.1_2", "기존"),
+        (collect_edr_agents,                  "2.3.1.2_2", "초기"),
+        (collect_policy_violation_alerts,     "2.1.1.2_2", "초기"),
+        (collect_realtime_threat_alerts,      "4.4.1.1_2", "기존"),
+        (collect_threat_detection_alerts,     "5.2.1.4_2", "최적화"),
+        (collect_privilege_escalation_alerts, "1.4.2.3_2", "향상"),
+        (collect_lateral_movement_alerts,     "3.4.1.1_2", "기존"),
+        (collect_malware_blocked,             "2.1.1.3_1", "향상"),
+        (collect_auto_block,                  "2.2.1.4_1", "최적화"),
+        (collect_vuln_summary,                "5.5.2.2_1", "초기"),
+        (collect_critical_unfixed_vulns,      "5.5.1.3_1", "향상"),
+        (collect_realtime_monitoring,         "2.2.1.3_1", "향상"),
+        (collect_active_response_auth,        "1.2.1.4_1", "최적화"),
+        (collect_agent_keepalive,             "2.3.1.1_3", "기존"),
+    ]
+
+
 def _tr_mapping():
     from collectors.trivy_collector import (
         collect_image_scan, collect_cicd_scan_ratio, collect_integrity_check,
@@ -1312,26 +1446,30 @@ def _autodiscover(module_name: str, base: list) -> list:
 
 
 _TOOL_MODULE = {
-    "keycloak": "collectors.keycloak_collector",
-    "wazuh":    "collectors.wazuh_collector",
-    "nmap":     "collectors.nmap_collector",
-    "trivy":    "collectors.trivy_collector",
-    "entra":    "collectors.entra_collector",
-    "okta":     "collectors.okta_collector",
-    "splunk":   "collectors.splunk_collector",
-    "ldap":     "collectors.ldap_collector",
+    "keycloak":    "collectors.keycloak_collector",
+    "wazuh":       "collectors.wazuh_collector",
+    "nmap":        "collectors.nmap_collector",
+    "trivy":       "collectors.trivy_collector",
+    "entra":       "collectors.entra_collector",
+    "okta":        "collectors.okta_collector",
+    "splunk":      "collectors.splunk_collector",
+    "ldap":        "collectors.ldap_collector",
+    "crowdstrike": "collectors.crowdstrike_collector",
+    "defender":    "collectors.defender_collector",
 }
 
 # 명시 매핑 함수 캐시(원본 함수)
 _BASE_MAPPING_FNS = {
-    "keycloak": _kc_mapping,
-    "wazuh":    _wz_mapping,
-    "nmap":     _nm_mapping,
-    "trivy":    _tr_mapping,
-    "entra":    _entra_mapping,
-    "okta":     _okta_mapping,
-    "splunk":   _splunk_mapping,
-    "ldap":     _ldap_mapping,
+    "keycloak":    _kc_mapping,
+    "wazuh":       _wz_mapping,
+    "nmap":        _nm_mapping,
+    "trivy":       _tr_mapping,
+    "entra":       _entra_mapping,
+    "okta":        _okta_mapping,
+    "splunk":      _splunk_mapping,
+    "ldap":        _ldap_mapping,
+    "crowdstrike": _crowdstrike_mapping,
+    "defender":    _defender_mapping,
 }
 
 
@@ -1376,14 +1514,16 @@ def _full_mapping(tool: str) -> list:
 
 # 외부 노출용: 기존 _TOOL_DISPATCH 구조 유지 (mapping_fn, takes_args)
 _TOOL_DISPATCH = {
-    "keycloak": (lambda: _full_mapping("keycloak"), True),
-    "wazuh":    (lambda: _full_mapping("wazuh"),    True),
-    "nmap":     (lambda: _full_mapping("nmap"),     False),
-    "trivy":    (lambda: _full_mapping("trivy"),    False),
-    "entra":    (lambda: _full_mapping("entra"),    True),
-    "okta":     (lambda: _full_mapping("okta"),     True),
-    "splunk":   (lambda: _full_mapping("splunk"),   True),
-    "ldap":     (lambda: _full_mapping("ldap"),     True),
+    "keycloak":    (lambda: _full_mapping("keycloak"),    True),
+    "wazuh":       (lambda: _full_mapping("wazuh"),       True),
+    "nmap":        (lambda: _full_mapping("nmap"),        False),
+    "trivy":       (lambda: _full_mapping("trivy"),       False),
+    "entra":       (lambda: _full_mapping("entra"),       True),
+    "okta":        (lambda: _full_mapping("okta"),        True),
+    "splunk":      (lambda: _full_mapping("splunk"),      True),
+    "ldap":        (lambda: _full_mapping("ldap"),        True),
+    "crowdstrike": (lambda: _full_mapping("crowdstrike"), True),
+    "defender":    (lambda: _full_mapping("defender"),    True),
 }
 
 
@@ -1544,6 +1684,44 @@ def _tool_configured(tool: str) -> Optional[str]:
             return "LDAP 미연결: LDAP_BASE_DN 미설정"
         return None
 
+    if tool == "crowdstrike":
+        try:
+            from collectors import crowdstrike_collector as _cs
+            if _cs._session_creds and (
+                _cs._session_creds.get("api_base")
+                and _cs._session_creds.get("client_id")
+                and _cs._session_creds.get("client_secret")
+            ):
+                return None
+        except Exception:
+            pass
+        api_base = os.getenv("CROWDSTRIKE_API_BASE", "")
+        cid = os.getenv("CROWDSTRIKE_CLIENT_ID", "")
+        cs = os.getenv("CROWDSTRIKE_CLIENT_SECRET", "")
+        if not api_base:
+            return "CrowdStrike 미연결: CROWDSTRIKE_API_BASE 미설정"
+        if not (cid and cs):
+            return "CrowdStrike 미연결: CROWDSTRIKE_CLIENT_ID/CLIENT_SECRET 미설정"
+        return None
+
+    if tool == "defender":
+        try:
+            from collectors import defender_collector as _df
+            if _df._session_creds and (
+                _df._session_creds.get("tenant_id")
+                and _df._session_creds.get("client_id")
+                and _df._session_creds.get("client_secret")
+            ):
+                return None
+        except Exception:
+            pass
+        tenant = os.getenv("DEFENDER_TENANT_ID", "")
+        cid = os.getenv("DEFENDER_CLIENT_ID", "")
+        cs = os.getenv("DEFENDER_CLIENT_SECRET", "")
+        if not (tenant and cid and cs):
+            return "Defender 미연결: DEFENDER_TENANT_ID/CLIENT_ID/CLIENT_SECRET 미설정"
+        return None
+
     return f"unknown tool: {tool}"
 
 
@@ -1619,6 +1797,22 @@ def _tool_health(tool: str) -> Optional[str]:
             return _probe_tcp(f"{host}:{port}")
         except Exception as exc:
             return f"LDAP URL 파싱 실패: {exc}"
+    if tool == "crowdstrike":
+        # api_base 도달성 확인. 인증 토큰은 collector 호출 시 발급.
+        api_base = ""
+        try:
+            from collectors import crowdstrike_collector as _cs
+            if _cs._session_creds and _cs._session_creds.get("api_base"):
+                api_base = str(_cs._session_creds["api_base"])
+        except Exception:
+            pass
+        api_base = api_base or os.getenv("CROWDSTRIKE_API_BASE", "")
+        if not api_base:
+            return "CrowdStrike 미연결: CROWDSTRIKE_API_BASE 미설정"
+        return _probe_tcp(api_base)
+    if tool == "defender":
+        # Microsoft Entra 토큰 엔드포인트 도달성 확인.
+        return _probe_tcp("https://login.microsoftonline.com")
     return f"unknown tool: {tool}"
 
 
@@ -1736,6 +1930,8 @@ def _run_collectors(session_id: int, tools: list[str]):
     okta_creds: dict = {}
     splunk_creds: dict = {}
     ldap_creds: dict = {}
+    crowdstrike_creds: dict = {}
+    defender_creds: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -1764,6 +1960,12 @@ def _run_collectors(session_id: int, tools: list[str]):
             ld_meta = sess.extra.get("ldap_creds") or {}
             if isinstance(ld_meta, dict):
                 ldap_creds = {k: v for k, v in ld_meta.items() if v}
+            cs_meta = sess.extra.get("crowdstrike_creds") or {}
+            if isinstance(cs_meta, dict):
+                crowdstrike_creds = {k: v for k, v in cs_meta.items() if v}
+            df_meta = sess.extra.get("defender_creds") or {}
+            if isinstance(df_meta, dict):
+                defender_creds = {k: v for k, v in df_meta.items() if v}
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
@@ -1777,6 +1979,8 @@ def _run_collectors(session_id: int, tools: list[str]):
     ok_secret = secrets_blob.get("okta") if isinstance(secrets_blob, dict) else None
     sp_secret = secrets_blob.get("splunk") if isinstance(secrets_blob, dict) else None
     ld_secret = secrets_blob.get("ldap") if isinstance(secrets_blob, dict) else None
+    cs_secret = secrets_blob.get("crowdstrike") if isinstance(secrets_blob, dict) else None
+    df_secret = secrets_blob.get("defender") if isinstance(secrets_blob, dict) else None
     if isinstance(kc_secret, dict):
         for k, v in kc_secret.items():
             if v:
@@ -1801,6 +2005,14 @@ def _run_collectors(session_id: int, tools: list[str]):
         for k, v in ld_secret.items():
             if v:
                 ldap_creds[k] = v
+    if isinstance(cs_secret, dict):
+        for k, v in cs_secret.items():
+            if v:
+                crowdstrike_creds[k] = v
+    if isinstance(df_secret, dict):
+        for k, v in df_secret.items():
+            if v:
+                defender_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -1848,6 +2060,14 @@ def _run_collectors(session_id: int, tools: list[str]):
                     from collectors import ldap_collector as _ld
                     explicit_creds = ldap_creds or None
                     _ld.set_session_creds(explicit_creds)
+                elif tool == "crowdstrike":
+                    from collectors import crowdstrike_collector as _cs
+                    explicit_creds = crowdstrike_creds or None
+                    _cs.set_session_creds(explicit_creds)
+                elif tool == "defender":
+                    from collectors import defender_collector as _df
+                    explicit_creds = defender_creds or None
+                    _df.set_session_creds(explicit_creds)
 
                 # 가용성 체크:
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
@@ -1888,6 +2108,16 @@ def _run_collectors(session_id: int, tools: list[str]):
                         health_err = _probe_tcp(f"{_host}:{_port}") if _host else "LDAP URL host 추출 실패"
                     except Exception as _exc:
                         health_err = f"LDAP URL 파싱 실패: {_exc}"
+                elif tool == "crowdstrike" and explicit_creds \
+                        and explicit_creds.get("api_base") \
+                        and explicit_creds.get("client_id") \
+                        and explicit_creds.get("client_secret"):
+                    health_err = _probe_tcp(explicit_creds["api_base"])
+                elif tool == "defender" and explicit_creds \
+                        and explicit_creds.get("tenant_id") \
+                        and explicit_creds.get("client_id") \
+                        and explicit_creds.get("client_secret"):
+                    health_err = _probe_tcp("https://login.microsoftonline.com")
                 else:
                     health_err = _tool_health(tool)
 
@@ -1952,6 +2182,16 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import ldap_collector as _ld
                 _ld.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import crowdstrike_collector as _cs
+                _cs.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import defender_collector as _df
+                _df.set_session_creds(None)
             except Exception:
                 pass
 

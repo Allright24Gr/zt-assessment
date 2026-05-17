@@ -10,7 +10,7 @@ import {
 } from "../../config/api";
 import {
   FileText, Download, TrendingUp, AlertTriangle, AlertCircle, ArrowRight, ChevronDown, RotateCcw,
-  Share2, Copy, X, Loader2, Trash2,
+  Share2, Copy, X, Loader2, Trash2, ShieldAlert, BookOpen,
 } from "lucide-react";
 import type { AssessmentShareListItem } from "../../types/api";
 import {
@@ -24,7 +24,7 @@ import { PILLARS } from "../data/constants";
 import { getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
 import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
-import type { ChecklistItemResult, ImprovementItem } from "../../types/api";
+import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem } from "../../types/api";
 
 const DEFAULT_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
 const TARGET_SCORES  = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
@@ -262,6 +262,12 @@ export function Reporting() {
   const [currentScores, setCurrentScores] = useState(DEFAULT_SCORES);
   const [checklistDetails, setChecklistDetails] = useState<ChecklistDetail[]>(fallbackSession.checklistDetails);
   const [improvements, setImprovements] = useState<Improvement[]>(mockImprovements);
+  // B-3: pillar별 평가불가 카운트 (pillar key 영문 기준)
+  const [pillarUnevaluable, setPillarUnevaluable] = useState<Record<string, number>>({});
+  // B-3: backend가 보내는 신뢰도 (없으면 checklist에서 직접 계산)
+  const [backendConfidence, setBackendConfidence] = useState<number | null>(null);
+  const [backendEvaluableCount, setBackendEvaluableCount] = useState<number | null>(null);
+  const [backendUnevaluableCount, setBackendUnevaluableCount] = useState<number | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -300,6 +306,30 @@ export function Reporting() {
         setCurrentScores(scores);
 
         setChecklistDetails(data.checklist_results.map(adaptChecklistResult));
+
+        // B-3: pillar별 평가불가 (한글 키 → 영문 key)
+        const unevalMap: Record<string, number> = {};
+        const rawPu = (data as AssessmentResultResponse).pillar_unevaluable ?? {};
+        Object.entries(rawPu).forEach(([k, v]) => {
+          const mapped = PILLAR_NAME_TO_KEY[k] ?? k;
+          unevalMap[mapped] = (unevalMap[mapped] ?? 0) + Number(v ?? 0);
+        });
+        setPillarUnevaluable(unevalMap);
+        setBackendConfidence(
+          typeof (data as AssessmentResultResponse).confidence === "number"
+            ? Number((data as AssessmentResultResponse).confidence)
+            : null,
+        );
+        setBackendEvaluableCount(
+          typeof (data as AssessmentResultResponse).evaluable_items === "number"
+            ? Number((data as AssessmentResultResponse).evaluable_items)
+            : null,
+        );
+        setBackendUnevaluableCount(
+          typeof (data as AssessmentResultResponse).unevaluable_items === "number"
+            ? Number((data as AssessmentResultResponse).unevaluable_items)
+            : null,
+        );
       })
       .catch((err) => {
         console.warn("[reporting] result fetch failed:", err);
@@ -398,14 +428,56 @@ export function Reporting() {
     "목표(TO-BE)": TARGET_SCORES[i],
   }));
 
-  const pillarScores = PILLARS.map((p, i) => ({
-    key: p.key,
-    name: p.label,
-    score: currentScores[i],
-    target: TARGET_SCORES[i],
-    level: getMaturityLevel(currentScores[i]),
-    gap: parseFloat((currentScores[i] - TARGET_SCORES[i]).toFixed(1)),
-  }));
+  const pillarScores = PILLARS.map((p, i) => {
+    const unevalCount = pillarUnevaluable[p.key] ?? 0;
+    // backend가 보낸 pillar_unevaluable에 해당 pillar가 있고 currentScores가
+    // 0이면 (평가가능 항목 없음 = 측정 불가)로 간주
+    const isUnmeasurable = unevalCount > 0 && currentScores[i] === 0;
+    return {
+      key: p.key,
+      name: p.label,
+      score: currentScores[i],
+      target: TARGET_SCORES[i],
+      level: isUnmeasurable ? "평가불가" : getMaturityLevel(currentScores[i]),
+      gap: parseFloat((currentScores[i] - TARGET_SCORES[i]).toFixed(1)),
+      unevaluable: unevalCount,
+      unmeasurable: isUnmeasurable,
+    };
+  });
+
+  // B-3: 신뢰도 계산 — backend가 보낸 값 우선, 없으면 checklist로 직접 계산
+  const confidenceStats = useMemo(() => {
+    if (
+      backendConfidence !== null &&
+      backendEvaluableCount !== null &&
+      backendUnevaluableCount !== null
+    ) {
+      const total = backendEvaluableCount + backendUnevaluableCount;
+      return {
+        confidence: backendConfidence,
+        evaluable: backendEvaluableCount,
+        unevaluable: backendUnevaluableCount,
+        total,
+      };
+    }
+    const total = checklistDetails.length;
+    if (total === 0) return { confidence: 0, evaluable: 0, unevaluable: 0, total: 0 };
+    let unevaluable = 0;
+    for (const d of checklistDetails) {
+      const raw = (d as ChecklistDetail & { rawResult?: string }).rawResult ?? d.result;
+      if (raw === "평가불가" || raw === "해당 없음") unevaluable += 1;
+    }
+    const evaluable = total - unevaluable;
+    return { confidence: total > 0 ? evaluable / total : 0, evaluable, unevaluable, total };
+  }, [backendConfidence, backendEvaluableCount, backendUnevaluableCount, checklistDetails]);
+
+  const confidencePct = Math.round(confidenceStats.confidence * 100);
+  const confidenceColor =
+    confidencePct >= 80
+      ? { bar: "bg-green-500", text: "text-green-700", bg: "bg-green-50", border: "border-green-200" }
+      : confidencePct >= 50
+      ? { bar: "bg-yellow-500", text: "text-yellow-700", bg: "bg-yellow-50", border: "border-yellow-200" }
+      : { bar: "bg-red-500", text: "text-red-700", bg: "bg-red-50", border: "border-red-200" };
 
   const currentAvg = useMemo(
     () => currentScores.reduce((a, b) => a + b, 0) / Math.max(currentScores.length, 1),
@@ -506,6 +578,18 @@ export function Reporting() {
               <p className="text-xs text-gray-500 mt-0.5">
                 총 {totalSourceCount}개 체크리스트 — 자동/자가/미진단 비율
               </p>
+              {/* B-3: 데이터 신뢰도 mini-graph */}
+              <div className="mt-2 flex items-center gap-2 max-w-xs">
+                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden" title="진단 가능 항목 비율">
+                  <div
+                    className={`h-full rounded-full ${confidenceColor.bar}`}
+                    style={{ width: `${confidencePct}%` }}
+                  />
+                </div>
+                <span className={`text-[11px] font-semibold ${confidenceColor.text} tabular-nums`}>
+                  신뢰도 {confidencePct}%
+                </span>
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span
@@ -616,6 +700,42 @@ export function Reporting() {
             </div>
           )}
 
+          {/* B-3: 진단 신뢰도 카드 */}
+          <div
+            className={`rounded-xl border ${confidenceColor.border} ${confidenceColor.bg} p-5`}
+            title="평가불가 항목이 많을수록 진단 신뢰도가 낮아집니다. 미연결 도구 자격을 입력하면 신뢰도가 올라갑니다."
+          >
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-3">
+                <ShieldAlert className={confidenceColor.text} size={22} aria-hidden="true" />
+                <div>
+                  <p className="text-sm font-semibold text-gray-800">진단 신뢰도</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    평가 가능 {confidenceStats.evaluable} / {confidenceStats.total} (평가불가 {confidenceStats.unevaluable})
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 lg:min-w-[320px]">
+                <div className="flex-1 h-3 bg-white rounded-full overflow-hidden border border-gray-200">
+                  <div
+                    className={`h-full rounded-full ${confidenceColor.bar} transition-all`}
+                    style={{ width: `${confidencePct}%` }}
+                  />
+                </div>
+                <span className={`text-lg font-bold ${confidenceColor.text} tabular-nums w-12 text-right`}>
+                  {confidencePct}%
+                </span>
+              </div>
+            </div>
+            {confidencePct < 80 && (
+              <p className="mt-3 text-xs text-gray-600">
+                {confidencePct < 50
+                  ? "신뢰도가 낮습니다. 미연결 도구의 자격 정보를 입력하거나 수동 진단 항목을 제출하면 점수 신뢰도가 향상됩니다."
+                  : "일부 항목이 평가불가 상태입니다. 미연결 도구 자격을 입력하면 신뢰도를 높일 수 있습니다."}
+              </p>
+            )}
+          </div>
+
           {/* 종합 등급 배너 */}
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl p-8">
             <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
@@ -683,6 +803,31 @@ export function Reporting() {
           {/* 필라별 점수 카드 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {pillarScores.map((pillar) => {
+              // 평가불가 pillar: 회색 카드 + "측정 불가" 표시
+              if (pillar.unmeasurable) {
+                return (
+                  <div
+                    key={pillar.key}
+                    className="bg-gray-50 rounded-xl border border-dashed border-gray-300 p-5"
+                    title="해당 필러는 평가불가 항목만 있어 점수를 측정할 수 없습니다."
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-gray-500">{pillar.name}</h3>
+                      <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-200 text-gray-600">
+                        측정 불가
+                      </span>
+                    </div>
+                    <div className="flex items-baseline gap-1 mb-3">
+                      <span className="text-3xl font-bold text-gray-400">-</span>
+                      <span className="text-gray-300 text-sm">/ 4.0</span>
+                    </div>
+                    <div className="rounded-lg bg-white border border-gray-200 p-2.5 text-xs text-gray-600">
+                      <p className="font-medium mb-0.5">평가불가 {pillar.unevaluable}건</p>
+                      <p className="text-gray-500">관련 도구 자격을 입력하면 측정이 가능합니다.</p>
+                    </div>
+                  </div>
+                );
+              }
               const colors = getScoreColor(pillar.score);
               const pct = (pillar.score / 4) * 100;
               return (
@@ -694,6 +839,14 @@ export function Reporting() {
                   <div className="flex items-baseline gap-1 mb-3">
                     <span className={`text-3xl font-bold ${colors.text}`}>{pillar.score}</span>
                     <span className="text-gray-400 text-sm">/ 4.0</span>
+                    {pillar.unevaluable > 0 && (
+                      <span
+                        className="ml-2 text-xs text-gray-500"
+                        title="이 필러에서 평가불가 처리된 항목 수"
+                      >
+                        (평가불가 {pillar.unevaluable})
+                      </span>
+                    )}
                   </div>
                   {/* 점수 바 */}
                   <div className="relative w-full bg-gray-100 rounded-full h-2 mb-2">
@@ -956,11 +1109,22 @@ export function Reporting() {
                     <p className="text-xs text-gray-400 text-center py-4">과제 없음</p>
                   ) : tasks.map((task, i) => {
                     const meta = getRoadmapMeta(task);
+                    // B-4: 환경 가이드 파싱 — "— 사용자 환경(X) 가이드: ..." 분리
+                    const split = (task.task ?? "").split("\n— 사용자 환경(");
+                    const mainTask = split[0]?.trim() ?? task.task;
+                    const envGuides = split.slice(1).map((seg) => {
+                      // "X) 가이드: 내용..." 형식
+                      const closeIdx = seg.indexOf(")");
+                      const envName = closeIdx >= 0 ? seg.slice(0, closeIdx).trim() : "환경";
+                      const rest = closeIdx >= 0 ? seg.slice(closeIdx + 1) : seg;
+                      const guideContent = rest.replace(/^[\s)]*가이드\s*:\s*/, "").trim();
+                      return { envName, content: guideContent };
+                    });
 
                     return (
                     <div key={i} className="bg-white rounded-lg p-3 border border-gray-200 shadow-sm">
                       <div className="flex items-start justify-between gap-2 mb-2">
-                        <p className="text-sm font-medium text-gray-800 leading-snug">{task.task}</p>
+                        <p className="text-sm font-medium text-gray-800 leading-snug">{mainTask}</p>
                         <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded font-medium ${
                           task.priority === "Critical" ? "bg-red-100 text-red-700" :
                           task.priority === "High"     ? "bg-orange-100 text-orange-700" :
@@ -972,6 +1136,28 @@ export function Reporting() {
                       <p className="text-xs text-gray-500">
                         {PILLARS.find((p) => p.key === task.pillar)?.label ?? task.pillar} 필러
                       </p>
+
+                      {/* B-4: 환경별 맞춤 가이드 */}
+                      {envGuides.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                          {envGuides.map((g, gi) => (
+                            <div
+                              key={gi}
+                              className="rounded-lg border border-blue-200 bg-blue-50/60 p-2.5"
+                            >
+                              <div className="mb-1 flex items-center gap-1.5">
+                                <BookOpen size={12} className="text-blue-600" />
+                                <span className="text-[11px] font-semibold text-blue-700 inline-block px-1.5 py-0.5 rounded bg-white border border-blue-200">
+                                  {g.envName} 가이드
+                                </span>
+                              </div>
+                              <p className="text-xs leading-relaxed text-gray-700 whitespace-pre-line">
+                                {g.content}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                         <div className="rounded-lg bg-gray-50 px-2 py-1.5">
