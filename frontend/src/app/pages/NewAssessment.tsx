@@ -355,7 +355,7 @@ export function NewAssessment() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-7xl mx-auto">
       {/* Step Indicator */}
       <div className="flex items-center justify-center gap-4 mb-8">
         {[1, 2, 3].map((s) => (
@@ -471,7 +471,7 @@ export function NewAssessment() {
               {/* 신원 관리(IdP) */}
               <div className="mb-4">
                 <p className="mb-2 text-xs font-semibold text-gray-700">신원 관리 (IdP)</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" role="radiogroup" aria-label="신원 관리 도구">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2" role="radiogroup" aria-label="신원 관리 도구">
                   {IDP_OPTIONS.map((opt) => {
                     const checked = profileSelect.idp_type === opt.key;
                     return (
@@ -488,8 +488,8 @@ export function NewAssessment() {
                           checked={checked}
                           onChange={() => setProfileSelect((prev) => ({ ...prev, idp_type: opt.key }))}
                         />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-gray-800 flex items-center gap-1.5">
+                        <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                          <p className="text-sm font-medium text-gray-800 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                             {opt.label}
                             {!opt.supported && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
@@ -525,8 +525,8 @@ export function NewAssessment() {
                           checked={checked}
                           onChange={() => setProfileSelect((prev) => ({ ...prev, siem_type: opt.key }))}
                         />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-gray-800 flex items-center gap-1.5">
+                        <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                          <p className="text-sm font-medium text-gray-800 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                             {opt.label}
                             {!opt.supported && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
@@ -562,8 +562,8 @@ export function NewAssessment() {
                           checked={checked}
                           onChange={() => setProfileSelect((prev) => ({ ...prev, edr_type: opt.key }))}
                         />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-gray-800 flex items-center gap-1.5">
+                        <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                          <p className="text-sm font-medium text-gray-800 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                             {opt.label}
                             {!opt.supported && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
@@ -592,7 +592,7 @@ export function NewAssessment() {
                       checked={externalScanTools.nmap}
                       onChange={() => setExternalScanTools((p) => ({ ...p, nmap: !p.nmap }))}
                     />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
                       <p className="text-sm font-medium text-gray-800">Nmap</p>
                       <p className="text-xs text-gray-500">네트워크/포트 외부 스캔</p>
                     </div>
@@ -606,7 +606,7 @@ export function NewAssessment() {
                       checked={externalScanTools.trivy}
                       onChange={() => setExternalScanTools((p) => ({ ...p, trivy: !p.trivy }))}
                     />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
                       <p className="text-sm font-medium text-gray-800">Trivy</p>
                       <p className="text-xs text-gray-500">컨테이너 이미지 스캔</p>
                     </div>
@@ -627,37 +627,38 @@ export function NewAssessment() {
               )}
             </div>
 
-            {/* 기관 정보 */}
-            <div>
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">기관 정보</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block mb-2">기관명 <span className="text-red-500">*</span></label>
-                  <input
-                    type="text"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-                    value={formData.orgName}
-                    onChange={(e) => setFormData({ ...formData, orgName: e.target.value })}
-                    placeholder="기관명을 입력하세요"
-                  />
-                </div>
-                <div>
-                  <label className="block mb-2">기관 유형</label>
-                  <select
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-                    value={formData.orgType}
-                    onChange={(e) => setFormData({ ...formData, orgType: e.target.value })}
-                  >
-                    {ORG_TYPES.map((t) => <option key={t}>{t}</option>)}
-                  </select>
+            {/* 기관 정보 + 담당자 정보 — lg에선 좌우 배치 */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">기관 정보</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block mb-2">기관명 <span className="text-red-500">*</span></label>
+                    <input
+                      type="text"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                      value={formData.orgName}
+                      onChange={(e) => setFormData({ ...formData, orgName: e.target.value })}
+                      placeholder="기관명을 입력하세요"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-2">기관 유형</label>
+                    <select
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                      value={formData.orgType}
+                      onChange={(e) => setFormData({ ...formData, orgType: e.target.value })}
+                    >
+                      {ORG_TYPES.map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* 담당자 정보 */}
-            <div>
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">담당자 정보</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* 담당자 정보 */}
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">담당자 정보</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block mb-2">담당자명 <span className="text-red-500">*</span></label>
                   <input
@@ -700,21 +701,22 @@ export function NewAssessment() {
                 </div>
               </div>
             </div>
+            </div>
 
             <div>
               <label className="block mb-2">
-                진단 범위 선택 <span className="text-sm text-gray-400">({selectedPillarCount}/{PILLARS.length})</span>
+                진단 범위 선택 <span className="text-sm text-gray-500">({selectedPillarCount}/{PILLARS.length})</span>
               </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                 {PILLARS.map((pillar) => (
                   <label key={pillar.key} className="flex items-center gap-2 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer">
                     <input
                       type="checkbox"
-                      className="w-4 h-4"
+                      className="w-4 h-4 shrink-0"
                       checked={!!pillarScope[pillar.key]}
                       onChange={() => togglePillar(pillar.key)}
                     />
-                    <span className="text-sm">{pillar.label}</span>
+                    <span className="text-sm truncate">{pillar.label}</span>
                   </label>
                 ))}
               </div>
