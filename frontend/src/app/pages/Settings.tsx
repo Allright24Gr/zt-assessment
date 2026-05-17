@@ -369,14 +369,14 @@ export function Settings() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
         <h1>설정</h1>
         <span className="px-2.5 py-0.5 text-xs font-medium rounded bg-yellow-100 text-yellow-800 border border-yellow-200">
           베타 · 브라우저 로컬 저장
         </span>
       </div>
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-gray-600">
         현재 설정은 백엔드와 연동되지 않고 브라우저에만 저장됩니다. 진단 임계값은 백엔드 정책 파일을 직접 수정해주세요.
       </p>
 
@@ -499,7 +499,7 @@ export function Settings() {
                 onChange={(event) => updateTarget(index, Number(event.target.value))}
                 className="w-full accent-emerald-600"
               />
-              <div className="flex justify-between text-[11px] text-gray-400">
+              <div className="flex justify-between text-[11px] text-gray-600">
                 <span>0.5</span>
                 <span>4.0</span>
               </div>
@@ -559,7 +559,7 @@ export function Settings() {
               백엔드 동기화 · {user.orgName ?? "-"}
             </span>
           </div>
-          <p className="text-sm text-gray-500 mb-4">
+          <p className="text-sm text-gray-600 mb-4">
             새 진단 시작 시 이 정보가 자동으로 입력됩니다. 저장 시 비밀번호 재확인이 필요합니다.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

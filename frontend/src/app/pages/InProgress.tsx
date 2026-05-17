@@ -121,7 +121,7 @@ function CircularProgress({
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="text-xl font-bold text-gray-900">{Math.round(value)}%</span>
-          <span className="text-[11px] text-gray-400">{active ? "진행 중" : completed ? "완료" : "대기"}</span>
+          <span className="text-[11px] text-gray-500">{active ? "진행 중" : completed ? "완료" : "대기"}</span>
         </div>
       </div>
       <p className="text-center text-sm font-semibold text-gray-700">{label}</p>
@@ -548,7 +548,7 @@ export function InProgress() {
                     <p className={`text-sm font-medium ${
                       done ? "text-green-600" : active ? "text-blue-600" : "text-gray-400"
                     }`}>{step.label}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{step.sublabel}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{step.sublabel}</p>
                   </div>
                 </div>
               );
@@ -558,7 +558,7 @@ export function InProgress() {
 
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="mb-1">실시간 로그 볼륨</h2>
-          <p className="text-xs text-gray-400 mb-3">수집 이벤트 변화</p>
+          <p className="text-xs text-gray-500 mb-3">수집 이벤트 변화</p>
           <ResponsiveContainer width="100%" height={220}>
             <AreaChart data={areaData}>
               <defs>
@@ -581,7 +581,7 @@ export function InProgress() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="mb-1">필러별 현재 성숙도</h2>
-          <p className="text-xs text-gray-400 mb-3">진행률 기반 실시간 추정치</p>
+          <p className="text-xs text-gray-500 mb-3">진행률 기반 실시간 추정치</p>
           <ResponsiveContainer width="100%" height={240}>
             <RadarChart data={radarData}>
               <PolarGrid stroke="#e5e7eb" />
@@ -803,7 +803,7 @@ export function InProgress() {
                 );
               })}
               {manualItems.length === 0 && (
-                <p className="text-sm text-gray-400 text-center py-4">수동 항목이 없습니다.</p>
+                <p className="text-sm text-gray-500 text-center py-4">수동 항목이 없습니다.</p>
               )}
             </div>
           )}

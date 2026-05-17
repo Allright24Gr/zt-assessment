@@ -857,7 +857,7 @@ export function Reporting() {
                       style={{ left: `${(pillar.target / 4) * 100}%` }}
                     />
                   </div>
-                  <div className="flex justify-between text-xs text-gray-400">
+                  <div className="flex justify-between text-xs text-gray-500">
                     <span>현재 {pillar.score}</span>
                     <span className={pillar.gap < 0 ? "text-red-600" : "text-emerald-600"}>
                       목표 {pillar.target} ({formatGap(pillar.gap)})
@@ -1006,7 +1006,7 @@ export function Reporting() {
                           <div className="flex shrink-0 items-center gap-4">
                             <div className="text-right">
                               <p className="text-lg font-bold text-blue-600">{detail.score}</p>
-                              <p className="text-xs text-gray-400">/ 4.0</p>
+                              <p className="text-xs text-gray-500">/ 4.0</p>
                             </div>
                             <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180" />
                           </div>
@@ -1106,7 +1106,7 @@ export function Reporting() {
                 <h3 className={`text-sm font-bold mb-3 ${TERM_HEADER[term]}`}>{TERM_LABELS[term]}</h3>
                 <div className="space-y-3">
                   {tasks.length === 0 ? (
-                    <p className="text-xs text-gray-400 text-center py-4">과제 없음</p>
+                    <p className="text-xs text-gray-500 text-center py-4">과제 없음</p>
                   ) : tasks.map((task, i) => {
                     const meta = getRoadmapMeta(task);
                     // B-4: 환경 가이드 파싱 — "— 사용자 환경(X) 가이드: ..." 분리
@@ -1161,15 +1161,15 @@ export function Reporting() {
 
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                         <div className="rounded-lg bg-gray-50 px-2 py-1.5">
-                          <span className="block text-gray-400">예상 기간</span>
+                          <span className="block text-gray-600">예상 기간</span>
                           <strong className="text-gray-700">{meta.duration}</strong>
                         </div>
                         <div className="rounded-lg bg-gray-50 px-2 py-1.5">
-                          <span className="block text-gray-400">난이도</span>
+                          <span className="block text-gray-600">난이도</span>
                           <strong className="text-gray-700">{meta.difficulty}</strong>
                         </div>
                         <div className="rounded-lg bg-gray-50 px-2 py-1.5">
-                          <span className="block text-gray-400">담당</span>
+                          <span className="block text-gray-600">담당</span>
                           <strong className="text-gray-700">{meta.owner}</strong>
                         </div>
                         <div className="rounded-lg bg-emerald-50 px-2 py-1.5">
@@ -1215,7 +1215,7 @@ export function Reporting() {
             <FileText className="mx-auto text-blue-500 mb-4" size={56} />
             <h2 className="mb-2">보고서 PDF 내보내기</h2>
             <p className="text-gray-500 mb-2">진단 결과 전체를 PDF 문서로 다운로드합니다.</p>
-            <p className="text-sm text-gray-400 mb-8">
+            <p className="text-sm text-gray-500 mb-8">
               표지 · 필러별 점수 · 체크리스트 세부항목 · 개선 권고 순으로 구성됩니다.
             </p>
             <div className="flex justify-center">

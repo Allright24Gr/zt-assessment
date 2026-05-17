@@ -355,7 +355,7 @@ export function NewAssessment() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-6xl mx-auto">
       {/* Step Indicator */}
       <div className="flex items-center justify-center gap-4 mb-8">
         {[1, 2, 3].map((s) => (
@@ -426,7 +426,7 @@ export function NewAssessment() {
                       <FlaskConical size={14} className="text-blue-600" />
                       <p className="text-sm font-semibold text-gray-800">데모 모드</p>
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5">
+                    <p className="text-xs text-gray-600 mt-0.5">
                       안전한 예시 데이터로 진행. 외부 시스템에 접근하지 않습니다.
                     </p>
                   </div>
@@ -449,7 +449,7 @@ export function NewAssessment() {
                       <Activity size={14} className="text-red-600" />
                       <p className="text-sm font-semibold text-gray-800">실 스캔 모드</p>
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5">
+                    <p className="text-xs text-gray-600 mt-0.5">
                       입력한 외부 시스템을 실제로 스캔합니다. 권한 보유 자산만 대상으로 사용하세요.
                     </p>
                   </div>

@@ -248,7 +248,7 @@ function SessionMetaCard({
       <p className="text-xs text-gray-500 mb-3">{meta.date} · {meta.manager}</p>
       <div className="flex items-baseline gap-2">
         <p className="text-3xl font-bold text-gray-900">{meta.score?.toFixed(2) ?? "-"}</p>
-        <span className="text-sm text-gray-400">/ 4.0</span>
+        <span className="text-sm text-gray-500">/ 4.0</span>
         <span className={`ml-2 inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
           meta.level === "최적화" ? "bg-green-100 text-green-700" :
           meta.level === "향상"   ? "bg-blue-100 text-blue-700"   :
@@ -282,11 +282,11 @@ function ItemListCard({
       <div className="flex items-center gap-2 mb-3">
         {icon}
         <h3 className={`text-sm font-semibold ${headerClass}`}>
-          {title} <span className="text-xs text-gray-400">({items.length}건)</span>
+          {title} <span className="text-xs text-gray-500">({items.length}건)</span>
         </h3>
       </div>
       {items.length === 0 ? (
-        <p className="text-xs text-gray-400 py-4 text-center">항목이 없습니다.</p>
+        <p className="text-xs text-gray-500 py-4 text-center">항목이 없습니다.</p>
       ) : (
         <ul className="space-y-2 max-h-72 overflow-y-auto pr-1">
           {items.map((it) => (
