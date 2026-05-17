@@ -5,6 +5,7 @@ from typing import Optional
 from database import get_db
 from models import ImprovementGuide, DiagnosisResult, Checklist, DiagnosisSession, User
 from routers.auth import get_current_user, assert_session_access
+from services.improvement_customizer import customize_guide
 
 router = APIRouter()
 
@@ -84,17 +85,27 @@ def get_session_improvements(
         _TERM_ORDER.get(g.term, 2),
     ))
 
+    # session.extra.profile_select 추출 후 권고 맞춤
+    profile_select = None
+    if isinstance(session.extra, dict):
+        ps = session.extra.get("profile_select")
+        if isinstance(ps, dict):
+            profile_select = ps
+
     return [
-        {
-            "guide_id": g.guide_id,
-            "check_id": g.check_id,
-            "pillar": g.pillar,
-            "task": g.task,
-            "priority": g.priority,
-            "term": g.term,
-            "recommended_tool": g.recommended_tool,
-            "expected_gain": g.expected_gain,
-        }
+        customize_guide(
+            {
+                "guide_id": g.guide_id,
+                "check_id": g.check_id,
+                "pillar": g.pillar,
+                "task": g.task,
+                "priority": g.priority,
+                "term": g.term,
+                "recommended_tool": g.recommended_tool,
+                "expected_gain": g.expected_gain,
+            },
+            profile_select,
+        )
         for g in guides
     ]
 
