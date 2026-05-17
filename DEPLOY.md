@@ -17,15 +17,25 @@
 
 ---
 
-## 1. 한 줄 배포 (개발 모드)
+## 1. 한 줄 배포 (개발/시연 모드)
 
 ```bash
 git clone https://github.com/Allright24Gr/zt-assessment.git
 cd zt-assessment
-cp .env.example .env
-# .env 편집 (SECRET_KEY, DB_PASSWORD, INTERNAL_API_TOKEN 등 채우기)
-docker compose up -d
+./scripts/bootstrap.sh         # ← 한 줄로 끝
 ```
+
+`bootstrap.sh` 가 자동으로 처리하는 것:
+1. `.env` 자동 생성 + `SECRET_KEY`/`INTERNAL_API_TOKEN`/`DB_PASSWORD` 자동 발급
+2. `docker swarm init` + `shuffle_swarm_executions` overlay 네트워크 (Shuffle Orborus 필수)
+3. `docker compose --profile shuffle up -d --build` — 11개 컨테이너 기동
+4. 헬스 대기 (backend / frontend / shuffle UI / shuffle backend)
+5. Shuffle 첫 admin 자동 가입 + apikey 추출 → `.env` 자동 주입
+6. `shuffle/workflows/zt-*.json` 7개 자동 import → 워크플로우 ID `.env` 자동 채움
+7. backend 재기동 (.env 재로드)
+8. 시드 데이터(체크리스트 / 개선가이드 / 데모세션)는 backend entrypoint 가 자동 적재
+
+소요: 첫 빌드 5~10분, 두 번째부터 1분 이내.
 
 이후 `http://localhost:8080` 접속. 시드 진단 데이터를 보려면:
 
@@ -35,32 +45,33 @@ docker compose exec zt-backend python scripts/seed_demo_examples.py --force
 
 ---
 
-## 2. 운영 배포
+## 2. 운영 배포 (EC2 + 도메인)
 
-### 2-1. `.env` 운영값 작성
+기본은 §1 한 줄 배포와 동일. 단 다음 값들을 운영용으로 바꾼 다음 `bootstrap.sh` 호출.
 
-다음 값들을 반드시 운영 값으로 교체:
+### 2-1. `.env` 운영값 작성 (bootstrap 호출 전 또는 후)
+
+`bootstrap.sh` 가 자동 발급한 값들은 그대로 두고, 다음만 추가로 채움:
 
 ```bash
-# 보안 키
-SECRET_KEY=$(openssl rand -hex 48)              # JWT 서명 (P0-1)
-INTERNAL_API_TOKEN=$(openssl rand -hex 32)      # Shuffle webhook (운영 필수)
-
-# DB
-DB_PASSWORD=<강력한 비밀번호>
-MYSQL_ROOT_PASSWORD=<강력한 비밀번호>
+# Frontend 빌드 시 박히는 URL (※ 변경 후 zt-web 재빌드 필요)
+VITE_API_BASE=https://readyz-t.example.com
 
 # CORS — wildcard 금지. 도메인 명시
 CORS_ORIGINS=https://readyz-t.example.com
 
-# 이메일 (AWS SES 프로덕션)
+# 이메일 (AWS SES 프로덕션 모드 통과 후)
 EMAIL_FROM=noreply@readyz-t.example.com
 EMAIL_DRY_RUN=false
 AWS_REGION=ap-northeast-2
 # EC2 IAM role 사용 시 AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY 비워둠
 
-# Frontend → backend
 FRONTEND_BASE_URL=https://readyz-t.example.com
+```
+
+`VITE_API_BASE` 바꾼 뒤에는 frontend 재빌드 필요:
+```bash
+docker compose up -d --build zt-web
 ```
 
 ### 2-2. SSL 인증서 발급 (Let's Encrypt)

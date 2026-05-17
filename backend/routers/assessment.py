@@ -11,7 +11,7 @@ import threading
 
 from database import SessionLocal, get_db
 from models import (
-    DiagnosisSession, Checklist, CollectedData,
+    DiagnosisSession, Checklist, CollectedData, Evidence,
     DiagnosisResult, MaturityScore, ScoreHistory, Organization, User,
     SharedResult,
 )
@@ -2070,3 +2070,35 @@ def revoke_share_link(
     share.revoked_at = datetime.now(timezone.utc)
     db.commit()
     return {"status": "ok", "share_id": share.share_id}
+
+
+# ─── 진단 세션 수동 삭제 ───────────────────────────────────────────────────────
+# History 페이지에서 사용자가 자기 세션을 정리하기 위한 endpoint.
+# status 무관(진행중/완료/평가불가 모두) 삭제 가능. 본인 세션 또는 admin 만.
+# 자식 5개 테이블(CollectedData/Evidence/DiagnosisResult/MaturityScore/ScoreHistory)
+# 까지 cascade 삭제 — 90일 cleanup 과 동일 패턴.
+
+@router.delete("/session/{session_id}")
+def delete_assessment_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
+
+    # 진행 중인 세션의 메모리 자격이 남아있을 수 있으니 함께 폐기
+    _pop_session_secrets(session_id)
+
+    # 자식 cascade
+    for model in (CollectedData, Evidence, DiagnosisResult, MaturityScore, ScoreHistory):
+        db.query(model).filter(model.session_id == session_id).delete(synchronize_session=False)
+
+    # 공유 토큰도 같이 삭제 (있으면)
+    db.query(SharedResult).filter(SharedResult.session_id == session_id).delete(synchronize_session=False)
+
+    db.delete(session)
+    db.commit()
+
+    logger.info("[assessment] session %s deleted by user_id=%s", session_id, current_user.user_id)
+    return {"status": "ok", "session_id": session_id}

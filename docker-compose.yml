@@ -101,6 +101,9 @@ services:
       - SHUFFLE_FILE_LOCATION=/shuffle-files
       - ORG_ID=Shuffle
       - SHUFFLE_OPENSEARCH_INDEX_PREFIX=shuffle
+      # shuffle-backend의 기본값은 shuffle-opensearch:9200(존재 X). 우리 컨테이너명에 맞춰 명시.
+      - SHUFFLE_OPENSEARCH_URL=http://shuffle-database:9200
+      - SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY=true
     volumes:
       - shuffle-apps:/shuffle-apps
       - shuffle-files:/shuffle-files
@@ -120,6 +123,28 @@ services:
       - BACKEND_HOSTNAME=shuffle-backend
     ports:
       - "3001:80"
+    networks:
+      - zt-network
+
+  shuffle-orborus:
+    image: ghcr.io/shuffle/shuffle-orborus:latest
+    container_name: shuffle-orborus
+    restart: unless-stopped
+    profiles: ["shuffle"]
+    depends_on:
+      - shuffle-backend
+    environment:
+      # Shuffle 워크플로우 노드를 docker container 로 spawn 하는 worker.
+      # 누락 시 backend trigger 만 되고 노드(HTTP/Webhook/Custom 등)는 EXECUTING 상태에서 멈춤.
+      - ENVIRONMENT_NAME=onprem
+      - ORG_ID=Shuffle
+      - BASE_URL=http://shuffle-backend:5001
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - SHUFFLE_PASS_WORKER_PROXY=true
+      - SHUFFLE_BASE_IMAGE_NAME=ghcr.io/shuffle
+      - SHUFFLE_BASE_IMAGE_TAG_SUFFIX=latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - zt-network
 

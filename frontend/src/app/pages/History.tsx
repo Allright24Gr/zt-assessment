@@ -6,7 +6,10 @@ import {
   ArrowUpDown,
   Clock,
   GitCompare,
+  Loader2,
+  Trash2,
   TrendingUp,
+  X,
 } from "lucide-react";
 import {
   Bar,
@@ -27,7 +30,11 @@ import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 import { sessions as mockSessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
-import { getAssessmentHistory, getScoreSummary } from "../../config/api";
+import {
+  deleteAssessmentSession,
+  getAssessmentHistory,
+  getScoreSummary,
+} from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
 import { maturityLabel } from "../lib/maturity";
 import type { AssessmentSession } from "../../types/api";
@@ -76,6 +83,27 @@ export function History() {
     mockSessions.map(toApiSession)
   );
   const [pillarScoresBySession, setPillarScoresBySession] = useState<Record<string | number, number[]>>({});
+  // 세션 삭제 확인 모달
+  const [deleteTarget, setDeleteTarget] = useState<AssessmentSession | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await deleteAssessmentSession(deleteTarget.id);
+      // 로컬 상태에서 즉시 제거 + 선택 목록에서도 제거
+      setAllSessions((prev) => prev.filter((s) => s.id !== deleteTarget.id));
+      setSelectedSessions((prev) => prev.filter((id) => id !== Number(deleteTarget.id)));
+      toast.success(`'${deleteTarget.org}' 진단 세션이 삭제되었습니다.`);
+      setDeleteTarget(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "세션 삭제 실패";
+      toast.error(msg);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     const orgFilter = user?.role === "user" ? user.orgName : undefined;
@@ -315,15 +343,26 @@ export function History() {
                         </td>
                       )}
                       <td className="py-3 px-4">
-                        {isInProgress ? (
-                          <Link to={`/in-progress/${session.id}`} className="text-blue-600 hover:text-blue-800 text-sm font-medium">
-                            진행 중 보기
-                          </Link>
-                        ) : (
-                          <Link to={`/reporting/${session.id}`} className="text-blue-600 hover:text-blue-800 text-sm">
-                            결과 보기
-                          </Link>
-                        )}
+                        <div className="flex items-center gap-3">
+                          {isInProgress ? (
+                            <Link to={`/in-progress/${session.id}`} className="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                              진행 중 보기
+                            </Link>
+                          ) : (
+                            <Link to={`/reporting/${session.id}`} className="text-blue-600 hover:text-blue-800 text-sm">
+                              결과 보기
+                            </Link>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setDeleteTarget(session)}
+                            aria-label={`'${session.org}' ${session.date} 진단 삭제`}
+                            title="진단 세션 삭제"
+                            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </td>
                   </tr>
                 );
@@ -405,6 +444,69 @@ export function History() {
                 <Legend wrapperStyle={{ fontSize: 12 }} />
               </RadarChart>
             </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* 진단 세션 삭제 확인 모달 */}
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-session-title"
+          onClick={(e) => { if (e.target === e.currentTarget && !deleting) setDeleteTarget(null); }}
+          onKeyDown={(e) => { if (e.key === "Escape" && !deleting) setDeleteTarget(null); }}
+        >
+          <div className="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+            <button
+              type="button"
+              onClick={() => !deleting && setDeleteTarget(null)}
+              className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
+              aria-label="닫기"
+              disabled={deleting}
+            >
+              <X size={18} />
+            </button>
+            <div className="flex items-center gap-2 mb-3">
+              <Trash2 size={20} className="text-red-600" aria-hidden="true" />
+              <h2 id="delete-session-title" className="text-base font-semibold text-gray-900">
+                진단 세션 삭제
+              </h2>
+            </div>
+            <div className="space-y-2 mb-5 text-sm text-gray-600">
+              <p>
+                <span className="font-medium text-gray-900">{deleteTarget.org}</span> /{" "}
+                {deleteTarget.date} / {deleteTarget.manager}
+              </p>
+              <p className="text-red-600">
+                ⚠️ 이 세션의 수집 데이터·증적·점수·이력이 모두 삭제됩니다.{" "}
+                {deleteTarget.status === "진행 중" && "진행 중인 진단도 즉시 중단됩니다."}{" "}
+                <span className="font-semibold">복구할 수 없습니다.</span>
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => !deleting && setDeleteTarget(null)}
+                className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200 text-sm font-medium"
+                disabled={deleting}
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium text-white ${
+                  deleting ? "bg-red-400 cursor-not-allowed" : "bg-red-600 hover:bg-red-700"
+                }`}
+                disabled={deleting}
+              >
+                {deleting
+                  ? <><Loader2 size={14} className="animate-spin" /> 삭제 중...</>
+                  : <>삭제</>}
+              </button>
+            </div>
           </div>
         </div>
       )}

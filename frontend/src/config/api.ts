@@ -27,6 +27,7 @@ export const API_ENDPOINTS = {
   ASSESSMENT_RESULT: "/api/assessment/result",
   ASSESSMENT_HISTORY: "/api/assessment/history",
   ASSESSMENT_COMPARE: "/api/assessment/compare",
+  ASSESSMENT_SESSION: "/api/assessment/session", // DELETE /api/assessment/session/{id}
   SCORE_SUMMARY: "/api/score/summary",
   SCORE_TREND: "/api/score/trend",
   MANUAL_SUBMIT: "/api/manual/submit",
@@ -254,6 +255,16 @@ export function getAssessmentCompare(fromId: number | string, toId: number | str
   });
 }
 
+// 진단 세션 수동 삭제 — status 무관(진행중/완료/평가불가 모두). 본인 세션 또는 admin.
+// 자식 5개 테이블(CollectedData/Evidence/DiagnosisResult/MaturityScore/ScoreHistory) +
+// SharedResult 까지 backend 에서 cascade.
+export function deleteAssessmentSession(sessionId: number | string) {
+  return apiFetch<{ status: string; session_id: number }>(
+    `${API_ENDPOINTS.ASSESSMENT_SESSION}/${sessionId}`,
+    { method: "DELETE" },
+  );
+}
+
 export function getScoreSummary(sessionId?: number | string) {
   return apiFetch<ScoreSummaryResponse>(API_ENDPOINTS.SCORE_SUMMARY, {
     params: { session_id: sessionId },
@@ -287,6 +298,34 @@ export function generateReport(sessionId?: number | string) {
   return apiFetch<ReportGenerateResponse>(API_ENDPOINTS.REPORT_GENERATE, {
     params: { session_id: sessionId },
   });
+}
+
+// PDF 다운로드 — <a href> 는 브라우저가 Authorization 헤더를 자동 첨부하지 않으므로
+// fetch + blob 으로 직접 받아 다운로드 트리거.
+export async function downloadReportPdf(sessionId: number | string): Promise<void> {
+  const url = `${API_BASE}${API_ENDPOINTS.REPORT_GENERATE}?session_id=${sessionId}&fmt=pdf`;
+  const accessToken = _getTokensFromStorage()?.access_token ?? null;
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  else {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) headers["X-Login-Id"] = loginId;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`PDF 다운로드 실패 (HTTP ${res.status})`, res.status, text);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = `zt-report-${sessionId}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // revoke 는 약간 지연 — 다운로드 다이얼로그가 끝나기 전 URL 회수 방지
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
 export function getManualItems(sessionId: number | string, excludedTools?: string) {

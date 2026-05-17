@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
 import {
-  API_BASE,
   createAssessmentShare,
+  downloadReportPdf,
   listAssessmentShares,
   revokeAssessmentShare,
   ApiError,
@@ -1033,22 +1033,34 @@ export function Reporting() {
               표지 · 필러별 점수 · 체크리스트 세부항목 · 개선 권고 순으로 구성됩니다.
             </p>
             <div className="flex justify-center">
-              <a
-                href={`${API_BASE}/api/report/generate?session_id=${sessionId}&fmt=pdf`}
-                download={`zt-report-${sessionId}.pdf`}
-                onClick={() => {
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!sessionId || pdfDownloading) return;
                   setPdfDownloading(true);
-                  setTimeout(() => setPdfDownloading(false), 3000);
+                  try {
+                    await downloadReportPdf(sessionId);
+                    toast.success("PDF 다운로드가 시작되었습니다.");
+                  } catch (err) {
+                    const status = err instanceof ApiError ? err.status : 0;
+                    if (status === 401) toast.error("로그인이 필요합니다. 다시 로그인해주세요.");
+                    else if (status === 403) toast.error("PDF 다운로드 권한이 없습니다.");
+                    else if (status === 404) toast.error("세션을 찾을 수 없습니다.");
+                    else toast.error("PDF 생성에 실패했습니다.");
+                  } finally {
+                    setPdfDownloading(false);
+                  }
                 }}
+                disabled={pdfDownloading || !sessionId}
                 className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium transition-colors ${
-                  pdfDownloading
-                    ? "bg-gray-300 text-gray-500 pointer-events-none"
+                  pdfDownloading || !sessionId
+                    ? "bg-gray-300 text-gray-500 cursor-not-allowed"
                     : "bg-blue-600 text-white hover:bg-blue-700"
                 }`}
               >
                 <Download size={18} />
                 {pdfDownloading ? "생성 중..." : "PDF 다운로드"}
-              </a>
+              </button>
             </div>
           </div>
         </div>
