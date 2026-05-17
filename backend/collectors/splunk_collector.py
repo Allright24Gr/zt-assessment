@@ -353,7 +353,7 @@ def collect_agent_registration(item_id: str, maturity: str) -> CollectedResult:
 
 
 def collect_segment_policy_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """3.1.2.1_2: 네트워크 세그먼테이션 정책 위반 알람 ≥ 1 → 충족"""
+    """3.1.2.3_1: 네트워크 세그먼테이션 정책 위반 알람 ≥ 1 → 충족 (마이크로 세그멘테이션 향상)"""
     MK, TH = "segment_violation_alerts", 1.0
     spl = 'search (tag=network_segmentation OR signature="*segment*violation*") | stats count'
     cnt, err, raw = _splunk_search_count(spl)
@@ -365,7 +365,7 @@ def collect_segment_policy_alerts(item_id: str, maturity: str) -> CollectedResul
 
 
 def collect_lateral_movement_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """3.4.1.1_2: 측면 이동(lateral movement) 탐지 알람 ≥ 1 → 충족"""
+    """3.4.1.3_1: 측면 이동(lateral movement) 탐지 알람 ≥ 1 → 충족 (데이터 흐름 향상)"""
     MK, TH = "lateral_movement_alerts", 1.0
     spl = 'search (tag=lateral_movement OR signature="*lateral*movement*") | stats count'
     cnt, err, raw = _splunk_search_count(spl)
@@ -389,7 +389,7 @@ def collect_ids_alerts(item_id: str, maturity: str) -> CollectedResult:
 
 
 def collect_realtime_threat_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """4.4.1.1_2: 실시간 threat detection 알람 ≥ 1 → 충족"""
+    """4.4.1.3_2: 실시간 threat detection 알람 ≥ 1 → 충족 (시스템 정책 향상)"""
     MK, TH = "realtime_threat_alerts", 1.0
     spl = ('search (tag=threat OR tag=attack OR sourcetype=*threat*) '
            'earliest=-15m | stats count')
@@ -414,7 +414,7 @@ def collect_dlp_alerts(item_id: str, maturity: str) -> CollectedResult:
 
 
 def collect_threat_detection_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """5.2.1.4_2: 종합 threat detection 알람 ≥ 1 → 충족"""
+    """5.2.1.4_1: 종합 threat detection 알람 ≥ 1 → 충족"""
     MK, TH = "threat_detection_alerts", 1.0
     spl = 'search (tag=threat OR tag=malware OR sourcetype=*threat*) | stats count'
     cnt, err, raw = _splunk_search_count(spl)

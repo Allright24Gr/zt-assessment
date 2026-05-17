@@ -19,7 +19,14 @@
 >   · B-4 권고 사용자 환경 맞춤 — improvement_customizer (IDP/SIEM/EDR 12개 프로파일)
 >   · B-5 LDAP/AD collector — 한국 공공·제조 시장 진입
 >   · B-7 EDR collector — CrowdStrike + Defender for Endpoint
-> - **자동 진단 항목**: 262 → **307** (LDAP +15, CrowdStrike +15, Defender +15, base 합 193)
+>   · B-6/B-7'/B-8 도구 추가 (`57689c3`) — AWS Security Hub + Azure Defender + Zscaler + Cloudflare Access
+> - **도구 추가 종료 결정 (2026-05-17 후속)**: 14개에서 종료. 이후 작업은 매핑 정확성 + 체크리스트 보완 우선.
+> - **매핑 학술 검증 (2026-05-17 최종)**:
+>   · `backend/scripts/validate_checklist_mapping.py` 신설
+>   · xlsx 자동 진단 212개 = 우리 매핑 unique item_id 212개 (1:1 정합)
+>   · 잘못된 매핑 6건 정정 (`2.3.1.1_3 / 2.3.1.2_2 / 5.2.1.4_2 / 3.1.2.1_2 / 3.4.1.1_2 / 4.4.1.1_2` → 가까운 자동 항목으로 재매핑)
+>   · 누락 0건, 잘못된 매핑 0건, 수동 충돌 0건, 다중 매핑(의도된 카테고리 다중) 54건
+> - **자동 진단 항목**: 307 → **357** (14 도구 = base 243 + autodiscover 114 / unique item_id 212)
 > - **남은 결정**: P3-20 LLM·P3-26 PDF는 사용자 결정으로 보류.
 
 ---
@@ -302,7 +309,7 @@
 | # | 항목 | 공수 |
 |---|---|---|
 | P3-20 | 자가 증적 자동 파싱 (PDF/이미지 OCR → LLM → 자동 채점 보조) | 1~2주 |
-| P3-21 | AWS Security Hub / Azure Defender collector | 도구당 3~5일 |
+| P3-21 | ~~AWS Security Hub / Azure Defender collector~~ | ✅ 완료 (`57689c3`) |
 | P3-22 | 진단 스케줄링 (월간 정기 진단 cron / worker queue) | 2일 |
 | P3-23 | 요금제 / 결제 (Stripe 또는 토스페이먼츠) | 1~2주 |
 | P3-24 | 다국어 (i18n, 영문 → 글로벌) | 1주 |
@@ -342,13 +349,17 @@
 - [ ] **P3-22** 정기 스케줄링
 - [ ] **P3-28** worker 분리
 
-### 진단 도구 (Collectors)
+### 진단 도구 (Collectors) — 14 도구 종료
 - [x] Keycloak 65 / Wazuh 122 / Nmap 14 / Trivy 11
-- [x] **Entra ID 20 (Phase A)**
-- [ ] **P1-10** Okta / Splunk
-- [ ] **P2** Entra ID Phase B (남은 항목 추가)
-- [ ] **P3-21** AWS Security Hub / Azure Defender
-- [ ] **P3** Elastic SIEM / QRadar / ArcSight
+- [x] Entra ID 20 / Okta 15 / LDAP 15
+- [x] Splunk 15
+- [x] CrowdStrike 15 / Defender 15
+- [x] AWS Security Hub 15 / Azure Defender 15 (클라우드 자세 CSPM)
+- [x] Zscaler 10 / Cloudflare Access 10 (ZTNA)
+- [x] **매핑 학술 검증** — xlsx ↔ _full_mapping 1:1 정합 (누락/잘못/충돌 0건)
+- [도구 추가 종료 결정] — 새 collector 추가는 더 이상 진행하지 않음. 이후 작업은 매핑 정확성·xlsx 항목 보완·UX 개선·운영 안정성.
+- [ ] (선택) Entra ID Phase B (남은 항목 추가)
+- [ ] (선택) Elastic SIEM / QRadar / ArcSight — 사용자 결정 시
 
 ### 결과 / 보고
 - [x] Reporting + PDF (NanumGothic)
@@ -434,9 +445,12 @@
 | audit 보관 | 일단 90일 (DiagnosisSession과 동일) | `AuthAuditLog`. 별도 분리는 필요 시 |
 | 약관 본문 | 표준 템플릿 적용 (`legalText.ts`) | 법무 검토 후 교체 예정 |
 | 회원 탈퇴 | 즉시 cascade 삭제 (개인 조직 포함) | `DELETE /api/auth/me` |
-| 추가 IdP/SIEM | **Okta + Splunk 둘 다** | `okta_collector.py`, `splunk_collector.py` 각 15개 |
-| 진단 흐름 | 우리 인프라로 외부 스캔 + Step 0 폴백 | `_resolve_supported_tools` |
+| 추가 IdP/SIEM/EDR | **Okta + Splunk + CrowdStrike + Defender + LDAP** | 각 15개 collector |
+| 추가 Cloud/ZTNA | **AWS Security Hub + Azure Defender + Zscaler + Cloudflare Access** | base 50개 collector |
+| 진단 흐름 | 우리 인프라로 외부 스캔 + Step 0 폴백 | `_resolve_supported_tools` (5 카테고리) |
 | 인증 강도 | 최소 패치 → JWT 토큰화 + IP 잠금까지 강화 | P0-1·P0-4 |
+| **도구 추가 종료** | 14 도구에서 종료. 이후 작업은 매핑 정확성 + UX | 2026-05-17 사용자 결정 |
+| **매핑 정합성** | xlsx ↔ _full_mapping 1:1 정합 검증 통과 | `validate_checklist_mapping.py` |
 | P3-20 LLM | **보류** (제외) | — |
 | P3-26 PDF 디자인 | **보류** (나중에) | — |
 | STEP 3 차별화 | **전체 보류** | — |

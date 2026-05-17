@@ -227,7 +227,7 @@ def collect_agent_registration(item_id: str, maturity: str) -> CollectedResult:
 
 
 def collect_edr_agents(item_id: str, maturity: str) -> CollectedResult:
-    """2.3.1.2_2: 활성 EDR 에이전트 수 (Active machine ≥ 1 → 충족)"""
+    """2.3.1.2_1: 활성 EDR 에이전트 수 (Active machine ≥ 1 → 충족)"""
     MK, TH = "edr_active_agents", 1.0
     total, err, _ = _df_count("/machines", {"$filter": "healthStatus eq 'Active'"})
     if err:
@@ -249,7 +249,7 @@ def collect_policy_violation_alerts(item_id: str, maturity: str) -> CollectedRes
 
 
 def collect_realtime_threat_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """4.4.1.1_2: 실시간 위협 알림 (severity=High + status=New ≥ 1 → 충족)"""
+    """4.4.1.3_2: 실시간 위협 알림 (severity=High + status=New ≥ 1 → 충족)"""
     MK, TH = "realtime_high_alerts", 1.0
     total, err, _ = _df_count(
         "/alerts",
@@ -263,7 +263,7 @@ def collect_realtime_threat_alerts(item_id: str, maturity: str) -> CollectedResu
 
 
 def collect_threat_detection_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """5.2.1.4_2: 위협 탐지 알림 (status=New 알림 ≥ 1 → 충족)"""
+    """5.2.1.4_1: 위협 탐지 알림 (status=New 알림 ≥ 1 → 충족)"""
     MK, TH = "new_alerts", 1.0
     total, err, _ = _df_count("/alerts", {"$filter": "status eq 'New'"})
     if err:
@@ -288,7 +288,7 @@ def collect_privilege_escalation_alerts(item_id: str, maturity: str) -> Collecte
 
 
 def collect_lateral_movement_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """3.4.1.1_2: 측면 이동 탐지 (category eq 'LateralMovement' ≥ 1 → 충족)"""
+    """3.4.1.3_1: 측면 이동 탐지 (category eq 'LateralMovement' ≥ 1 → 충족)"""
     MK, TH = "lateral_movement_alerts", 1.0
     total, err, _ = _df_count(
         "/alerts",
@@ -384,7 +384,7 @@ def collect_active_response_auth(item_id: str, maturity: str) -> CollectedResult
 
 
 def collect_agent_keepalive(item_id: str, maturity: str) -> CollectedResult:
-    """2.3.1.1_3: 에이전트 keepalive (Onboarded machine ≥ 1 → 충족)"""
+    """2.3.1.3_1: 에이전트 keepalive (Onboarded machine ≥ 1 → 자동 인벤토리 관리 충족)"""
     MK, TH = "onboarded_machines", 1.0
     total, err, _ = _df_count(
         "/machines",

@@ -224,7 +224,7 @@ def collect_agent_registration(item_id: str, maturity: str) -> CollectedResult:
 
 
 def collect_edr_agents(item_id: str, maturity: str) -> CollectedResult:
-    """2.3.1.2_2: 활성 EDR 에이전트 수 (online 호스트 ≥ 1 → 충족)"""
+    """2.3.1.2_1: 활성 EDR 에이전트 수 (online 호스트 ≥ 1 → 충족)"""
     MK, TH = "edr_online_agents", 1.0
     total, err, _ = _cs_total("/devices/queries/devices/v1",
                               {"limit": 1, "filter": "status:'online'"})
@@ -266,7 +266,7 @@ def collect_policy_violation_alerts(item_id: str, maturity: str) -> CollectedRes
 
 
 def collect_realtime_threat_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """4.4.1.1_2: 실시간 위협 알림 (new + high severity alert ≥ 1 → 충족)"""
+    """4.4.1.3_2: 실시간 위협 알림 (new + high severity alert ≥ 1 → 충족)"""
     MK, TH = "realtime_high_alerts", 1.0
     total, err, _ = _cs_total(
         "/alerts/queries/alerts/v1",
@@ -280,7 +280,7 @@ def collect_realtime_threat_alerts(item_id: str, maturity: str) -> CollectedResu
 
 
 def collect_threat_detection_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """5.2.1.4_2: 위협 탐지 알림 (new detect ≥ 1 → 충족)"""
+    """5.2.1.4_1: 위협 탐지 알림 (new detect ≥ 1 → 충족)"""
     MK, TH = "new_detects", 1.0
     total, err, _ = _cs_total(
         "/detects/queries/detects/v1",
@@ -308,7 +308,7 @@ def collect_privilege_escalation_alerts(item_id: str, maturity: str) -> Collecte
 
 
 def collect_lateral_movement_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """3.4.1.1_2: 측면 이동 탐지 (Lateral Movement tactic detect ≥ 1 → 충족)"""
+    """3.4.1.3_1: 측면 이동 탐지 (Lateral Movement tactic detect ≥ 1 → 충족)"""
     MK, TH = "lateral_movement_detects", 1.0
     total, err, _ = _cs_total(
         "/detects/queries/detects/v1",

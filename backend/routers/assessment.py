@@ -1430,13 +1430,14 @@ def _splunk_mapping():
         (collect_policy_violation_alerts, "2.1.1.2_2", "초기"),
         (collect_os_inventory,            "2.2.1.1_1", "기존"),
         (collect_agent_registration,      "2.3.1.1_2", "기존"),
-        # 3.1.2.1_2 / 3.4.1.1_2 의 4번째 segment 가 1 → "기존" (이전 "초기"는 매핑 버그)
-        (collect_segment_policy_alerts,   "3.1.2.1_2", "기존"),
-        (collect_lateral_movement_alerts, "3.4.1.1_2", "기존"),
+        # xlsx 정정(2026-05-17): 3.1.2.1_2 / 3.4.1.1_2 / 4.4.1.1_2 / 5.2.1.4_2 는
+        # xlsx에서 "수동" 또는 존재하지 않는 item_id → 가까운 자동 항목으로 재매핑.
+        (collect_segment_policy_alerts,   "3.1.2.3_1", "향상"),
+        (collect_lateral_movement_alerts, "3.4.1.3_1", "향상"),
         (collect_ids_alerts,              "4.3.1.3_2", "향상"),
-        (collect_realtime_threat_alerts,  "4.4.1.1_2", "기존"),
+        (collect_realtime_threat_alerts,  "4.4.1.3_2", "향상"),
         (collect_dlp_alerts,              "5.1.1.4_1", "최적화"),
-        (collect_threat_detection_alerts, "5.2.1.4_2", "최적화"),
+        (collect_threat_detection_alerts, "5.2.1.4_1", "최적화"),
     ]
 
 
@@ -1481,13 +1482,13 @@ def _crowdstrike_mapping():
     return [
         (collect_endpoint_inventory,         "2.2.1.1_1", "기존"),
         (collect_agent_registration,         "2.3.1.1_2", "기존"),
-        (collect_edr_agents,                 "2.3.1.2_2", "초기"),
+        (collect_edr_agents,                 "2.3.1.2_1", "초기"),
         (collect_auto_block,                 "2.2.1.4_1", "최적화"),
         (collect_policy_violation_alerts,    "2.1.1.2_2", "초기"),
-        (collect_realtime_threat_alerts,     "4.4.1.1_2", "기존"),
-        (collect_threat_detection_alerts,    "5.2.1.4_2", "최적화"),
+        (collect_realtime_threat_alerts,     "4.4.1.3_2", "향상"),
+        (collect_threat_detection_alerts,    "5.2.1.4_1", "최적화"),
         (collect_privilege_escalation_alerts,"1.4.2.3_2", "향상"),
-        (collect_lateral_movement_alerts,    "3.4.1.1_2", "기존"),
+        (collect_lateral_movement_alerts,    "3.4.1.3_1", "향상"),
         (collect_malware_blocked,            "2.1.1.3_1", "향상"),
         (collect_quarantine_actions,         "2.4.2.2_1", "초기"),
         (collect_realtime_monitoring,        "2.2.1.3_1", "향상"),
@@ -1510,19 +1511,20 @@ def _defender_mapping():
     return [
         (collect_endpoint_inventory,          "2.2.1.1_1", "기존"),
         (collect_agent_registration,          "2.3.1.1_2", "기존"),
-        (collect_edr_agents,                  "2.3.1.2_2", "초기"),
+        (collect_edr_agents,                  "2.3.1.2_1", "초기"),
         (collect_policy_violation_alerts,     "2.1.1.2_2", "초기"),
-        (collect_realtime_threat_alerts,      "4.4.1.1_2", "기존"),
-        (collect_threat_detection_alerts,     "5.2.1.4_2", "최적화"),
+        (collect_realtime_threat_alerts,      "4.4.1.3_2", "향상"),
+        (collect_threat_detection_alerts,     "5.2.1.4_1", "최적화"),
         (collect_privilege_escalation_alerts, "1.4.2.3_2", "향상"),
-        (collect_lateral_movement_alerts,     "3.4.1.1_2", "기존"),
+        (collect_lateral_movement_alerts,     "3.4.1.3_1", "향상"),
         (collect_malware_blocked,             "2.1.1.3_1", "향상"),
         (collect_auto_block,                  "2.2.1.4_1", "최적화"),
         (collect_vuln_summary,                "5.5.2.2_1", "초기"),
         (collect_critical_unfixed_vulns,      "5.5.1.3_1", "향상"),
         (collect_realtime_monitoring,         "2.2.1.3_1", "향상"),
         (collect_active_response_auth,        "1.2.1.4_1", "최적화"),
-        (collect_agent_keepalive,             "2.3.1.1_3", "기존"),
+        # collect_agent_keepalive: xlsx 2.3.1.1_3 없음 → 2.3.1.3_1 (자동 인벤토리 관리)로 재매핑
+        (collect_agent_keepalive,             "2.3.1.3_1", "향상"),
     ]
 
 
@@ -1541,7 +1543,7 @@ def _aws_securityhub_mapping():
         (collect_sca_auto_remediation,     "2.1.1.3_1", "향상"),
         (collect_agent_registration,       "2.3.1.1_2", "기존"),
         (collect_ids_alerts,               "4.3.1.3_2", "향상"),
-        (collect_threat_detection_alerts,  "5.2.1.4_2", "최적화"),
+        (collect_threat_detection_alerts,  "5.2.1.4_1", "최적화"),
         (collect_vuln_summary,             "5.5.2.2_1", "초기"),
         (collect_critical_unfixed_vulns,   "5.5.1.3_1", "향상"),
         (collect_icam_inventory,           "1.3.1.2_1", "초기"),
@@ -1567,8 +1569,8 @@ def _azure_defender_mapping():
     return [
         (collect_sca_compliance,           "2.1.1.2_1", "초기"),
         (collect_policy_violation_alerts,  "2.1.1.2_2", "초기"),
-        (collect_realtime_threat_alerts,   "4.4.1.1_2", "기존"),
-        (collect_threat_detection_alerts,  "5.2.1.4_2", "최적화"),
+        (collect_realtime_threat_alerts,   "4.4.1.3_2", "향상"),
+        (collect_threat_detection_alerts,  "5.2.1.4_1", "최적화"),
         (collect_vuln_summary,             "5.5.2.2_1", "초기"),
         (collect_critical_unfixed_vulns,   "5.5.1.3_1", "향상"),
         (collect_endpoint_inventory,       "2.2.1.1_1", "기존"),

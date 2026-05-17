@@ -360,7 +360,7 @@ def collect_ids_alerts(item_id: str, maturity: str) -> CollectedResult:
 
 
 def collect_threat_detection_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """5.2.1.4_2: HIGH/CRITICAL 심각도 findings ≥ 1 → 충족 / 0 → 미충족"""
+    """5.2.1.4_1: HIGH/CRITICAL 심각도 findings ≥ 1 → 충족 / 0 → 미충족"""
     MK, TH = "high_severity_findings", 1.0
     filters = {
         "SeverityLabel": _filter_eq("SeverityLabel", ["HIGH", "CRITICAL"]),

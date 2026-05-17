@@ -304,7 +304,7 @@ def collect_policy_violation_alerts(item_id: str, maturity: str) -> CollectedRes
 
 
 def collect_realtime_threat_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """4.4.1.1_2: Severity=High 경고 ≥ 1 → 충족(실시간 위협 탐지 동작)"""
+    """4.4.1.3_2: Severity=High 경고 ≥ 1 → 충족(실시간 위협 탐지 동작)"""
     MK, TH = "high_severity_alerts", 1.0
     items, err = _arm_collect_value(
         "/providers/Microsoft.Security/alerts",
@@ -324,7 +324,7 @@ def collect_realtime_threat_alerts(item_id: str, maturity: str) -> CollectedResu
 
 
 def collect_threat_detection_alerts(item_id: str, maturity: str) -> CollectedResult:
-    """5.2.1.4_2: 전체 보안 경고 ≥ 1 → 충족(위협 탐지 가시성)"""
+    """5.2.1.4_1: 전체 보안 경고 ≥ 1 → 충족(위협 탐지 가시성)"""
     MK, TH = "all_alerts", 1.0
     items, err = _arm_collect_value(
         "/providers/Microsoft.Security/alerts",
