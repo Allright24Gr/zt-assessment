@@ -196,3 +196,76 @@ def validate_ldap_dn(value: str, field_name: str = "ldap_dn") -> str:
     if any(c in value for c in ";|&`$<>\\\"'"):
         raise ValueError(f"{field_name}: 허용되지 않은 문자")
     return value
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AWS Security Hub (access key / region)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# AWS access key id: 일반적으로 AKIA/ASIA 등 대문자+숫자 16~128자.
+# 보수적으로 영문 대문자/숫자 16~128자 범위로 검증.
+_AWS_ACCESS_KEY_RE = re.compile(r"^[A-Z0-9]{16,128}$")
+
+# AWS region: 두 글자 area + 이름 + 숫자 (예: ap-northeast-2, us-east-1, eu-west-3).
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d$")
+
+
+def validate_aws_access_key(value: str, field_name: str = "aws_access_key_id") -> str:
+    """AWS access key id 형식 검증. 빈 값은 통과(선택 입력)."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if any(c in value for c in _SHELL_METAS + " "):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자 포함")
+    if not _AWS_ACCESS_KEY_RE.match(value):
+        raise ValueError(f"{field_name}: 유효하지 않은 AWS access key 형식")
+    return value
+
+
+def validate_aws_region(value: str, field_name: str = "aws_region") -> str:
+    """AWS region 형식 검증 (예: 'ap-northeast-2'). 빈 값은 통과."""
+    value = (value or "").strip().lower()
+    if not value:
+        return ""
+    if not _AWS_REGION_RE.match(value):
+        raise ValueError(f"{field_name}: 예시 'ap-northeast-2' 형식 필요")
+    return value
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Azure subscription id (GUID)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_AZURE_SUB_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def validate_azure_subscription(value: str, field_name: str = "azure_subscription") -> str:
+    """Azure subscription id: GUID 형식 검증. 빈 값은 통과."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if any(c in value for c in _SHELL_METAS + " "):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자 포함")
+    if not _AZURE_SUB_RE.match(value):
+        raise ValueError(f"{field_name}: GUID 형식 필요")
+    return value
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Cloudflare account_id (32자 hex)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_CF_ACCOUNT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def validate_cf_account_id(value: str, field_name: str = "cloudflare_account_id") -> str:
+    """Cloudflare account_id: 32자 hex 형식. 빈 값은 통과(선택 입력)."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _CF_ACCOUNT_ID_RE.match(value):
+        raise ValueError(f"{field_name}: 32자 hex 형식 필요")
+    return value
