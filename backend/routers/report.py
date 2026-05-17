@@ -12,6 +12,7 @@ from models import (
 )
 from scoring.engine import determine_maturity_level
 from routers.auth import get_current_user, assert_session_access
+from services.standards_mapping import map_item_to_standards, session_standards_summary
 
 router = APIRouter()
 
@@ -475,3 +476,61 @@ def generate_report(
     return generate_report_by_query(
         session_id=session_id, fmt=fmt, db=db, current_user=current_user,
     )
+
+
+@router.get("/standards/{session_id}")
+def get_standards_mapping(
+    session_id: int,
+    fmt: str = Query(default="json", pattern="^(json|csv)$"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """진단 세션의 NIST 800-207 / CIS Controls v8 매핑 export.
+
+    fmt=json → 표준별 충족·미충족 집계 + 세부 매핑
+    fmt=csv  → 표준별 1행씩, columns: standard, id, title, pass, fail, na, compliance_rate
+    """
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
+    rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    checklist_results = [
+        {
+            "item_id": cl.item_id, "pillar": cl.pillar, "category": cl.category,
+            "item": cl.item_name, "result": dr.result,
+        }
+        for dr, cl in rows
+    ]
+
+    summary = session_standards_summary(checklist_results)
+
+    if fmt == "csv":
+        import csv
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["standard", "id", "title", "pass", "fail", "na", "compliance_rate"])
+        for n in summary["nist_800_207"]:
+            w.writerow(["NIST 800-207", n["tenet"], n["title"], n["pass"], n["fail"], n["na"], n["compliance_rate"]])
+        for c in summary["cis_controls_v8"]:
+            w.writerow(["CIS Controls v8", c["control_id"], c["title"], c["pass"], c["fail"], c["na"], c["compliance_rate"]])
+        return StreamingResponse(
+            io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="zt-standards-{session_id}.csv"'},
+        )
+
+    return JSONResponse(content={
+        "session_id": session_id,
+        "nist_800_207": summary["nist_800_207"],
+        "cis_controls_v8": summary["cis_controls_v8"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    })
