@@ -237,29 +237,50 @@ export function InProgress() {
     return map;
   }, [status]);
 
+  // 데모 모드 보정: backend 가 빨리 끝나도 화면 progress 따라 천천히 차오르게.
+  // backend 실제 진행률과 smooth progress 중 작은 값으로 cap → pillar 별 시각적 일관성.
   const pillars = useMemo(() => (
-    PILLARS.map((p) => {
+    PILLARS.map((p, idx) => {
       const match = [...pillarProgressMap.entries()].find(([name]) => pillarMatchesKey(name, p.key));
-      if (!match) return { ...p, progress: 0, collected: 0, expected: 0 };
-      const { collected, expected } = match[1];
-      const pct = expected > 0 ? Math.round((collected / expected) * 100) : 0;
-      return { ...p, progress: pct, collected, expected };
+      const expected = match ? match[1].expected : 0;
+      const backendCollected = match ? match[1].collected : 0;
+      const backendPct = expected > 0 ? (backendCollected / expected) * 100 : 0;
+      // pillar 별 약간씩 다른 속도 (deterministic offset)
+      const offset = ((idx * 7) % 13) - 6;  // -6 ~ +6 범위
+      const displayCap = Math.max(0, Math.min(100, progress + offset));
+      const displayPct = Math.min(backendPct, displayCap);
+      const displayCollected = expected > 0 ? Math.round((displayPct / 100) * expected) : 0;
+      return {
+        ...p,
+        progress: Math.round(displayPct),
+        collected: displayCollected,
+        expected,
+      };
     })
-  ), [pillarProgressMap]);
+  ), [pillarProgressMap, progress]);
 
+  // 도구별 진행률도 동일하게 smooth progress 따라가게 cap
   const toolProgress = useMemo(() => (
-    TOOL_NAMES.map((toolName) => {
+    TOOL_NAMES.map((toolName, idx) => {
       const lowerKey = toolName.toLowerCase();
       const found = status?.tool_progress.find((t) => t.tool === lowerKey);
+      const backendCollected = found?.collected ?? 0;
+      const expected = found?.expected ?? 0;
+      const backendPct = expected > 0 ? (backendCollected / expected) * 100 : 0;
+      // 도구 별 약간씩 다른 속도 — Keycloak 가장 빠름, Trivy 약간 느림
+      const offset = ((idx * 5) % 11) - 5;
+      const displayCap = Math.max(0, Math.min(100, progress + offset));
+      const displayPct = Math.min(backendPct, displayCap);
+      const displayCollected = expected > 0 ? Math.round((displayPct / 100) * expected) : 0;
       return {
         name: toolName,
-        collected: found?.collected ?? 0,
-        total:     found?.expected ?? 0,
+        collected: displayCollected,
+        total:     expected,
         fill:      TOOL_COLORS[toolName],
         selected:  status?.selected_tools.includes(lowerKey) ?? false,
       };
     })
-  ), [status]);
+  ), [status, progress]);
 
   const activePillarIndex = pillars.findIndex((p) => p.progress > 0 && p.progress < 100);
   const safeActivePillarIndex = activePillarIndex >= 0
@@ -340,8 +361,11 @@ export function InProgress() {
   }, [sid]);
 
   // ── 시각 효과: 메트릭/AreaChart/로그 시뮬레이션 ─────────────────────────────
+  // 데모 모드는 backend 가 47초 정도에 끝나지만 SMOOTH ramp 는 90초.
+  // 시뮬레이션 stop 조건을 `collection_done` 이 아닌 `progress >= 100` 으로 두면
+  // 화면 진행률 100% 도달할 때까지 메트릭/차트/로그가 자연스럽게 계속 움직임.
   useEffect(() => {
-    if (collectionDone) return;
+    if (progress >= 100) return;
     const timer = window.setInterval(() => {
       setMetrics((prev) => ({
         totalItems:       prev.totalItems       + Math.floor(Math.random() * 18) + 5,
@@ -355,10 +379,10 @@ export function InProgress() {
       });
     }, 800);
     return () => window.clearInterval(timer);
-  }, [collectionDone, progress]);
+  }, [progress]);
 
   useEffect(() => {
-    if (collectionDone) return;
+    if (progress >= 100) return;
     let eventIndex = 0;
     const timer = window.setInterval(() => {
       const event = DEMO_LOG_EVENTS[eventIndex % DEMO_LOG_EVENTS.length];
@@ -369,7 +393,7 @@ export function InProgress() {
       ]);
     }, 500);
     return () => window.clearInterval(timer);
-  }, [collectionDone]);
+  }, [progress]);
 
   useEffect(() => {
     const el = logContainerRef.current;
@@ -512,7 +536,7 @@ export function InProgress() {
               value={pillar.progress}
               label={pillar.label}
               color={PILLAR_COLORS[index]}
-              active={safeActivePillarIndex === index && !collectionDone}
+              active={safeActivePillarIndex === index && progress < 100}
               completedCount={pillar.collected}
               totalCount={pillar.expected}
             />
@@ -630,10 +654,10 @@ export function InProgress() {
             <p className="text-sm text-gray-500 mt-1">tail -f 로그처럼 진단 이벤트를 시간순으로 스트리밍합니다.</p>
           </div>
           <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
-            collectionDone ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"
+            progress >= 100 ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"
           }`}>
-            <span className={`h-2 w-2 rounded-full ${collectionDone ? "bg-green-500" : "bg-blue-500 animate-pulse"}`} />
-            {collectionDone ? "수집 완료" : "수집 중"}
+            <span className={`h-2 w-2 rounded-full ${progress >= 100 ? "bg-green-500" : "bg-blue-500 animate-pulse"}`} />
+            {progress >= 100 ? "수집 완료" : "수집 중"}
           </span>
         </div>
         <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-inner">
