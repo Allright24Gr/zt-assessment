@@ -28,6 +28,7 @@ from routers.validators import (
     validate_https_url,
     validate_cred_field,
 )
+from services.ocsf_transformer import build_session_ocsf
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -709,6 +710,37 @@ def get_result(
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
         "checklist_results": checklist_results,
     }
+
+
+@router.get("/ocsf/{session_id}")
+def get_ocsf_events(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """세션의 수집 데이터를 OCSF 1.1.0 표준 이벤트로 변환해 반환.
+
+    - 도구별 OCSF 클래스 매핑 (keycloak→Authentication, wazuh→Detection Finding,
+      nmap→Network Activity, trivy→Vulnerability Finding)
+    - 원본 raw_json 은 `raw_data` 필드에 손실 없이 보존
+    - 별도 컬럼 추가 없이 조회 시점 변환 (read-side transformer)
+    """
+    session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
+
+    rows = (
+        db.query(CollectedData, Checklist, DiagnosisResult)
+        .join(Checklist, CollectedData.check_id == Checklist.check_id)
+        .outerjoin(
+            DiagnosisResult,
+            (DiagnosisResult.session_id == CollectedData.session_id)
+            & (DiagnosisResult.check_id == CollectedData.check_id),
+        )
+        .filter(CollectedData.session_id == session_id)
+        .order_by(CollectedData.tool, Checklist.item_id)
+        .all()
+    )
+    return build_session_ocsf(session_id=session_id, rows=rows)
 
 
 @router.get("/history")

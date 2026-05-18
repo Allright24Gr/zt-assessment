@@ -306,6 +306,61 @@ export function generateReport(sessionId?: number | string) {
   });
 }
 
+// ─── OCSF (Open Cybersecurity Schema Framework) ───────────────────────────────
+export interface OcsfObservable {
+  name: string;
+  type_id?: number;
+  type?: string;
+  value: string;
+}
+
+export interface OcsfEvent {
+  metadata: { version: string; product: { name: string; vendor_name: string }; profiles: string[] };
+  category_uid: number;
+  category_name: string;
+  class_uid: number;
+  class_name: string;
+  type_uid: number;
+  activity_id: number;
+  activity_name: string;
+  time: number;
+  severity_id: number;
+  severity: string;
+  status: string;
+  status_id: number;
+  observables: OcsfObservable[];
+  raw_data: unknown;
+  unmapped: { zt_assessment: Record<string, unknown> };
+  finding_info?: { title: string; uid: string; types: string[]; desc?: string };
+  actor?: { user: { name: string; type: string } };
+}
+
+export interface OcsfSessionResponse {
+  session_id: number;
+  ocsf_version: string;
+  event_count: number;
+  by_category: Record<string, number>;
+  by_severity: Record<string, number>;
+  events: OcsfEvent[];
+}
+
+export function getOcsfEvents(sessionId: number | string) {
+  return apiFetch<OcsfSessionResponse>(`/api/assessment/ocsf/${sessionId}`);
+}
+
+export async function downloadOcsfJson(sessionId: number | string): Promise<void> {
+  const data = await getOcsfEvents(sessionId);
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = `zt-ocsf-${sessionId}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
 // PDF 다운로드 — <a href> 는 브라우저가 Authorization 헤더를 자동 첨부하지 않으므로
 // fetch + blob 으로 직접 받아 다운로드 트리거.
 export async function downloadReportPdf(sessionId: number | string): Promise<void> {

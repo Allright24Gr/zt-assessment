@@ -6,7 +6,11 @@ import {
   downloadReportPdf,
   listAssessmentShares,
   revokeAssessmentShare,
+  getOcsfEvents,
+  downloadOcsfJson,
   ApiError,
+  type OcsfSessionResponse,
+  type OcsfEvent,
 } from "../../config/api";
 import {
   FileText, Download, TrendingUp, AlertTriangle, AlertCircle, ArrowRight, ChevronDown, RotateCcw,
@@ -249,6 +253,12 @@ export function Reporting() {
   const [detailQuestionQuery, setDetailQuestionQuery] = useState("");
   const [selectedRiskCode, setSelectedRiskCode] = useState<string | null>(null);
   const [pdfDownloading, setPdfDownloading] = useState(false);
+  // OCSF (Open Cybersecurity Schema Framework) 변환 결과
+  const [ocsfData, setOcsfData] = useState<OcsfSessionResponse | null>(null);
+  const [ocsfLoading, setOcsfLoading] = useState(false);
+  const [ocsfError, setOcsfError] = useState<string | null>(null);
+  const [ocsfDownloading, setOcsfDownloading] = useState(false);
+  const [ocsfSelectedTool, setOcsfSelectedTool] = useState<string>("all");
 
   // 공유 링크 모달 (P1-11)
   const [shareOpen, setShareOpen] = useState(false);
@@ -347,6 +357,20 @@ export function Reporting() {
         setUsedFallback(true);
       });
   }, [sessionId]);
+
+  // OCSF — 탭 진입 시 lazy load
+  useEffect(() => {
+    if (activeTab !== "ocsf" || !sessionId || ocsfData || ocsfLoading) return;
+    setOcsfLoading(true);
+    setOcsfError(null);
+    getOcsfEvents(sessionId)
+      .then((data) => setOcsfData(data))
+      .catch((err) => {
+        console.warn("[reporting] ocsf fetch failed:", err);
+        setOcsfError(err instanceof Error ? err.message : "OCSF 이벤트를 불러오지 못했습니다.");
+      })
+      .finally(() => setOcsfLoading(false));
+  }, [activeTab, sessionId, ocsfData, ocsfLoading]);
 
   // 공유 모달 — ESC 닫기 + 토큰 목록 로드
   useEffect(() => {
@@ -637,6 +661,7 @@ export function Reporting() {
             { id: "overall", label: "종합 결과" },
             { id: "details", label: "세부 항목" },
             { id: "improvements", label: "개선 로드맵" },
+            { id: "ocsf", label: "OCSF 표준" },
             { id: "export", label: "보고서 출력" },
           ].map((tab) => (
             <button
@@ -1207,6 +1232,160 @@ export function Reporting() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── OCSF 표준 ── */}
+      {activeTab === "ocsf" && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h2 className="mb-1 flex items-center gap-2">
+                  <BookOpen className="text-indigo-600" size={20} />
+                  OCSF (Open Cybersecurity Schema Framework) {ocsfData?.ocsf_version ?? "1.1.0"}
+                </h2>
+                <p className="text-sm text-gray-600">
+                  수집된 도구별 raw 데이터를 OCSF 표준 이벤트 형식으로 변환해 보여줍니다.
+                  AWS·Splunk·IBM·Cloudflare 등 18+ 보안 벤더 공동 표준 (OASIS).
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  매핑: Keycloak → IAM/Authentication (3002) · Wazuh → Findings/Detection Finding (2004)
+                  · Nmap → Network Activity (4001) · Trivy → Vulnerability Finding (2002)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!sessionId || ocsfDownloading) return;
+                  setOcsfDownloading(true);
+                  try {
+                    await downloadOcsfJson(sessionId);
+                    toast.success("OCSF JSON 다운로드가 시작되었습니다.");
+                  } catch (err) {
+                    console.warn("[reporting] ocsf download:", err);
+                    toast.error("OCSF JSON 다운로드에 실패했습니다.");
+                  } finally {
+                    setOcsfDownloading(false);
+                  }
+                }}
+                disabled={!ocsfData || ocsfDownloading}
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 text-white px-4 py-2 text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {ocsfDownloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                JSON 다운로드
+              </button>
+            </div>
+
+            {ocsfLoading && (
+              <div className="flex items-center justify-center py-10 text-gray-500 text-sm">
+                <Loader2 size={18} className="animate-spin mr-2" />
+                OCSF 이벤트 변환 중...
+              </div>
+            )}
+
+            {ocsfError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                {ocsfError}
+              </div>
+            )}
+
+            {ocsfData && !ocsfLoading && (
+              <>
+                {/* 분포 요약 */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                  <div className="rounded-lg border border-gray-200 p-3">
+                    <p className="text-xs text-gray-500">전체 이벤트</p>
+                    <p className="text-2xl font-bold text-indigo-600">{ocsfData.event_count}</p>
+                  </div>
+                  {Object.entries(ocsfData.by_severity).map(([sev, n]) => (
+                    <div key={sev} className="rounded-lg border border-gray-200 p-3">
+                      <p className="text-xs text-gray-500">{sev}</p>
+                      <p className="text-2xl font-bold text-gray-900">{n}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* 카테고리별 카운트 */}
+                <div className="flex flex-wrap gap-2 mb-5">
+                  {Object.entries(ocsfData.by_category).map(([cat, n]) => (
+                    <span
+                      key={cat}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 border border-indigo-200"
+                    >
+                      {cat}: {n}
+                    </span>
+                  ))}
+                </div>
+
+                {/* 도구 필터 */}
+                <div className="flex gap-2 mb-3">
+                  {["all", "keycloak", "wazuh", "nmap", "trivy"].map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setOcsfSelectedTool(t)}
+                      className={`px-3 py-1 rounded-md text-xs font-medium border ${
+                        ocsfSelectedTool === t
+                          ? "bg-indigo-600 text-white border-indigo-600"
+                          : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
+                      }`}
+                    >
+                      {t === "all" ? "전체" : t}
+                    </button>
+                  ))}
+                </div>
+
+                {/* 이벤트 미리보기 (상위 5개) */}
+                <div className="space-y-2 max-h-[560px] overflow-y-auto">
+                  {(() => {
+                    const filtered = ocsfData.events.filter(
+                      (e: OcsfEvent) =>
+                        ocsfSelectedTool === "all" ||
+                        e.metadata.product.name.toLowerCase() === ocsfSelectedTool,
+                    );
+                    if (filtered.length === 0) {
+                      return (
+                        <p className="text-sm text-gray-500 text-center py-8">
+                          해당 도구의 이벤트가 없습니다.
+                        </p>
+                      );
+                    }
+                    return filtered.slice(0, 25).map((ev, idx) => (
+                      <details
+                        key={`${ev.class_uid}-${idx}`}
+                        className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 group"
+                      >
+                        <summary className="cursor-pointer text-xs font-mono text-gray-700 flex items-center justify-between gap-2">
+                          <span className="truncate">
+                            <span className="inline-block px-1.5 py-0.5 mr-2 rounded bg-indigo-100 text-indigo-700 font-semibold">
+                              {ev.class_uid}
+                            </span>
+                            <span className="font-semibold text-gray-900">{ev.class_name}</span>
+                            <span className="text-gray-400 mx-1">·</span>
+                            {ev.metadata.product.name}
+                            <span className="text-gray-400 mx-1">·</span>
+                            {ev.severity}
+                            <span className="text-gray-400 mx-1">·</span>
+                            {ev.status}
+                          </span>
+                          <ChevronDown size={14} className="text-gray-400 transition-transform group-open:rotate-180" />
+                        </summary>
+                        <pre className="mt-2 text-[10px] leading-relaxed text-gray-700 overflow-x-auto bg-white border border-gray-200 rounded p-2">
+                          {JSON.stringify(ev, null, 2)}
+                        </pre>
+                      </details>
+                    ));
+                  })()}
+                  {ocsfData.events.length > 25 && (
+                    <p className="text-xs text-center text-gray-500 pt-2">
+                      상위 25개만 표시 · 전체 {ocsfData.event_count}개는 JSON 다운로드로 확인
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
