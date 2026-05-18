@@ -175,6 +175,9 @@ export function InProgress() {
   const logContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const finalizeNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const progressRef = useRef(0);
+  const tickStopRef = useRef(false);
 
   // ── 진행률 계산 ─────────────────────────────────────────────────────────────
   // backend 실제 진행률
@@ -190,11 +193,21 @@ export function InProgress() {
   const [now, setNow] = useState(() => Date.now());
   const collectionDone = status?.collection_done ?? false;
 
-  // 100% 도달 후에는 setInterval을 정지해 자원 낭비를 막는다.
+  // 250ms 진행률 tick — 한 번만 setInterval 등록하고, 정지 조건은 ref 로 점검.
+  // 의존성 배열에 now 를 두면 매 tick 마다 interval 이 재생성되어 자원 낭비.
   useEffect(() => {
-    if (collectionDone && now - mountedAt >= SMOOTH_TOTAL_MS) return;
-    const t = window.setInterval(() => setNow(Date.now()), 250);
+    const t = window.setInterval(() => {
+      if (tickStopRef.current) {
+        window.clearInterval(t);
+        return;
+      }
+      setNow(Date.now());
+    }, 250);
     return () => window.clearInterval(t);
+  }, []);
+  // 정지 조건 갱신 — 별도 effect 로 ref 만 업데이트 (interval 재생성 X)
+  useEffect(() => {
+    tickStopRef.current = collectionDone && now - mountedAt >= SMOOTH_TOTAL_MS;
   }, [collectionDone, now, mountedAt]);
   const elapsedMs = now - mountedAt;
 
@@ -361,12 +374,15 @@ export function InProgress() {
   }, [sid]);
 
   // ── 시각 효과: 메트릭/AreaChart/로그 시뮬레이션 ─────────────────────────────
-  // 데모 모드는 backend 가 47초 정도에 끝나지만 SMOOTH ramp 는 90초.
-  // 시뮬레이션 stop 조건을 `collection_done` 이 아닌 `progress >= 100` 으로 두면
-  // 화면 진행률 100% 도달할 때까지 메트릭/차트/로그가 자연스럽게 계속 움직임.
+  // 의존성을 progress 로 두면 매 250ms tick 마다 interval 이 재생성되므로
+  // progressRef 로 stop 조건을 갱신하고, interval 자체는 mount 시 한 번만 등록.
   useEffect(() => {
-    if (progress >= 100) return;
+    progressRef.current = progress;
+  }, [progress]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
+      if (progressRef.current >= 100) return;
       setMetrics((prev) => ({
         totalItems:       prev.totalItems       + Math.floor(Math.random() * 18) + 5,
         detectedEvents:   prev.detectedEvents   + Math.floor(Math.random() * 4),
@@ -375,16 +391,16 @@ export function InProgress() {
       }));
       setAreaData((prev) => {
         const prevVol = prev.at(-1)?.volume;
-        return [...prev.slice(-19), { time: formatTime(), volume: nextLogVolume(prevVol, progress) }];
+        return [...prev.slice(-19), { time: formatTime(), volume: nextLogVolume(prevVol, progressRef.current) }];
       });
     }, 800);
     return () => window.clearInterval(timer);
-  }, [progress]);
+  }, []);
 
   useEffect(() => {
-    if (progress >= 100) return;
     let eventIndex = 0;
     const timer = window.setInterval(() => {
+      if (progressRef.current >= 100) return;
       const event = DEMO_LOG_EVENTS[eventIndex % DEMO_LOG_EVENTS.length];
       eventIndex += 1;
       setLogs((prev) => [
@@ -393,7 +409,7 @@ export function InProgress() {
       ]);
     }, 500);
     return () => window.clearInterval(timer);
-  }, [progress]);
+  }, []);
 
   useEffect(() => {
     const el = logContainerRef.current;
@@ -402,6 +418,7 @@ export function InProgress() {
 
   // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만)
   // 시연용 부드러운 진행을 위해 backend 완료 + smooth 진행률 100% 모두 만족해야 finalize.
+  // navigate setTimeout 은 ref 로 저장 → 언마운트 시 cleanup.
   useEffect(() => {
     if (!sid || !collectionDone || progress < 100 || finalized || finalizing || manualCount > 0) return;
     setFinalizing(true);
@@ -409,7 +426,7 @@ export function InProgress() {
       .then(() => {
         setFinalized(true);
         toast.success("자동 진단이 완료되었습니다.");
-        setTimeout(() => navigate(`/reporting/${sid}`), 1500);
+        finalizeNavTimerRef.current = setTimeout(() => navigate(`/reporting/${sid}`), 1500);
       })
       .catch((err) => {
         console.warn("[in-progress] finalize:", err);
@@ -417,6 +434,16 @@ export function InProgress() {
       })
       .finally(() => setFinalizing(false));
   }, [sid, collectionDone, progress, manualCount, finalized, finalizing, navigate]);
+
+  // 언마운트 시 finalize navigate 타이머 정리
+  useEffect(() => {
+    return () => {
+      if (finalizeNavTimerRef.current) {
+        clearTimeout(finalizeNavTimerRef.current);
+        finalizeNavTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // ── Excel 업로드 핸들러 ──────────────────────────────────────────────────────
   const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

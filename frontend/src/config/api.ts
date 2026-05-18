@@ -7,17 +7,23 @@ import type {
   AssessmentShareCreateResponse,
   AssessmentShareListItem,
   AuthEnvelope,
+  AuthUser,
   ChecklistResponse,
   ImprovementResponse,
   ManualEvidenceUploadResponse,
   ManualItemsFullResponse,
   ManualSubmitRequest,
   ManualSubmitResponse,
+  ProfileFields,
+  RegisterPayload,
   ReportGenerateResponse,
   ScoreSummaryResponse,
   ScoreTrendResponse,
   TokenPair,
 } from "../types/api";
+
+// 하위 호환 — Settings.tsx / Signup.tsx 등 기존 import 유지용 re-export
+export type { AuthUser, ProfileFields, RegisterPayload } from "../types/api";
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
@@ -419,41 +425,7 @@ export function getSharedAssessment(token: string) {
 }
 
 // ─── Auth ──────────────────────────────────────────────────────────────
-
-export interface ProfileFields {
-  org_name?: string;
-  department?: string;
-  contact?: string;
-  org_type?: string;
-  infra_type?: string;
-  employees?: number;
-  servers?: number;
-  applications?: number;
-  note?: string;
-}
-
-export interface AuthUser {
-  user_id: number;
-  login_id: string;
-  name: string;
-  email?: string | null;
-  role: string;
-  org_id: number;
-  org_name: string;
-  profile?: ProfileFields | null;
-}
-
-export interface RegisterPayload {
-  login_id: string;
-  password: string;
-  name: string;
-  email?: string;
-  profile?: ProfileFields;
-  // P0-5: 약관 동의 필수
-  tos_agreed: boolean;
-  privacy_agreed: boolean;
-  marketing_agreed?: boolean;
-}
+// 타입 정의는 types/api.ts 로 통합. 본 모듈은 함수만 export.
 
 // 새 응답 envelope: { user, tokens }
 export function registerUser(payload: RegisterPayload) {

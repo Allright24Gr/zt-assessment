@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -14,6 +15,25 @@ _PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 _TERM_ORDER = {"단기": 0, "중기": 1, "장기": 2}
 
 
+def _priority_case():
+    return case(
+        (ImprovementGuide.priority == "Critical", 0),
+        (ImprovementGuide.priority == "High", 1),
+        (ImprovementGuide.priority == "Medium", 2),
+        (ImprovementGuide.priority == "Low", 3),
+        else_=3,
+    )
+
+
+def _term_case():
+    return case(
+        (ImprovementGuide.term == "단기", 0),
+        (ImprovementGuide.term == "중기", 1),
+        (ImprovementGuide.term == "장기", 2),
+        else_=2,
+    )
+
+
 @router.get("/")
 def get_improvements(
     pillar: Optional[str] = None,
@@ -22,7 +42,12 @@ def get_improvements(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """개선 가이드 목록을 필터 조건에 따라 반환한다."""
+    """개선 가이드 카탈로그 (조직 무관 글로벌 참조 테이블).
+
+    ImprovementGuide 는 체크리스트별 권고를 담은 시드 데이터로 사용자 데이터가 아니다.
+    따라서 조직 격리는 적용하지 않는다 (인증만 요구). 세션 컨텍스트 권고는
+    /session/{id} 사용.
+    """
     q = db.query(ImprovementGuide)
     if pillar:
         q = q.filter(ImprovementGuide.pillar == pillar)
@@ -30,7 +55,7 @@ def get_improvements(
         q = q.filter(ImprovementGuide.term == term)
     if priority:
         q = q.filter(ImprovementGuide.priority == priority)
-    guides = q.all()
+    guides = q.order_by(_priority_case(), _term_case()).all()
 
     return [
         {
@@ -79,12 +104,9 @@ def get_session_improvements(
     guides = (
         db.query(ImprovementGuide)
         .filter(ImprovementGuide.check_id.in_(failed_check_ids))
+        .order_by(_priority_case(), _term_case())
         .all()
     )
-    guides.sort(key=lambda g: (
-        _PRIORITY_ORDER.get(g.priority, 3),
-        _TERM_ORDER.get(g.term, 2),
-    ))
 
     # session.extra.profile_select 추출 후 권고 맞춤
     profile_select = None

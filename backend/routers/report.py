@@ -1,9 +1,12 @@
+import asyncio
+import io
+import logging
+import os
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
-from datetime import datetime, timezone
-import io
-import os
 
 from database import get_db
 from models import (
@@ -15,6 +18,7 @@ from routers.auth import get_current_user, assert_session_access
 from services.standards_mapping import map_item_to_standards, session_standards_summary
 
 router = APIRouter()
+logger = logging.getLogger("zt.report")
 
 # ── 한글 폰트 등록 (NanumGothic, Dockerfile에서 fonts-nanum 설치) ──────────
 _FONT_REGISTERED = False
@@ -24,22 +28,46 @@ def _ensure_font():
     global _FONT_REGISTERED, _FONT_NAME
     if _FONT_REGISTERED:
         return
+    candidates = [
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/nanum/NanumGothic.ttf",
+    ]
     try:
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
 
-        candidates = [
-            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-            "/usr/share/fonts/nanum/NanumGothic.ttf",
-        ]
         for path in candidates:
             if os.path.exists(path):
                 pdfmetrics.registerFont(TTFont("NanumGothic", path))
                 _FONT_NAME = "NanumGothic"
                 break
-    except Exception:
-        pass
+        else:
+            logger.warning(
+                "[report] NanumGothic 폰트를 찾지 못해 Helvetica 폴백 사용. 후보: %s",
+                candidates,
+            )
+    except Exception as e:
+        logger.warning("[report] 폰트 등록 실패 — Helvetica 폴백 (%s)", e)
     _FONT_REGISTERED = True
+
+
+def _first_step(steps) -> str:
+    """ImprovementGuide.steps 가 list/dict/str 어떤 형태든 첫 step 문자열 반환."""
+    if not steps:
+        return ""
+    if isinstance(steps, list):
+        first = steps[0] if steps else ""
+        if isinstance(first, dict):
+            return str(first.get("description") or first.get("step") or first.get("text") or "")
+        return str(first) if first else ""
+    if isinstance(steps, dict):
+        # {"1": "...", "2": "..."} 같은 형태 대응
+        try:
+            keys = sorted(steps.keys())
+            return str(steps[keys[0]]) if keys else ""
+        except Exception:
+            return ""
+    return str(steps)
 
 
 # ── 공통 데이터 빌더 ────────────────────────────────────────────────────────
@@ -112,7 +140,7 @@ def _build_data(session_id: int, db: Session) -> dict:
             "priority": g.priority,
             "term":     g.term,
             "tool":     g.recommended_tool or "",
-            "solution": g.steps[0] if g.steps else "",
+            "solution": _first_step(g.steps),
         }
         for g in guide_rows
     ]
@@ -436,7 +464,7 @@ def _make_pdf(data: dict) -> bytes:
 # ── 라우터 ──────────────────────────────────────────────────────────────────
 
 @router.get("/generate")
-def generate_report_by_query(
+async def generate_report_by_query(
     session_id: int,
     fmt: str = Query(default="json", pattern="^(json|pdf)$"),
     db: Session = Depends(get_db),
@@ -449,7 +477,8 @@ def generate_report_by_query(
 
     data = _build_data(session_id, db)
     if fmt == "pdf":
-        pdf_bytes = _make_pdf(data)
+        # _make_pdf 는 reportlab CPU-bound — 이벤트 루프 블로킹 방지로 thread pool 위임.
+        pdf_bytes = await asyncio.to_thread(_make_pdf, data)
         filename = f"zt-report-{session_id}-{data['generated_at'][:10]}.pdf"
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
@@ -467,13 +496,13 @@ def generate_report_by_query(
 
 
 @router.get("/generate/{session_id}")
-def generate_report(
+async def generate_report(
     session_id: int,
     fmt: str = Query(default="json", pattern="^(json|pdf)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return generate_report_by_query(
+    return await generate_report_by_query(
         session_id=session_id, fmt=fmt, db=db, current_user=current_user,
     )
 

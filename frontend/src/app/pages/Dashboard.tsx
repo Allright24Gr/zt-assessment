@@ -42,13 +42,15 @@ import {
 } from "../../config/api";
 import type { AssessmentSession, ImprovementItem, ScoreTrendPoint } from "../../types/api";
 import { pillarMatchesKey } from "../lib/pillar";
+import { getStoredTargetScores } from "../lib/settingsStore";
 
 const DEFAULT_PILLAR_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
-const TARGET_SCORES = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
 
 export function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  // Settings 페이지의 사용자 정의 목표치 동기화 (없으면 디폴트)
+  const TARGET_SCORES = useMemo(() => getStoredTargetScores(), []);
 
   // 시드 비번 사용 경고 배너 (작업 N) — 닫기 버튼은 표시만 닫고 sessionStorage는 유지
   const [seedPwBannerVisible, setSeedPwBannerVisible] = useState(() => {

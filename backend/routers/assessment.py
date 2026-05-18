@@ -627,7 +627,7 @@ def assessment_webhook(
         checklist = db.query(Checklist).filter(Checklist.item_id == item.item_id).first()
         if not checklist:
             continue
-        _upsert_collected(db, payload.session_id, checklist.check_id, item.dict())
+        _upsert_collected(db, payload.session_id, checklist.check_id, item.model_dump())
         saved += 1
 
     db.commit()

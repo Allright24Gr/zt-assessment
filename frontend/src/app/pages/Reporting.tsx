@@ -26,8 +26,9 @@ import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem } from "../../types/api";
 
+import { getStoredTargetScores } from "../lib/settingsStore";
+
 const DEFAULT_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
-const TARGET_SCORES  = [3.5, 3.5, 3.0, 3.5, 3.5, 3.0];
 
 // 백엔드 enum → 프론트 카드용 결과 라벨로 매핑
 // 부분충족·미충족 둘 다 "미흡"으로 표시 (UI 구분이 단순)하되 색상은 result로 결정
@@ -242,6 +243,8 @@ export function Reporting() {
   const { sessionId } = useParams();
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState("overall");
+  // Settings 페이지의 사용자 정의 목표치 동기화 (없으면 디폴트)
+  const TARGET_SCORES = useMemo(() => getStoredTargetScores(), []);
   const [detailPillarFilter, setDetailPillarFilter] = useState("all");
   const [detailQuestionQuery, setDetailQuestionQuery] = useState("");
   const [selectedRiskCode, setSelectedRiskCode] = useState<string | null>(null);

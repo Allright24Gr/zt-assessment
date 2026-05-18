@@ -61,7 +61,7 @@ function profileFromUser(p?: ProfileFields | null): ProfileFormState {
 }
 
 export function Settings() {
-  const { user, setUser, logout } = useAuth();
+  const { user, refresh, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [targetScores, setTargetScores] = useState(DEFAULT_SETTINGS.targetScores);
@@ -311,17 +311,8 @@ export function Settings() {
     };
     setSavingProfile(true);
     try {
-      const updated = await updateAuthProfile(user.id, payload, confirmPassword);
-      setUser({
-        id: updated.login_id,
-        user_id: updated.user_id,
-        username: updated.name,
-        role: updated.role === "admin" ? "admin" : "user",
-        orgName: updated.org_name,
-        org_id: updated.org_id,
-        email: updated.email,
-        profile: updated.profile,
-      });
+      await updateAuthProfile(user.id, payload, confirmPassword);
+      await refresh();
       toast.success("진단 프로필이 저장되었습니다.");
       setConfirmOpen(false);
       setConfirmPassword("");

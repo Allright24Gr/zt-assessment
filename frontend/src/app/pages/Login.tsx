@@ -28,7 +28,7 @@ export function Login() {
     }
   }, [user, navigate]);
 
-  // ESC 키로 모달 닫기 + 첫 입력 필드 자동 포커스
+  // ESC 키로 모달 닫기 + 첫 입력 필드 자동 포커스 + Tab focus trap
   useEffect(() => {
     if (!recovery) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -36,6 +36,25 @@ export function Login() {
         setRecovery(null);
         setRecoveryEmail("");
         setRecoverySent(false);
+        return;
+      }
+      // Tab focus trap — 모달 내부 포커스 가능 요소만 순환
+      if (e.key !== "Tab") return;
+      const dialog = document.querySelector('[aria-labelledby="recovery-modal-title"]');
+      if (!dialog) return;
+      const focusables = dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener("keydown", onKeyDown);

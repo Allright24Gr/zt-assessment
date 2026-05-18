@@ -6,10 +6,9 @@ import {
   setStoredTokens,
   getStoredAccessToken,
   getStoredRefreshToken,
-  type AuthUser,
-  type RegisterPayload,
+  ApiError,
 } from "../../config/api";
-import type { AuthEnvelope } from "../../types/api";
+import type { AuthEnvelope, AuthUser, RegisterPayload } from "../../types/api";
 
 export interface User {
   id: string;            // login_id
@@ -31,7 +30,6 @@ interface AuthContextType {
   register: (payload: RegisterPayload) => Promise<boolean>;
   logout: () => void;
   refresh: () => Promise<void>;
-  setUser: (u: User | null) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -76,7 +74,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }),
   );
 
-  // 페이지 새로고침 시 백엔드에서 최신 프로필 재조회
+  // 페이지 새로고침 시 백엔드에서 최신 프로필 재조회.
+  // 네트워크 오류·5xx 는 기존 세션 유지 — 인증 실패(401/404)만 로그아웃.
   useEffect(() => {
     if (!user?.id) return;
     fetchAuthMe(user.id)
@@ -85,8 +84,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUserState(u);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
       })
-      .catch(() => {
-        // 백엔드에 없으면 로그아웃 처리
+      .catch((err) => {
+        const isAuthFailure =
+          err instanceof ApiError && (err.status === 401 || err.status === 404);
+        if (!isAuthFailure) {
+          // 네트워크 끊김 / 5xx — 캐시된 user 유지
+          console.warn("[auth] /me 재조회 실패, 로컬 세션 유지:", err);
+          return;
+        }
         setUserState(null);
         setStoredTokens(null);
         setTokensState({ access: null, refresh: null });
@@ -95,7 +100,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const setUser = (u: User | null) => {
+  const _setUserInternal = (u: User | null) => {
     setUserState(u);
     if (u) localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
     else localStorage.removeItem(STORAGE_KEY);
@@ -103,7 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const _persistEnvelope = (env: AuthEnvelope) => {
     const u = _toUser(env.user);
-    setUser(u);
+    _setUserInternal(u);
     setStoredTokens(env.tokens);
     setTokensState({ access: env.tokens.access_token, refresh: env.tokens.refresh_token });
   };
@@ -135,7 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    setUser(null);
+    _setUserInternal(null);
     setStoredTokens(null);
     setTokensState({ access: null, refresh: null });
   };
@@ -144,7 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!user?.id) return;
     try {
       const latest = await fetchAuthMe(user.id);
-      setUser(_toUser(latest));
+      _setUserInternal(_toUser(latest));
     } catch {
       // ignore
     }
@@ -161,7 +166,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         register,
         logout,
         refresh,
-        setUser,
       }}
     >
       {children}

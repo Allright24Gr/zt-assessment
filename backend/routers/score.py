@@ -38,8 +38,19 @@ def get_score_summary(
     if not pillar_scores:
         raise HTTPException(status_code=404, detail="Score not found for this session")
 
-    scores = [ps.score for ps in pillar_scores]
-    overall = sum(scores) / len(scores) if scores else 0.0
+    # engine.score_session 이 ScoreHistory.total_score 에 권위 있는 총점을 저장한다.
+    # /summary 는 그 값을 우선 사용하고, 없을 때만 pillar 평균으로 폴백 — 산정식 이중화 방지.
+    history = (
+        db.query(ScoreHistory)
+        .filter(ScoreHistory.session_id == session_id)
+        .order_by(ScoreHistory.assessed_at.desc())
+        .first()
+    )
+    if history is not None and history.total_score is not None:
+        overall = float(history.total_score)
+    else:
+        scores = [ps.score for ps in pillar_scores]
+        overall = sum(scores) / len(scores) if scores else 0.0
 
     return {
         "overall_score": round(overall, 4),

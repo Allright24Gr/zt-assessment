@@ -93,19 +93,46 @@ export interface TokenPair {
   expires_in: number;
 }
 
-// /api/auth/login, /api/auth/register 의 새 응답 envelope
+// 진단 프로필 필드 — Settings/Signup/NewAssessment에서 공유
+export interface ProfileFields {
+  org_name?: string;
+  department?: string;
+  contact?: string;
+  org_type?: string;
+  infra_type?: string;
+  employees?: number;
+  servers?: number;
+  applications?: number;
+  note?: string;
+}
+
+// /api/auth/me, /api/auth/profile, /api/auth/login.user 응답 형식
+export interface AuthUser {
+  user_id: number;
+  login_id: string;
+  name: string;
+  email?: string | null;
+  role: string;
+  org_id: number;
+  org_name: string;
+  profile?: ProfileFields | null;
+}
+
+export interface RegisterPayload {
+  login_id: string;
+  password: string;
+  name: string;
+  email?: string;
+  profile?: ProfileFields;
+  // P0-5: 약관 동의 필수
+  tos_agreed: boolean;
+  privacy_agreed: boolean;
+  marketing_agreed?: boolean;
+}
+
+// /api/auth/login, /api/auth/register 의 응답 envelope
 export interface AuthEnvelope {
-  // user.* 필드는 config/api.ts의 AuthUser와 1:1
-  user: {
-    user_id: number;
-    login_id: string;
-    name: string;
-    email?: string | null;
-    role: string;
-    org_id: number;
-    org_name: string;
-    profile?: Record<string, unknown> | null;
-  };
+  user: AuthUser;
   tokens: TokenPair;
 }
 
@@ -277,6 +304,8 @@ export interface ChecklistItem {
 export interface ChecklistResponse {
   items: ChecklistItem[];
   total: number;
+  limit?: number;
+  offset?: number;
 }
 
 export interface ImprovementItem {
