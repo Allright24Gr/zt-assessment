@@ -837,7 +837,7 @@ export function Reporting() {
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors.badge}`}>{maturityLabel(pillar.level)}</span>
                   </div>
                   <div className="flex items-baseline gap-1 mb-3">
-                    <span className={`text-3xl font-bold ${colors.text}`}>{pillar.score}</span>
+                    <span className={`text-3xl font-bold ${colors.text}`}>{pillar.score.toFixed(1)}</span>
                     <span className="text-gray-400 text-sm">/ 4.0</span>
                     {pillar.unevaluable > 0 && (
                       <span
@@ -858,7 +858,7 @@ export function Reporting() {
                     />
                   </div>
                   <div className="flex justify-between text-xs text-gray-500">
-                    <span>현재 {pillar.score}</span>
+                    <span>현재 {pillar.score.toFixed(1)}</span>
                     <span className={pillar.gap < 0 ? "text-red-600" : "text-emerald-600"}>
                       목표 {pillar.target} ({formatGap(pillar.gap)})
                     </span>
@@ -1005,7 +1005,7 @@ export function Reporting() {
                           </div>
                           <div className="flex shrink-0 items-center gap-4">
                             <div className="text-right">
-                              <p className="text-lg font-bold text-blue-600">{detail.score}</p>
+                              <p className="text-lg font-bold text-blue-600">{detail.score.toFixed(1)}</p>
                               <p className="text-xs text-gray-500">/ 4.0</p>
                             </div>
                             <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180" />

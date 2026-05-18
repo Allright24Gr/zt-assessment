@@ -217,7 +217,7 @@ export function Dashboard() {
         <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-xl p-5 flex flex-col justify-between">
           <p className="text-blue-200 text-sm">종합 성숙도 점수</p>
           <div>
-            <p className="text-5xl font-bold mt-2">{avgScore}</p>
+            <p className="text-5xl font-bold mt-2">{avgScore.toFixed(2)}</p>
             <p className="text-blue-200 text-sm mt-1">/ 4.0</p>
           </div>
           <div className="flex items-center gap-1 mt-3">
@@ -263,7 +263,7 @@ export function Dashboard() {
           </div>
           <p className="text-lg font-bold text-red-700 mb-1">{weakestPillar.label}</p>
           <p className="text-3xl font-bold text-red-600 mb-3">
-            {weakestPillar.score} <span className="text-sm font-normal text-red-400">/ 4.0</span>
+            {weakestPillar.score.toFixed(1)} <span className="text-sm font-normal text-red-400">/ 4.0</span>
           </p>
           <div className="w-full bg-red-100 rounded-full h-2">
             <div className="bg-red-500 h-2 rounded-full" style={{ width: `${(weakestPillar.score / 4) * 100}%` }} />
@@ -328,7 +328,7 @@ export function Dashboard() {
                   <span className="text-sm text-gray-700">{p.label}</span>
                   <div className="flex items-center gap-2">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${colors.badge}`}>{maturityLabel(getMaturityLevel(score))}</span>
-                    <span className={`text-sm font-semibold ${colors.text}`}>{score}</span>
+                    <span className={`text-sm font-semibold ${colors.text}`}>{score.toFixed(1)}</span>
                   </div>
                 </div>
                 <div className="w-full bg-gray-100 rounded-full h-2">
