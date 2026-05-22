@@ -26,6 +26,9 @@ export interface ChecklistDetail {
     impact: number;
   };
   relatedImprovementIds?: string[];
+  /** 평가불가 사유 (백엔드 unevaluable_reason_code/_label). 결과가 "해당 없음" 일 때만 의미. */
+  unevaluableReasonCode?: string;
+  unevaluableReasonLabel?: string;
 }
 
 export interface Session {

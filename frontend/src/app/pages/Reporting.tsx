@@ -63,6 +63,8 @@ function adaptChecklistResult(item: ChecklistItemResult): ChecklistDetail & { ra
     recommendation: item.recommendation,
     evidenceSummary: item.evidence_summary,
     relatedImprovementIds: item.related_improvement_ids,
+    unevaluableReasonCode:  item.unevaluable_reason_code,
+    unevaluableReasonLabel: item.unevaluable_reason_label,
     rawResult: item.result,
   };
 }
@@ -1027,6 +1029,14 @@ export function Reporting() {
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
                                 {detail.diagnosisType} / {detail.tool}
                               </span>
+                              {raw === "평가불가" && (detail.unevaluableReasonLabel || detail.unevaluableReasonCode) && (
+                                <span
+                                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 border border-amber-200"
+                                  title={detail.unevaluableReasonLabel ?? detail.unevaluableReasonCode}
+                                >
+                                  사유: {detail.unevaluableReasonLabel ?? detail.unevaluableReasonCode}
+                                </span>
+                              )}
                             </div>
                             <p className="mb-1 text-xs font-semibold text-gray-500">{detail.item} · {maturityLabel(detail.maturity)}</p>
                             <p className="font-medium text-gray-900">{detail.question}</p>

@@ -50,6 +50,11 @@ export interface ChecklistItemResult {
   recommendation: string;
   evidence_summary?: EvidenceSummary;
   related_improvement_ids?: string[];
+  /** 평가불가 사유 코드 (tool_not_connected / tool_unreachable / collector_error
+   *  / audit_policy_disabled / sysmon_not_deployed / ot_segment_excluded 등) */
+  unevaluable_reason_code?: string;
+  /** 사람이 읽을 사유 라벨 — Reporting 툴팁/리포트에 노출 */
+  unevaluable_reason_label?: string;
 }
 
 export interface AssessmentSession {
@@ -207,10 +212,20 @@ export interface ManualEvidenceUploadResponse {
 // 4 오픈소스 도구만 운영 — 학생 프로젝트
 export type IdpType = "keycloak" | "none";
 export type SiemType = "wazuh" | "none";
+// SKT XDR 명세 §6 흡수 — emit 자체가 안 되면 수집 불가이므로 사전 입력.
+export type YesNoUnknown = "yes" | "no" | "unknown";
 
 export interface ProfileSelect {
   idp_type: IdpType;
   siem_type: SiemType;
+  /** Windows Audit Policy / GPO 활성 여부 — Security 채널 4688/4697/4720 emit 조건 */
+  windows_audit_policy_enabled?: YesNoUnknown;
+  /** Sysmon 설치 여부 — EID 1·3·10·22·25 등 정밀 행위 탐지 룰 측정 가능 여부 */
+  sysmon_deployed?: YesNoUnknown;
+  /** 기 운영 EDR 제품명 (없으면 빈문자열) — 신원·기기 Pillar 가산 지표 */
+  edr_product?: string;
+  /** OT 세그먼트 존재 여부 — 'yes' 면 OT 트랙 분리 */
+  ot_segment_present?: YesNoUnknown;
 }
 
 export interface AssessmentRunRequest {

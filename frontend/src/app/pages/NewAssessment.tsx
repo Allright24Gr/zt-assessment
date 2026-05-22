@@ -7,7 +7,7 @@ import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
-  IdpType, SiemType,
+  IdpType, SiemType, YesNoUnknown, ProfileSelect,
 } from "../../types/api";
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
@@ -77,10 +77,14 @@ export function NewAssessment() {
   const [pillarScope, setPillarScope] = useState<Record<string, boolean>>(
     Object.fromEntries(PILLARS.map((p) => [p.key, true]))
   );
-  // 사전 프로파일링 선택 — 4 오픈소스 도구만
-  const [profileSelect, setProfileSelect] = useState<{ idp_type: IdpType; siem_type: SiemType }>({
+  // 사전 프로파일링 선택 — 4 오픈소스 도구 + SKT XDR 명세 §6 흡수 4종
+  const [profileSelect, setProfileSelect] = useState<ProfileSelect>({
     idp_type: "keycloak",
     siem_type: "wazuh",
+    windows_audit_policy_enabled: "unknown",
+    sysmon_deployed: "unknown",
+    edr_product: "",
+    ot_segment_present: "unknown",
   });
   // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy
   const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean }>({
@@ -476,6 +480,90 @@ export function NewAssessment() {
                   </span>
                 </div>
               )}
+
+              {/* 엔드포인트 측정 가능성 — SKT XDR 명세 §6 흡수 4종 */}
+              <div className="mt-5 pt-4 border-t border-blue-100">
+                <p className="mb-1 text-xs font-semibold text-gray-700">엔드포인트 측정 가능성</p>
+                <p className="mb-3 text-[11px] text-gray-500">
+                  Windows Security 채널 / Sysmon 이벤트는 OS 측에서 emit 되지 않으면 수집할 수 없습니다.
+                  사전 입력이 없으면 일부 자동 항목은 "측정 전제 미충족"으로 평가불가 처리됩니다.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      Windows Audit Policy / GPO 활성
+                    </label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      value={profileSelect.windows_audit_policy_enabled || "unknown"}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, windows_audit_policy_enabled: e.target.value as YesNoUnknown,
+                      }))}
+                    >
+                      <option value="yes">활성 (Security 4688/4697/4720 emit)</option>
+                      <option value="no">비활성</option>
+                      <option value="unknown">모름</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      Sysmon 설치 여부
+                    </label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      value={profileSelect.sysmon_deployed || "unknown"}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, sysmon_deployed: e.target.value as YesNoUnknown,
+                      }))}
+                    >
+                      <option value="yes">설치됨 (EID 1·3·10·22·25 수집 가능)</option>
+                      <option value="no">미설치</option>
+                      <option value="unknown">모름</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      기 운영 EDR 제품 (선택)
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                      value={profileSelect.edr_product || ""}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, edr_product: e.target.value,
+                      }))}
+                      placeholder="예: CrowdStrike Falcon / 없음"
+                      maxLength={120}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      OT 세그먼트 존재
+                    </label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      value={profileSelect.ot_segment_present || "unknown"}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, ot_segment_present: e.target.value as YesNoUnknown,
+                      }))}
+                    >
+                      <option value="yes">있음 (별도 트랙 분리)</option>
+                      <option value="no">없음</option>
+                      <option value="unknown">모름</option>
+                    </select>
+                  </div>
+                </div>
+                {(profileSelect.windows_audit_policy_enabled === "no"
+                  || profileSelect.sysmon_deployed === "no") && (
+                  <div className="mt-3 flex items-start gap-2 p-2.5 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                    <span>
+                      Audit Policy 비활성 또는 Sysmon 미설치 환경은 Windows 정밀 행위 탐지 항목이
+                      <strong> "측정 전제 미충족"</strong> 사유로 평가불가 처리됩니다.
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* 기관 정보 + 담당자 정보 — lg에선 좌우 배치 */}

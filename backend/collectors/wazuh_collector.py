@@ -19,6 +19,45 @@ WAZUH_INDEXER_PASS = os.environ.get("WAZUH_INDEXER_PASS", "admin")
 _token_cache: dict = {"token": None, "expires_at": 0.0}
 _indexer_session: Optional[requests.Session] = None
 
+
+# ─── SKT XDR 명세 §2 흡수 — 엔드포인트 측정 전제 의존성 ─────────────────────
+#
+# Wazuh Windows agent 의 룰 평가는 endpoint OS 가 해당 이벤트를 emit 해야만
+# 동작한다. 다음 두 집합은 _run_collectors 가 profile_select 를 보고 사전에
+# "평가불가" 로 분류하는 데 사용된다.
+#
+# SYSMON_DEPENDENT_ITEM_IDS — Sysmon Operational 채널이 없으면 정밀 측정이
+#   사실상 불가한 항목들. Sysmon EID 매핑:
+#     1.3.2.3_1 (행위 탐지)       ← Sysmon EID 1·8·10·25 (인젝션/hollowing)
+#     2.4.1.2_1 (위협 탐지)       ← Sysmon EID 22 (DNS) · 11 (파일 생성)
+#     3.1.2.2_1 (측면 이동)       ← Sysmon EID 17·18 (named pipe) · 3 (네트워크)
+#     3.2.1.3_1 (실시간 위협)     ← Sysmon EID 22 + 8 + 10 결합
+#     4.2.1.3_1 (권한 상승 탐지)  ← Sysmon EID 10 (LSASS ProcessAccess)
+#
+# AUDIT_POLICY_DEPENDENT_ITEM_IDS — Windows Audit Policy / GPO 가 비활성이면
+#   Security 채널 자체에 이벤트가 안 남는 항목들. Security EID 매핑:
+#     1.1.1.3_2 (인증 실패)        ← Security 4625
+#     1.4.2.3_2 (권한 변경 알림)   ← Security 4672 · 4732
+#     4.1.1.2_3 (정책 변경 알림)   ← Security 4719
+#
+# 둘 다 사용자가 'no' 로 답하면 평가불가 사유 코드(sysmon_not_deployed /
+# audit_policy_disabled) 로 분류된다. 'unknown' 은 통과(시도하되 결과 신뢰
+# 도는 낮음으로 표기). 본 메타데이터는 명시 매핑(_wz_mapping)을 변경하지
+# 않으며 212-매핑 정합성을 유지한다.
+SYSMON_DEPENDENT_ITEM_IDS: frozenset = frozenset({
+    "1.3.2.3_1",
+    "2.4.1.2_1",
+    "3.1.2.2_1",
+    "3.2.1.3_1",
+    "4.2.1.3_1",
+})
+
+AUDIT_POLICY_DEPENDENT_ITEM_IDS: frozenset = frozenset({
+    "1.1.1.3_2",
+    "1.4.2.3_2",
+    "4.1.1.2_3",
+})
+
 # ─── session-scoped credential override (E-be) ───────────────────────────────
 # 사용자가 NewAssessment에서 입력한 SIEM 자격을 _run_collectors에서 주입한다.
 # dispatcher가 _collector_lock으로 직렬화하므로 모듈 전역 상태로 안전.

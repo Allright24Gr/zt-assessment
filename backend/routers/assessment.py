@@ -217,15 +217,29 @@ def _build_session_errors(db: Session, session_id: int) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ProfileSelect(BaseModel):
-    """Step 0 사전 환경 프로파일링 — 사용자 환경의 IdP/SIEM 종류.
+    """Step 0 사전 환경 프로파일링 — 사용자 환경의 IdP/SIEM/엔드포인트 종류.
 
     4개 오픈소스 도구만 지원 (학생 프로젝트, 라이선스 비용 0).
     값에 따라 _resolve_supported_tools 가 tool_scope 를 자동 보정한다.
     예: idp_type='keycloak' → keycloak 매핑 활성.
          idp_type='none' / 기타 → 자동 항목 수동 폴백.
+
+    SKT XDR 명세 §6 "확인 필요 사항" 흡수 4개 항목:
+      windows_audit_policy_enabled — 'yes'|'no'|'unknown'. Security 채널 4688/4697/4720
+        등 emit 가능 여부. Wazuh Windows 룰 평가 가능성을 좌우한다.
+      sysmon_deployed — 'yes'|'no'|'unknown'. Sysmon EID 1·3·10·22·25 등 정밀 행위
+        탐지 룰의 측정 가능성을 좌우한다.
+      edr_product — 자유 텍스트. 기 운영 EDR 제품명/SKU (없으면 빈문자열). 신원·기기
+        Pillar 가산 지표.
+      ot_segment_present — 'yes'|'no'|'unknown'. OT 세그먼트 존재 여부. 'yes' 면
+        해당 자산은 별도 트랙으로 분리(평가불가 사유 ot_segment_excluded).
     """
     idp_type:   Optional[str] = None  # keycloak | none
     siem_type:  Optional[str] = None  # wazuh | none
+    windows_audit_policy_enabled: Optional[str] = None  # yes | no | unknown
+    sysmon_deployed:              Optional[str] = None  # yes | no | unknown
+    edr_product:                  Optional[str] = None  # 자유 텍스트
+    ot_segment_present:           Optional[str] = None  # yes | no | unknown
 
 
 class AssessmentRunRequest(BaseModel):
@@ -668,8 +682,19 @@ def get_result(
         .all()
     )
 
-    checklist_results = [
-        {
+    # 평가불가 사유 코드(raw_json.reason_code/reason_label) — CollectedData 에서 조회.
+    collected_rows = db.query(CollectedData).filter(
+        CollectedData.session_id == session_id
+    ).all()
+    collected_by_check: dict[int, dict] = {}
+    for r in collected_rows:
+        if isinstance(r.raw_json, dict):
+            collected_by_check[r.check_id] = r.raw_json
+
+    checklist_results = []
+    for dr, cl in results:
+        raw = collected_by_check.get(cl.check_id) or {}
+        entry = {
             "id":             cl.item_id,
             "pillar":         cl.pillar,
             "category":       cl.category,
@@ -687,8 +712,13 @@ def get_result(
             "exceptions":     cl.exceptions or "",
             "recommendation": dr.recommendation or "",
         }
-        for dr, cl in results
-    ]
+        # 평가불가 항목은 사유 코드/라벨을 표면 필드로 추가 노출 (frontend 툴팁용).
+        if dr.result == "평가불가":
+            rc = raw.get("reason_code")
+            if rc:
+                entry["unevaluable_reason_code"]  = rc
+                entry["unevaluable_reason_label"] = raw.get("reason_label") or UNAVAILABLE_REASONS.get(rc, "")
+        checklist_results.append(entry)
 
     return {
         "session": {
@@ -1338,7 +1368,49 @@ def _tool_health(tool: str) -> Optional[str]:
     return f"unknown tool: {tool}"
 
 
-def _unavailable_result(tool: str, item_id: str, maturity: str, error_msg: str) -> dict:
+UNAVAILABLE_REASONS = {
+    "tool_not_connected":   "도구 미연결 (placeholder URL 또는 자격 미설정)",
+    "tool_unreachable":     "도구 TCP 도달 실패",
+    "collector_error":      "수집기 호출 중 예외",
+    "audit_policy_disabled": "Windows Audit Policy 비활성 — Security 채널 이벤트 emit 안 됨",
+    "sysmon_not_deployed":  "Sysmon 미설치 — 정밀 행위 탐지 룰 측정 불가",
+    "ot_segment_excluded":  "OT 세그먼트 — 별도 트랙으로 분리",
+    "unknown":              "기타/미분류",
+}
+
+
+def _classify_health_error(tool: str, error_msg: str) -> str:
+    """_tool_health/_tool_configured 가 돌려준 메시지를 reason_code 로 분류.
+
+    placeholder/자격 미설정 류 → tool_not_connected
+    TCP 실패 류 → tool_unreachable
+    그 외 → unknown
+    """
+    if not error_msg:
+        return "unknown"
+    msg = error_msg.lower()
+    if "미연결" in error_msg or "미설정" in error_msg or "placeholder" in msg:
+        return "tool_not_connected"
+    if "timeout" in msg or "refused" in msg or "unreachable" in msg or "connection" in msg or "host" in msg:
+        return "tool_unreachable"
+    return "unknown"
+
+
+def _unavailable_result(
+    tool: str,
+    item_id: str,
+    maturity: str,
+    error_msg: str,
+    reason_code: Optional[str] = None,
+) -> dict:
+    """평가불가 항목의 표준 결과 dict.
+
+    reason_code 가 명시되면 그대로 사용, 미명시면 error_msg 휴리스틱 분류.
+    프론트는 raw_json['reason_code'] 와 raw_json['reason_label'] 를 읽어
+    리포트/툴팁에 사람이 이해할 사유로 표시한다.
+    """
+    code = reason_code or _classify_health_error(tool, error_msg)
+    label = UNAVAILABLE_REASONS.get(code, UNAVAILABLE_REASONS["unknown"])
     return {
         "item_id":      item_id,
         "maturity":     maturity,
@@ -1347,7 +1419,10 @@ def _unavailable_result(tool: str, item_id: str, maturity: str, error_msg: str) 
         "metric_key":   "tool_unavailable",
         "metric_value": 0.0,
         "threshold":    1.0,
-        "raw_json":     {},
+        "raw_json":     {
+            "reason_code":  code,
+            "reason_label": label,
+        },
         "error":        error_msg,
         "collected_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1391,6 +1466,7 @@ def _safe_call(fn, item_id: str, maturity: str, takes_args: bool, tool_name: str
     return _unavailable_result(
         tool_name, item_id, maturity,
         str(last_exc) if last_exc else "unknown error",
+        reason_code="collector_error",
     )
 
 
@@ -1542,6 +1618,7 @@ def _run_collectors(session_id: int, tools: list[str]):
     scan_targets: dict = {}
     keycloak_creds: dict = {}
     wazuh_creds: dict = {}
+    profile_select_runtime: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -1557,6 +1634,9 @@ def _run_collectors(session_id: int, tools: list[str]):
             wz_meta = sess.extra.get("wazuh_creds") or {}
             if isinstance(wz_meta, dict):
                 wazuh_creds = {k: v for k, v in wz_meta.items() if v}
+            ps_meta = sess.extra.get("profile_select") or {}
+            if isinstance(ps_meta, dict):
+                profile_select_runtime = ps_meta
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
@@ -1632,7 +1712,36 @@ def _run_collectors(session_id: int, tools: list[str]):
                             results.append(unavail)
                     continue
 
+                # Wazuh 한정: profile_select 의 audit_policy/sysmon 'no' 응답 시
+                # 의존 item_id 들을 사전 평가불가 분류 (SKT XDR §6 흡수).
+                # 그 외 항목은 정상 collector 호출 경로로 진입한다.
+                wazuh_skip: dict[str, str] = {}
+                if tool == "wazuh" and profile_select_runtime:
+                    audit = (profile_select_runtime.get("windows_audit_policy_enabled") or "").lower()
+                    sysmon = (profile_select_runtime.get("sysmon_deployed") or "").lower()
+                    if audit == "no":
+                        for iid in _wz.AUDIT_POLICY_DEPENDENT_ITEM_IDS:
+                            wazuh_skip[iid] = "audit_policy_disabled"
+                    if sysmon == "no":
+                        for iid in _wz.SYSMON_DEPENDENT_ITEM_IDS:
+                            # audit 사유가 먼저 잡혔으면 그대로 두고, 아니면 sysmon 사유 부여.
+                            wazuh_skip.setdefault(iid, "sysmon_not_deployed")
+
                 for fn, item_id, maturity in mapping:
+                    skip_reason = wazuh_skip.get(item_id)
+                    if skip_reason:
+                        unavail = _unavailable_result(
+                            tool, item_id, maturity,
+                            UNAVAILABLE_REASONS.get(skip_reason, skip_reason),
+                            reason_code=skip_reason,
+                        )
+                        if DEMO_DELAY_MS > 0:
+                            _persist_one_result(session_id, unavail)
+                            time.sleep(DEMO_DELAY_MS / 1000.0)
+                        else:
+                            results.append(unavail)
+                        continue
+
                     result = _safe_call(fn, item_id, maturity, takes_args, tool)
                     if DEMO_DELAY_MS > 0:
                         # 실 collector 호출도 데모 모드면 단건 commit (자체 호출 시간이 sleep 역할)
