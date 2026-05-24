@@ -5,6 +5,7 @@ import {
   createAssessmentShare,
   downloadReportPdf,
   downloadEvidenceRegister,
+  downloadDecisionLog,
   listAssessmentShares,
   revokeAssessmentShare,
   getOcsfEvents,
@@ -1639,6 +1640,44 @@ export function Reporting() {
               >
                 <Download size={16} />
                 xlsx 다운로드
+              </button>
+            </div>
+          </div>
+
+          {/* 판정 로그 markdown — 가이드 §7 산출물 decision_log.md */}
+          <div className="bg-white rounded-xl border border-gray-200 p-8">
+            <div className="flex items-start gap-4">
+              <FileText className="text-purple-500 shrink-0 mt-1" size={36} />
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-semibold text-gray-800">판정 로그 (Markdown)</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  부분충족·평가불가 항목의 판정 근거(자동 지표·평가불가 사유·관찰 내용)와
+                  리뷰어 의견 빈 칸을 묶은 검토용 문서. PR/Notion 첨부에 적합한 .md 형식.
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  SKT 가이드 §7 산출물 패키지 — <code>decision_log.md</code>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!sessionId) return;
+                  try {
+                    await downloadDecisionLog(sessionId);
+                    toast.success("판정 로그 다운로드가 시작되었습니다.");
+                  } catch (err) {
+                    const status = err instanceof ApiError ? err.status : 0;
+                    if (status === 401) toast.error("로그인이 필요합니다.");
+                    else if (status === 403) toast.error("다운로드 권한이 없습니다.");
+                    else if (status === 404) toast.error("세션을 찾을 수 없습니다.");
+                    else toast.error("판정 로그 생성에 실패했습니다.");
+                  }
+                }}
+                disabled={!sessionId}
+                className="shrink-0 px-5 py-2.5 rounded-lg flex items-center gap-2 text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                <Download size={16} />
+                md 다운로드
               </button>
             </div>
           </div>

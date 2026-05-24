@@ -870,3 +870,232 @@ async def download_evidence_register(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ─── 판정 로그 markdown (가이드 §7 산출물 decision_log.md) ──────────────────
+# "논쟁 가능 항목의 판단 근거와 리뷰어 의견" — 부분충족/평가불가 항목 중심으로
+# 자동수집 metric / Evidence 관찰 내용 / 평가불가 사유 정리.
+# 리뷰어 의견 자리는 빈 줄로 두어 사람이 추가 작성하도록.
+
+def _build_decision_log_md(session_id: int, db: Session) -> str:
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
+    user = db.query(User).filter(User.user_id == session.user_id).first()
+
+    results = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    evidences = db.query(Evidence).filter(Evidence.session_id == session_id).all()
+    collected = db.query(CollectedData).filter(CollectedData.session_id == session_id).all()
+    ev_by_check: dict[int, list[Evidence]] = {}
+    for ev in evidences:
+        ev_by_check.setdefault(ev.check_id, []).append(ev)
+    coll_by_check: dict[int, CollectedData] = {c.check_id: c for c in collected}
+
+    # 평가 메타
+    eval_meta = build_evaluation_meta(session)
+
+    # 집계
+    total = len(results)
+    pass_cnt    = sum(1 for dr, _ in results if dr.result == "충족")
+    partial_cnt = sum(1 for dr, _ in results if dr.result == "부분충족")
+    fail_cnt    = sum(1 for dr, _ in results if dr.result == "미충족")
+    na_cnt      = sum(1 for dr, _ in results if dr.result == "평가불가")
+
+    # 논쟁 가능 항목 = 부분충족 + 평가불가 (가이드 §7 의도)
+    debate_results = [(dr, cl) for dr, cl in results
+                      if dr.result in ("부분충족", "평가불가")]
+    # Pillar 순 → item_id 순
+    debate_results.sort(key=lambda x: (x[1].pillar or "", x[1].item_id or ""))
+
+    lines: list[str] = []
+
+    # ── 헤더 ──
+    lines.append(f"# 판정 로그 — {org.name if org else '(미상)'}")
+    lines.append("")
+    lines.append(f"> SKT 가이드 §7 산출물 `decision_log.md`")
+    lines.append(f"> 논쟁 가능 항목(부분충족·평가불가)의 판단 근거와 리뷰어 의견을 기록합니다.")
+    lines.append("")
+    lines.append("## 1. 기본 정보")
+    lines.append("")
+    lines.append(f"- **세션 ID**: {session.session_id}")
+    lines.append(f"- **담당자**: {user.name if user else '(미상)'}")
+    lines.append(f"- **진단 시작**: {session.started_at.isoformat() if session.started_at else '-'}")
+    lines.append(f"- **진단 완료**: {session.completed_at.isoformat() if session.completed_at else '-'}")
+    lines.append(f"- **상태**: {session.status}")
+    lines.append(f"- **생성 시각**: {datetime.now(timezone.utc).isoformat()}")
+    lines.append("")
+
+    # ── 평가 메타 ──
+    lines.append("## 2. 평가 범위 / 모드")
+    lines.append("")
+    lines.append(f"- **진단 모드**: {eval_meta.get('scan_mode', 'demo')}")
+    lines.append(f"- **사용 환경**: IdP={eval_meta.get('profile_select', {}).get('idp_type', 'none')} / "
+                 f"SIEM={eval_meta.get('profile_select', {}).get('siem_type', 'none')}")
+    lines.append(f"- **수행 도구**: {', '.join(eval_meta.get('selected_tools') or ['(없음)'])}")
+    lines.append(f"- **제외 도구**: {', '.join(eval_meta.get('excluded_tools') or ['(없음)'])}")
+    tgt = eval_meta.get("scan_targets") or {}
+    if tgt:
+        lines.append(f"- **스캔 대상**: " + " · ".join(f"{k}={v}" for k, v in tgt.items()))
+    consent = eval_meta.get("scan_consent") or {}
+    if consent:
+        lines.append(f"- **승인자**: {consent.get('approver', '(미입력)')}")
+        lines.append(f"- **시간대**: {consent.get('scheduled_window', '(미입력)')}")
+        lines.append(f"- **강도**: {consent.get('intensity', '(미입력)')}")
+        lines.append(f"- **비상 연락처**: {consent.get('emergency_contact', '(미입력)')}")
+    lines.append("")
+
+    # ── 종합 결과 ──
+    lines.append("## 3. 종합 결과")
+    lines.append("")
+    lines.append(f"- **총 항목**: {total}")
+    lines.append(f"- **충족**: {pass_cnt}건 / **부분충족**: {partial_cnt}건 / "
+                 f"**미충족**: {fail_cnt}건 / **평가불가**: {na_cnt}건")
+    lines.append(f"- **종합 점수**: {round(session.total_score or 0.0, 2)} / 4.0  "
+                 f"(레벨: {session.level or '-'})")
+    lines.append("")
+
+    # ── 논쟁 가능 항목 ──
+    lines.append(f"## 4. 논쟁 가능 항목 ({len(debate_results)}건)")
+    lines.append("")
+    lines.append("> 자동 수집된 metric / Evidence 관찰 내용 / 평가불가 사유를 정리합니다.  ")
+    lines.append("> *리뷰어 의견* 칸은 비어 있으니, 검토 후 직접 작성해주세요.")
+    lines.append("")
+
+    if not debate_results:
+        lines.append("(논쟁 가능 항목 없음 — 모든 항목이 충족 또는 미충족으로 명확히 판정)")
+        lines.append("")
+    else:
+        current_pillar = None
+        for dr, cl in debate_results:
+            pillar = cl.pillar or "(Pillar 미상)"
+            if pillar != current_pillar:
+                lines.append(f"### {pillar}")
+                lines.append("")
+                current_pillar = pillar
+
+            coll = coll_by_check.get(cl.check_id)
+            evs = ev_by_check.get(cl.check_id, [])
+
+            # 판정 근거 빌드
+            basis_lines: list[str] = []
+            if coll:
+                rj = coll.raw_json if isinstance(coll.raw_json, dict) else {}
+                tool = coll.tool or "-"
+                basis_lines.append(f"- **출처**: {'수동' if tool == '수동' else '자동'} ({tool})")
+                if coll.metric_key:
+                    basis_lines.append(
+                        f"- **지표**: `{coll.metric_key}` = {coll.metric_value} (threshold {coll.threshold})"
+                    )
+                if coll.error:
+                    basis_lines.append(f"- **오류**: {coll.error}")
+                if rj.get("reason_code"):
+                    basis_lines.append(
+                        f"- **평가불가 사유**: `{rj.get('reason_code')}` — {rj.get('reason_label', '')}"
+                    )
+                if rj.get("issues"):
+                    basis_lines.append(f"- **발견 이슈** ({len(rj['issues'])}건):")
+                    for issue in rj["issues"][:5]:
+                        basis_lines.append(f"  - {issue}")
+                if rj.get("security_headers"):
+                    sh = rj["security_headers"]
+                    if isinstance(sh, dict) and sh.get("score") is not None:
+                        basis_lines.append(
+                            f"- **보안 헤더 종합**: {sh['score']:.2f}/1.0"
+                        )
+
+            for ev in evs:
+                if ev.observed:
+                    basis_lines.append(f"- **관찰 내용**: {ev.observed[:300]}")
+                if ev.reason:
+                    basis_lines.append(f"- **원인/근거**: {ev.reason[:300]}")
+                if ev.original_filename:
+                    basis_lines.append(f"- **증적 파일**: {ev.original_filename} ({ev.file_size or 0}B)")
+
+            if not basis_lines:
+                basis_lines.append("- (판정 근거 데이터 없음)")
+
+            # 추천
+            rec = (dr.recommendation or "").strip()
+
+            lines.append(f"#### {cl.item_id} — {cl.item_name or '(항목명 미상)'} _({cl.maturity})_")
+            lines.append("")
+            lines.append(f"**결과**: `{dr.result}` (점수 {round(dr.score or 0.0, 2)})")
+            lines.append("")
+            lines.append("**판정 근거**:")
+            lines.append("")
+            for bl in basis_lines:
+                lines.append(bl)
+            lines.append("")
+            if rec:
+                lines.append(f"**권고**: {rec}")
+                lines.append("")
+            lines.append("**리뷰어 의견**:")
+            lines.append("")
+            lines.append("> _(여기에 검토 의견을 작성해주세요)_")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+    # ── 미사용 도구 (제외 사유) ──
+    excluded = eval_meta.get("excluded_tools") or []
+    if excluded:
+        lines.append("## 5. 미사용 도구 (수행하지 않은 자동 진단)")
+        lines.append("")
+        for t in excluded:
+            lines.append(f"- **{t}** — 사용자 환경 미선택 또는 비활성. 해당 도구 매핑 항목은 수동 진단으로 폴백됨.")
+        lines.append("")
+
+    # ── 리뷰어 ──
+    lines.append("## 6. 리뷰어 서명")
+    lines.append("")
+    lines.append("| 역할 | 이름 | 검토 일자 | 서명 |")
+    lines.append("|---|---|---|---|")
+    lines.append("| App owner |  |  |  |")
+    lines.append("| Backend owner |  |  |  |")
+    lines.append("| Cloud owner |  |  |  |")
+    lines.append("| Security reviewer |  |  |  |")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+@router.get("/decision-log/{session_id}")
+async def download_decision_log(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """판정 로그 markdown 다운로드 — 가이드 §7 산출물 decision_log.md.
+
+    부분충족·평가불가 항목의 판정 근거 + 리뷰어 의견(빈 칸) 정리.
+    """
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
+    try:
+        text = await asyncio.to_thread(_build_decision_log_md, session_id, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[report] decision log build failed: %s", exc)
+        raise HTTPException(status_code=500, detail="판정 로그 생성에 실패했습니다.")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"decision-log-{session_id}-{today}.md"
+    return StreamingResponse(
+        io.BytesIO(text.encode("utf-8")),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

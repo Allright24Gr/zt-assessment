@@ -395,6 +395,34 @@ export function getManualItems(sessionId: number | string, excludedTools?: strin
   });
 }
 
+// 판정 로그 markdown 다운로드 (가이드 §7 산출물 decision_log.md).
+// 부분충족·평가불가 항목의 판정 근거 + 리뷰어 의견 빈 칸 정리.
+export async function downloadDecisionLog(sessionId: number | string): Promise<void> {
+  const url = `${API_BASE}/api/report/decision-log/${sessionId}`;
+  const accessToken = _getTokensFromStorage()?.access_token ?? null;
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  else {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) headers["X-Login-Id"] = loginId;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`판정 로그 다운로드 실패 (HTTP ${res.status})`, res.status, text);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  const today = new Date().toISOString().slice(0, 10);
+  a.download = `decision-log-${sessionId}-${today}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
 // 증적 목록 xlsx 다운로드 (가이드 §7 산출물 evidence_register.xlsx).
 // 자동 수집(CollectedData) + 수동 등록(Evidence) 모두 한 시트로 정리.
 export async function downloadEvidenceRegister(sessionId: number | string): Promise<void> {
