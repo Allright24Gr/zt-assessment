@@ -120,6 +120,12 @@ def build_evaluation_meta(session: DiagnosisSession) -> dict:
     scan_targets = extra.get("scan_targets") if isinstance(extra.get("scan_targets"), dict) else {}
     scan_consent = extra.get("scan_consent") if isinstance(extra.get("scan_consent"), dict) else {}
 
+    # SKT 가이드 §3 평가 착수 전 확정사항 4종
+    eval_version = extra.get("evaluation_version") if isinstance(extra.get("evaluation_version"), dict) else {}
+    scope_assets = extra.get("evaluation_scope_assets") if isinstance(extra.get("evaluation_scope_assets"), list) else []
+    data_class = extra.get("data_classifications") if isinstance(extra.get("data_classifications"), list) else []
+    reviewers = extra.get("reviewers") if isinstance(extra.get("reviewers"), dict) else {}
+
     return {
         "scan_mode":      scan_mode,        # "demo" | "live"
         "started_at":     session.started_at.isoformat() if session.started_at else None,
@@ -132,6 +138,11 @@ def build_evaluation_meta(session: DiagnosisSession) -> dict:
         },
         "scan_targets":   {k: v for k, v in scan_targets.items() if v},
         "scan_consent":   {k: v for k, v in scan_consent.items() if v},  # 빈 키 제거
+        # SKT 가이드 §3 평가 착수 전 확정사항
+        "evaluation_version":      {k: v for k, v in eval_version.items() if v},
+        "evaluation_scope_assets": scope_assets,
+        "data_classifications":    data_class,
+        "reviewers":               {k: v for k, v in reviewers.items() if v},
     }
 
 
@@ -307,6 +318,17 @@ class AssessmentRunRequest(BaseModel):
     #      "emergency_contact": "010-0000-0000 / oncall@example.com"}
     # session.extra["scan_consent"] 로 보관 → Reporting/PDF 머리에 표기.
     scan_consent: Optional[dict] = None
+    # SKT 가이드 §3 평가 착수 전 확정사항 4종 — Reporting/PDF 첫 장에 평가 기준 시점 고정.
+    # 예: {"frontend_deployment": "Vercel dpl_abc", "backend_deployment": "Railway xyz",
+    #      "git_commit": "a156b40", "version_label": "2026-05-22 배포본"}
+    evaluation_version: Optional[dict] = None
+    # 예: [{"name": "Frontend URL", "value": "https://...", "included": true}, ...]
+    #     기본 8개 항목 (Frontend URL/Backend API/Supabase/Notion/Drive/GitHub/CI·CD/운영자 계정)
+    evaluation_scope_assets: Optional[list] = None
+    # 예: [{"name": "영업 고객명", "sensitivity": "높음", "storage_location": "Supabase"}, ...]
+    data_classifications: Optional[list] = None
+    # 예: {"app_owner": "홍길동", "backend_owner": "...", "cloud_owner": "...", "security_reviewer": "..."}
+    reviewers: Optional[dict] = None
 
 
 # 4 오픈소스 도구만 운영. 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑.
@@ -485,6 +507,47 @@ def run_assessment(
     if _intensity in ("light", "standard"):
         sc_meta["intensity"] = _intensity
 
+    # SKT 가이드 §3 평가 착수 전 확정사항 — 4 카드 정제.
+    # (1) 평가 대상 버전
+    ev_in = req.evaluation_version if isinstance(req.evaluation_version, dict) else {}
+    ev_meta: dict = {}
+    for _k in ("frontend_deployment", "backend_deployment", "git_commit", "version_label"):
+        _v = ev_in.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            ev_meta[_k] = _v.strip()[:200]
+
+    # (2) 평가 범위 자산 목록
+    sa_in = req.evaluation_scope_assets if isinstance(req.evaluation_scope_assets, list) else []
+    sa_meta: list = []
+    for _row in sa_in[:30]:  # 최대 30개 자산
+        if not isinstance(_row, dict):
+            continue
+        _name = (_row.get("name") or "").strip()[:80]
+        _value = (_row.get("value") or "").strip()[:300]
+        _included = bool(_row.get("included", True))
+        if _name and _value:
+            sa_meta.append({"name": _name, "value": _value, "included": _included})
+
+    # (3) 데이터 등급 분류
+    dc_in = req.data_classifications if isinstance(req.data_classifications, list) else []
+    dc_meta: list = []
+    for _row in dc_in[:30]:
+        if not isinstance(_row, dict):
+            continue
+        _name = (_row.get("name") or "").strip()[:80]
+        _sens = (_row.get("sensitivity") or "").strip()
+        _loc = (_row.get("storage_location") or "").strip()[:200]
+        if _name and _sens in ("낮음", "중간", "높음"):
+            dc_meta.append({"name": _name, "sensitivity": _sens, "storage_location": _loc})
+
+    # (4) 판정자 4역할
+    rv_in = req.reviewers if isinstance(req.reviewers, dict) else {}
+    rv_meta: dict = {}
+    for _k in ("app_owner", "backend_owner", "cloud_owner", "security_reviewer"):
+        _v = rv_in.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            rv_meta[_k] = _v.strip()[:80]
+
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -500,6 +563,11 @@ def run_assessment(
         "wazuh_creds":    wz_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
+        # SKT 가이드 §3 평가 착수 전 확정사항 4종
+        "evaluation_version":      ev_meta,
+        "evaluation_scope_assets": sa_meta,
+        "data_classifications":    dc_meta,
+        "reviewers":               rv_meta,
     }
 
     session = DiagnosisSession(

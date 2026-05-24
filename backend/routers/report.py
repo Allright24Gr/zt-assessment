@@ -332,6 +332,109 @@ def _make_pdf(data: dict) -> bytes:
             ]),
         ))
 
+    # SKT 가이드 §3 평가 착수 전 확정사항 — 4종 카드
+    eval_ver  = em.get("evaluation_version") or {}
+    scope_as  = em.get("evaluation_scope_assets") or []
+    data_cls  = em.get("data_classifications") or []
+    reviewers = em.get("reviewers") or {}
+
+    if eval_ver:
+        story += [Spacer(1, 0.4*cm)]
+        story.append(Paragraph("평가 대상 버전 (가이드 §3)", h3))
+        ver_rows = [
+            _kv("버전 라벨",          eval_ver.get("version_label")),
+            _kv("Git commit",         eval_ver.get("git_commit")),
+            _kv("Frontend deployment", eval_ver.get("frontend_deployment")),
+            _kv("Backend deployment",  eval_ver.get("backend_deployment")),
+        ]
+        # 빈 값 행 제거
+        ver_rows = [r for r in ver_rows if r[1] and r[1] != "(미입력)"]
+        if ver_rows:
+            story.append(Table(
+                ver_rows, colWidths=[4*cm, W - 4*cm],
+                style=TableStyle([
+                    ("FONTNAME",  (0,0), (-1,-1), F),
+                    ("FONTSIZE",  (0,0), (-1,-1), 9),
+                    ("TEXTCOLOR", (0,0), (0,-1), colors.HexColor("#6b7280")),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                ]),
+            ))
+
+    if scope_as:
+        story += [Spacer(1, 0.3*cm)]
+        story.append(Paragraph(f"평가 범위 자산 목록 ({len(scope_as)}건)", h3))
+        rows = [["포함", "자산", "값"]]
+        for a in scope_as:
+            rows.append([
+                "✓" if a.get("included") else "—",
+                a.get("name", ""),
+                a.get("value", ""),
+            ])
+        story.append(Table(
+            rows, colWidths=[1.2*cm, 4*cm, W - 5.2*cm],
+            style=TableStyle([
+                ("FONTNAME",   (0,0), (-1,-1), F),
+                ("FONTSIZE",   (0,0), (-1,-1), 8),
+                ("BACKGROUND", (0,0), (-1,0),  colors.HexColor("#334155")),
+                ("TEXTCOLOR",  (0,0), (-1,0),  colors.white),
+                ("ALIGN",      (0,0), (0,-1),  "CENTER"),
+                ("BOX",        (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
+                ("INNERGRID",  (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
+                ("TOPPADDING", (0,0), (-1,-1), 3),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+            ]),
+        ))
+
+    if data_cls:
+        story += [Spacer(1, 0.3*cm)]
+        story.append(Paragraph(f"데이터 등급 분류 ({len(data_cls)}건)", h3))
+        rows = [["민감도", "데이터 항목", "보관 위치"]]
+        for d in data_cls:
+            rows.append([d.get("sensitivity", ""), d.get("name", ""), d.get("storage_location", "")])
+        sens_color = {"높음": colors.HexColor("#fee2e2"),
+                      "중간": colors.HexColor("#fef9c3"),
+                      "낮음": colors.HexColor("#f3f4f6")}
+        ts = [
+            ("FONTNAME",   (0,0), (-1,-1), F),
+            ("FONTSIZE",   (0,0), (-1,-1), 8),
+            ("BACKGROUND", (0,0), (-1,0),  colors.HexColor("#334155")),
+            ("TEXTCOLOR",  (0,0), (-1,0),  colors.white),
+            ("ALIGN",      (0,0), (0,-1),  "CENTER"),
+            ("BOX",        (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
+            ("INNERGRID",  (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
+            ("TOPPADDING", (0,0), (-1,-1), 3),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+        ]
+        for ri, d in enumerate(data_cls, start=1):
+            sens = d.get("sensitivity", "")
+            if sens in sens_color:
+                ts.append(("BACKGROUND", (0, ri), (0, ri), sens_color[sens]))
+        story.append(Table(
+            rows, colWidths=[1.6*cm, 5*cm, W - 6.6*cm],
+            style=TableStyle(ts),
+        ))
+
+    if reviewers:
+        story += [Spacer(1, 0.3*cm)]
+        story.append(Paragraph("판정자 (가이드 §3)", h3))
+        rv_rows = [
+            _kv("App owner",       reviewers.get("app_owner")),
+            _kv("Backend owner",   reviewers.get("backend_owner")),
+            _kv("Cloud owner",     reviewers.get("cloud_owner")),
+            _kv("Security reviewer", reviewers.get("security_reviewer")),
+        ]
+        rv_rows = [r for r in rv_rows if r[1] and r[1] != "(미입력)"]
+        if rv_rows:
+            story.append(Table(
+                rv_rows, colWidths=[4*cm, W - 4*cm],
+                style=TableStyle([
+                    ("FONTNAME",      (0,0), (-1,-1), F),
+                    ("FONTSIZE",      (0,0), (-1,-1), 9),
+                    ("TEXTCOLOR",     (0,0), (0,-1), colors.HexColor("#6b7280")),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                ]),
+            ))
+
     story += [Spacer(1, 1.2*cm)]
 
     story.append(Paragraph(f"{sm['overall_score']:.2f} / 4.0", cover_score))
@@ -952,6 +1055,48 @@ def _build_decision_log_md(session_id: int, db: Session) -> str:
         lines.append(f"- **비상 연락처**: {consent.get('emergency_contact', '(미입력)')}")
     lines.append("")
 
+    # SKT 가이드 §3 평가 착수 전 확정사항 4종
+    eval_ver  = eval_meta.get("evaluation_version") or {}
+    scope_as  = eval_meta.get("evaluation_scope_assets") or []
+    data_cls  = eval_meta.get("data_classifications") or []
+    reviewers = eval_meta.get("reviewers") or {}
+
+    if eval_ver:
+        lines.append("### 2.1 평가 대상 버전")
+        lines.append("")
+        if eval_ver.get("version_label"):
+            lines.append(f"- **버전 라벨**: {eval_ver['version_label']}")
+        if eval_ver.get("git_commit"):
+            lines.append(f"- **Git commit**: `{eval_ver['git_commit']}`")
+        if eval_ver.get("frontend_deployment"):
+            lines.append(f"- **Frontend deployment**: {eval_ver['frontend_deployment']}")
+        if eval_ver.get("backend_deployment"):
+            lines.append(f"- **Backend deployment**: {eval_ver['backend_deployment']}")
+        lines.append("")
+
+    if scope_as:
+        lines.append(f"### 2.2 평가 범위 자산 목록 ({len(scope_as)}건)")
+        lines.append("")
+        lines.append("| 포함 | 자산 | 값 |")
+        lines.append("|---|---|---|")
+        for a in scope_as:
+            tag = "✓" if a.get("included") else "—"
+            name = (a.get("name") or "").replace("|", "\\|")
+            value = (a.get("value") or "").replace("|", "\\|")
+            lines.append(f"| {tag} | {name} | `{value}` |")
+        lines.append("")
+
+    if data_cls:
+        lines.append(f"### 2.3 데이터 등급 분류 ({len(data_cls)}건)")
+        lines.append("")
+        lines.append("| 민감도 | 데이터 항목 | 보관 위치 |")
+        lines.append("|---|---|---|")
+        for d in data_cls:
+            name = (d.get("name") or "").replace("|", "\\|")
+            loc = (d.get("storage_location") or "").replace("|", "\\|")
+            lines.append(f"| {d.get('sensitivity', '')} | {name} | {loc} |")
+        lines.append("")
+
     # ── 종합 결과 ──
     lines.append("## 3. 종합 결과")
     lines.append("")
@@ -1056,12 +1201,14 @@ def _build_decision_log_md(session_id: int, db: Session) -> str:
     # ── 리뷰어 ──
     lines.append("## 6. 리뷰어 서명")
     lines.append("")
+    lines.append("> SKT 가이드 §3 — 수동 항목은 최소 2인 리뷰.")
+    lines.append("")
     lines.append("| 역할 | 이름 | 검토 일자 | 서명 |")
     lines.append("|---|---|---|---|")
-    lines.append("| App owner |  |  |  |")
-    lines.append("| Backend owner |  |  |  |")
-    lines.append("| Cloud owner |  |  |  |")
-    lines.append("| Security reviewer |  |  |  |")
+    lines.append(f"| App owner | {reviewers.get('app_owner', '')} |  |  |")
+    lines.append(f"| Backend owner | {reviewers.get('backend_owner', '')} |  |  |")
+    lines.append(f"| Cloud owner | {reviewers.get('cloud_owner', '')} |  |  |")
+    lines.append(f"| Security reviewer | {reviewers.get('security_reviewer', '')} |  |  |")
     lines.append("")
 
     return "\n".join(lines)

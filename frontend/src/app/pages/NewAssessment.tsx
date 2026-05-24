@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint } from "lucide-react";
+import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint, BookOpenCheck, Tag, Database as DatabaseIcon, Users as UsersIcon, GitCommit } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { runAssessment } from "../../config/api";
@@ -8,7 +8,31 @@ import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
   IdpType, SiemType, YesNoUnknown, ProfileSelect, ScanConsent,
+  EvaluationVersion, ScopeAsset, DataClassification, Reviewers,
 } from "../../types/api";
+
+// SKT 가이드 §3 — 평가 범위 자산 8개 기본 항목.
+const DEFAULT_SCOPE_ASSETS: ScopeAsset[] = [
+  { name: "Frontend URL",     value: "", included: true },
+  { name: "Backend API",      value: "", included: true },
+  { name: "Supabase project", value: "", included: true },
+  { name: "Notion DB",        value: "", included: true },
+  { name: "Drive folder",     value: "", included: true },
+  { name: "GitHub repo",      value: "", included: true },
+  { name: "CI/CD",            value: "", included: true },
+  { name: "운영자 계정",       value: "", included: true },
+];
+
+// SKT 가이드 §3 — 데이터 등급 7개 기본 항목.
+const DEFAULT_DATA_CLASSIFICATIONS: DataClassification[] = [
+  { name: "영업 고객명",        sensitivity: "높음", storage_location: "" },
+  { name: "산업군",             sensitivity: "낮음", storage_location: "" },
+  { name: "제안서",             sensitivity: "중간", storage_location: "" },
+  { name: "사용 로그",          sensitivity: "중간", storage_location: "" },
+  { name: "LLM prompt/response", sensitivity: "높음", storage_location: "" },
+  { name: "OAuth token",        sensitivity: "높음", storage_location: "" },
+  { name: "API key",            sensitivity: "높음", storage_location: "" },
+];
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
 const INFRA_TYPES = [
@@ -129,6 +153,23 @@ export function NewAssessment() {
     exclude_paths: "",
     emergency_contact: "",
   });
+  // SKT 가이드 §3 평가 착수 전 확정사항 4종
+  const [evaluationVersion, setEvaluationVersion] = useState<EvaluationVersion>({
+    frontend_deployment: "",
+    backend_deployment: "",
+    git_commit: "",
+    version_label: "",
+  });
+  const [scopeAssets, setScopeAssets] = useState<ScopeAsset[]>(DEFAULT_SCOPE_ASSETS);
+  const [dataClassifications, setDataClassifications] = useState<DataClassification[]>(
+    DEFAULT_DATA_CLASSIFICATIONS,
+  );
+  const [reviewers, setReviewers] = useState<Reviewers>({
+    app_owner: "",
+    backend_owner: "",
+    cloud_owner: "",
+    security_reviewer: "",
+  });
   // Keycloak 연결 카드 입력값 (작업 E-fe)
   const [keycloakCreds, setKeycloakCreds] = useState<{ url: string; admin_user: string; admin_pass: string }>({
     url: "", admin_user: "", admin_pass: "",
@@ -234,6 +275,33 @@ export function NewAssessment() {
     }
     const hasConsent = Object.keys(consentPayload).length > 0;
 
+    // SKT 가이드 §3 — 빈 값 제거.
+    const evalVersionPayload: EvaluationVersion = {};
+    (["frontend_deployment", "backend_deployment", "git_commit", "version_label"] as const).forEach((k) => {
+      const v = (evaluationVersion[k] || "").trim();
+      if (v) evalVersionPayload[k] = v;
+    });
+    const hasEvalVersion = Object.keys(evalVersionPayload).length > 0;
+
+    const scopeAssetsPayload = scopeAssets
+      .filter((a) => a.name.trim() && a.value.trim())
+      .map((a) => ({ name: a.name.trim(), value: a.value.trim(), included: a.included }));
+
+    const dcPayload = dataClassifications
+      .filter((d) => d.name.trim())
+      .map((d) => ({
+        name: d.name.trim(),
+        sensitivity: d.sensitivity,
+        storage_location: (d.storage_location || "").trim(),
+      }));
+
+    const reviewersPayload: Reviewers = {};
+    (["app_owner", "backend_owner", "cloud_owner", "security_reviewer"] as const).forEach((k) => {
+      const v = (reviewers[k] || "").trim();
+      if (v) reviewersPayload[k] = v;
+    });
+    const hasReviewers = Object.keys(reviewersPayload).length > 0;
+
     runAssessment({
       org_name: formData.orgName,
       manager: formData.manager,
@@ -254,6 +322,10 @@ export function NewAssessment() {
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),
       ...(hasConsent ? { scan_consent: consentPayload } : {}),
+      ...(hasEvalVersion ? { evaluation_version: evalVersionPayload } : {}),
+      ...(scopeAssetsPayload.length > 0 ? { evaluation_scope_assets: scopeAssetsPayload } : {}),
+      ...(dcPayload.length > 0 ? { data_classifications: dcPayload } : {}),
+      ...(hasReviewers ? { reviewers: reviewersPayload } : {}),
     })
       .then((res) =>
         navigate(`/in-progress/${res.session_id}`, {
@@ -318,6 +390,23 @@ export function NewAssessment() {
             <div className="flex items-center gap-2 mb-6">
               <Building2 className="text-blue-600" size={24} />
               <h2>Step 1: 사전 프로파일링 + 기관 정보 입력</h2>
+            </div>
+
+            {/* SKT 가이드 §9 — 평가 목적 안내 */}
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50/60 p-5">
+              <div className="flex items-start gap-3">
+                <BookOpenCheck size={20} className="text-emerald-700 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-emerald-900 mb-1">평가 목적 안내 (SKT 가이드 §9)</p>
+                  <p className="text-sm text-emerald-900 leading-relaxed">
+                    이번 평가는 제로트러스트 제품처럼 홍보하기 위한 점수 산출이 아니라,
+                    <strong> 실제 운영 구조에서 신원·네트워크·시스템·앱·데이터 통제가 어디까지 증명되는지 확인</strong>하는 작업입니다.
+                    자동수집이 되는 항목과 안 되는 항목을 명확히 나누어 쓰고,
+                    자동수집이 안 되는 항목은 평가불가로 방치하지 말고 <strong>수동 증적을 붙여 판정</strong>하세요.
+                    live scan은 승인된 범위에서만 진행합니다.
+                  </p>
+                </div>
+              </div>
             </div>
 
             {prefillNotice && (
@@ -1073,6 +1162,212 @@ export function NewAssessment() {
                   ))}
                 </ul>
               )}
+            </div>
+
+            {/* SKT 가이드 §3 평가 착수 전 확정사항 — 4 카드 */}
+            <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-5">
+              <div className="mb-4 flex items-center gap-2">
+                <FileText size={18} className="text-gray-700" />
+                <h3 className="text-sm font-semibold text-gray-800">
+                  평가 착수 전 확정사항 (SKT 가이드 §3)
+                </h3>
+              </div>
+              <p className="text-xs text-gray-600 mb-4">
+                보고서 첫 장 · 판정 로그 · 증적 목록에 자동 표기됩니다. 비워두면 해당 항목은 표시되지 않습니다.
+              </p>
+
+              {/* Card A — 평가 대상 버전 */}
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <GitCommit size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">평가 대상 버전 (Deployment / Commit)</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Frontend deployment ID</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={evaluationVersion.frontend_deployment || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, frontend_deployment: e.target.value })}
+                      placeholder="예: Vercel dpl_abc123"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Backend deployment ID</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={evaluationVersion.backend_deployment || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, backend_deployment: e.target.value })}
+                      placeholder="예: Railway xyz789"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Git commit hash</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg font-mono"
+                      value={evaluationVersion.git_commit || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, git_commit: e.target.value })}
+                      placeholder="예: a156b40"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">버전 라벨 (자유 표기)</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={evaluationVersion.version_label || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, version_label: e.target.value })}
+                      placeholder="예: 2026-05-22 배포본"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Card B — 평가 범위 자산 목록 */}
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <Tag size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">평가 범위 자산 목록</p>
+                  <span className="ml-auto text-[11px] text-gray-500">포함/제외 표시</span>
+                </div>
+                <div className="space-y-2">
+                  {scopeAssets.map((asset, idx) => (
+                    <div key={asset.name} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-3 text-xs text-gray-700">{asset.name}</div>
+                      <div className="col-span-7">
+                        <input
+                          type="text"
+                          className="w-full px-2.5 py-1 text-sm border border-gray-300 rounded"
+                          value={asset.value}
+                          onChange={(e) => {
+                            const next = [...scopeAssets];
+                            next[idx] = { ...next[idx], value: e.target.value };
+                            setScopeAssets(next);
+                          }}
+                          placeholder={
+                            asset.name === "Frontend URL" ? "https://tmarkovframework.vercel.app" :
+                            asset.name === "Backend API" ? "https://api.tmarkov.example.com" :
+                            asset.name === "Supabase project" ? "프로젝트 ID 또는 URL" :
+                            asset.name === "GitHub repo" ? "owner/name" :
+                            "값 또는 URL"
+                          }
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="w-3.5 h-3.5"
+                            checked={asset.included}
+                            onChange={(e) => {
+                              const next = [...scopeAssets];
+                              next[idx] = { ...next[idx], included: e.target.checked };
+                              setScopeAssets(next);
+                            }}
+                          />
+                          포함
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Card C — 데이터 등급 분류 */}
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <DatabaseIcon size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">데이터 등급 분류 (민감도 · 보관 위치)</p>
+                </div>
+                <div className="space-y-2">
+                  {dataClassifications.map((dc, idx) => (
+                    <div key={dc.name} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-4 text-xs text-gray-700">{dc.name}</div>
+                      <div className="col-span-3">
+                        <select
+                          className="w-full px-2 py-1 text-xs border border-gray-300 rounded bg-white"
+                          value={dc.sensitivity}
+                          onChange={(e) => {
+                            const next = [...dataClassifications];
+                            next[idx] = { ...next[idx], sensitivity: e.target.value as DataClassification["sensitivity"] };
+                            setDataClassifications(next);
+                          }}
+                        >
+                          <option value="낮음">낮음</option>
+                          <option value="중간">중간</option>
+                          <option value="높음">높음</option>
+                        </select>
+                      </div>
+                      <div className="col-span-5">
+                        <input
+                          type="text"
+                          className="w-full px-2.5 py-1 text-sm border border-gray-300 rounded"
+                          value={dc.storage_location || ""}
+                          onChange={(e) => {
+                            const next = [...dataClassifications];
+                            next[idx] = { ...next[idx], storage_location: e.target.value };
+                            setDataClassifications(next);
+                          }}
+                          placeholder="예: Supabase / Notion / Drive"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Card D — 판정자 4역할 */}
+              <div className="rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <UsersIcon size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">판정자 4역할 (수동 항목은 최소 2인 리뷰)</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">App owner</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.app_owner || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, app_owner: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Backend owner</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.backend_owner || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, backend_owner: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Cloud owner</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.cloud_owner || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, cloud_owner: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Security reviewer</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.security_reviewer || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, security_reviewer: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="flex justify-between pt-4">

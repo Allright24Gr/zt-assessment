@@ -629,6 +629,16 @@ export function Reporting() {
         </div>
       </div>
 
+      {/* SKT 가이드 §9 — 평가 목적 안내 */}
+      {evalMeta && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 px-4 py-3 text-xs leading-relaxed text-emerald-900">
+          <span className="font-semibold">평가 목적 (SKT 가이드 §9)</span> — 이번 평가는 점수 산출이 아니라
+          실제 운영 구조에서 통제가 어디까지 증명되는지 확인하는 작업입니다.
+          자동수집 항목과 수동 증적이 분리되어 있고, 자동수집이 안 되는 항목은 평가불가가 아닌
+          수동 증적으로 판정되어야 합니다.
+        </div>
+      )}
+
       {/* SKT 가이드 §3 §4 §7 §9 — 평가 메타 (스캔 모드 · 도구 범위 · 승인 기록) */}
       {evalMeta && (
         <div className={`rounded-xl border p-4 ${
@@ -745,6 +755,85 @@ export function Reporting() {
                 )}
               </div>
             </div>
+          )}
+
+          {/* SKT 가이드 §3 평가 착수 전 확정사항 — 버전 / 자산 / 데이터 등급 / 판정자 */}
+          {(evalMeta.evaluation_version || evalMeta.evaluation_scope_assets ||
+            evalMeta.data_classifications || evalMeta.reviewers) && (
+            <details className="mt-3 rounded-lg border border-gray-200 bg-white">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50">
+                평가 착수 전 확정사항 (SKT 가이드 §3)
+              </summary>
+              <div className="px-3 pb-3 pt-1 space-y-3 text-xs">
+                {evalMeta.evaluation_version && Object.keys(evalMeta.evaluation_version).length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">평가 대상 버전</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5 text-gray-700">
+                      {evalMeta.evaluation_version.version_label && (
+                        <div><span className="text-gray-500">라벨</span> <span className="ml-1">{evalMeta.evaluation_version.version_label}</span></div>
+                      )}
+                      {evalMeta.evaluation_version.git_commit && (
+                        <div><span className="text-gray-500">commit</span> <span className="ml-1 font-mono">{evalMeta.evaluation_version.git_commit}</span></div>
+                      )}
+                      {evalMeta.evaluation_version.frontend_deployment && (
+                        <div><span className="text-gray-500">frontend</span> <span className="ml-1">{evalMeta.evaluation_version.frontend_deployment}</span></div>
+                      )}
+                      {evalMeta.evaluation_version.backend_deployment && (
+                        <div><span className="text-gray-500">backend</span> <span className="ml-1">{evalMeta.evaluation_version.backend_deployment}</span></div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {evalMeta.evaluation_scope_assets && evalMeta.evaluation_scope_assets.length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">평가 범위 자산 목록</p>
+                    <ul className="space-y-0.5 text-gray-700">
+                      {evalMeta.evaluation_scope_assets.map((a, i) => (
+                        <li key={i} className="flex items-baseline gap-1.5">
+                          <span className={`inline-block w-12 text-[10px] font-semibold ${a.included ? "text-emerald-700" : "text-gray-400 line-through"}`}>
+                            {a.included ? "포함" : "제외"}
+                          </span>
+                          <span className="text-gray-600">{a.name}</span>
+                          <span className="ml-1 font-mono text-gray-800 break-all">{a.value}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {evalMeta.data_classifications && evalMeta.data_classifications.length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">데이터 등급 분류</p>
+                    <ul className="space-y-0.5 text-gray-700">
+                      {evalMeta.data_classifications.map((d, i) => (
+                        <li key={i} className="flex items-baseline gap-1.5">
+                          <span className={`inline-block w-12 text-[10px] font-semibold ${
+                            d.sensitivity === "높음" ? "text-red-700" :
+                            d.sensitivity === "중간" ? "text-amber-700" : "text-gray-500"
+                          }`}>
+                            {d.sensitivity}
+                          </span>
+                          <span className="text-gray-700">{d.name}</span>
+                          {d.storage_location && (
+                            <span className="ml-1 text-gray-500">— {d.storage_location}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {evalMeta.reviewers && Object.keys(evalMeta.reviewers).length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">판정자</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5 text-gray-700">
+                      {evalMeta.reviewers.app_owner && <div><span className="text-gray-500">App owner</span> <span className="ml-1">{evalMeta.reviewers.app_owner}</span></div>}
+                      {evalMeta.reviewers.backend_owner && <div><span className="text-gray-500">Backend</span> <span className="ml-1">{evalMeta.reviewers.backend_owner}</span></div>}
+                      {evalMeta.reviewers.cloud_owner && <div><span className="text-gray-500">Cloud</span> <span className="ml-1">{evalMeta.reviewers.cloud_owner}</span></div>}
+                      {evalMeta.reviewers.security_reviewer && <div><span className="text-gray-500">Security</span> <span className="ml-1">{evalMeta.reviewers.security_reviewer}</span></div>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </details>
           )}
         </div>
       )}

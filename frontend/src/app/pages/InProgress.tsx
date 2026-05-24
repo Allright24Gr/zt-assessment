@@ -6,11 +6,12 @@ import {
   Radar, RadarChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  AlertTriangle, CheckCircle, Clock, Database, Download,
-  Loader2, Paperclip, Server, Shield, Upload,
+  AlertTriangle, CheckCircle, ChevronDown, Clock, Database, Download,
+  FileText, Loader2, Paperclip, Server, Shield, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
+import { EVIDENCE_GUIDE } from "../data/evidenceGuide";
 import {
   getAssessmentStatus, finalizeAssessment, getManualItems, uploadManualExcel, uploadEvidence,
   evidenceDownloadUrl, downloadSessionManualTemplate, ApiError,
@@ -160,6 +161,7 @@ export function InProgress() {
 
   // 증적 업로드 상태 (P1-7)
   const [evidenceShow, setEvidenceShow] = useState(false);
+  const [evidenceGuideShow, setEvidenceGuideShow] = useState(false);
   const [evidenceUploading, setEvidenceUploading] = useState<Record<number, boolean>>({});
   const [uploadedEvidence, setUploadedEvidence] = useState<Record<number, { id: number; name: string }>>({});
 
@@ -731,6 +733,49 @@ export function InProgress() {
         </div>
       </div>
 
+      {/* SKT 가이드 §5 — 6 Pillar 증적 준비표 (운영자 안내) */}
+      {manualCount > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setEvidenceGuideShow((v) => !v)}
+            className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50 hover:bg-gray-100 transition-colors"
+          >
+            <span className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+              <FileText size={15} />
+              증적 준비표 — Pillar별로 어떤 증적을 준비해야 하는지 (SKT 가이드 §5)
+            </span>
+            <ChevronDown
+              size={16}
+              className={`text-gray-500 transition-transform ${evidenceGuideShow ? "rotate-180" : ""}`}
+            />
+          </button>
+          {evidenceGuideShow && (
+            <div className="px-5 py-4 space-y-4">
+              {EVIDENCE_GUIDE.map((g) => (
+                <div key={g.pillarKey} className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-sm font-semibold text-gray-800 mb-2">{g.pillar}</p>
+                  <div className="space-y-1.5 text-xs">
+                    <div>
+                      <span className="font-semibold text-gray-600">준비할 증적: </span>
+                      <span className="text-gray-700">{g.prepare}</span>
+                    </div>
+                    <div>
+                      <span className="font-semibold text-gray-600">주요 질문: </span>
+                      <span className="text-gray-700">{g.questions}</span>
+                    </div>
+                    <div>
+                      <span className="font-semibold text-amber-700">판정 주의: </span>
+                      <span className="text-gray-700">{g.cautions}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Excel 업로드 (수동 항목 있을 때만) */}
       {manualCount > 0 && (
         <div className="bg-white rounded-xl border border-blue-200 overflow-hidden">
@@ -750,6 +795,7 @@ export function InProgress() {
               <li><strong>템플릿 다운로드</strong>로 이 세션 전용 체크리스트(.xlsx)를 받습니다. — 사용자의 IdP/SIEM 환경에 맞춰 자동 폴백 항목까지 포함됩니다.</li>
               <li>각 항목의 <strong>★ 담당자 선택 (필수)</strong> 열에 드롭다운 값을 입력합니다.</li>
               <li>작성 완료 후 <strong>Excel 파일 선택</strong>으로 업로드하면 즉시 점수 계산이 시작됩니다.</li>
+              <li>위 <strong>증적 준비표</strong> 토글을 펼치면 Pillar별 어떤 증적을 모아야 하는지 가이드가 나옵니다.</li>
             </ol>
 
             <div className="flex gap-3">

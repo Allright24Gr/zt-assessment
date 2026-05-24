@@ -249,6 +249,33 @@ export interface ScanConsent {
   emergency_contact?: string;   // 비상 연락처
 }
 
+/** SKT 가이드 §3 평가 착수 전 확정사항 4종. */
+export interface EvaluationVersion {
+  frontend_deployment?: string; // 예: "Vercel dpl_abc123"
+  backend_deployment?: string;  // 예: "Railway xyz"
+  git_commit?: string;          // 예: "a156b40"
+  version_label?: string;       // 예: "2026-05-22 배포본"
+}
+
+export interface ScopeAsset {
+  name: string;       // 예: "Frontend URL", "Supabase project"
+  value: string;      // 자유 입력 (URL/ID/경로)
+  included: boolean;  // 포함/제외
+}
+
+export interface DataClassification {
+  name: string;                       // 예: "영업 고객명"
+  sensitivity: "낮음" | "중간" | "높음";
+  storage_location?: string;          // 예: "Supabase / Notion"
+}
+
+export interface Reviewers {
+  app_owner?: string;
+  backend_owner?: string;
+  cloud_owner?: string;
+  security_reviewer?: string;
+}
+
 export interface AssessmentRunRequest {
   org_name?: string;
   manager?: string;
@@ -271,6 +298,11 @@ export interface AssessmentRunRequest {
   scan_mode?: "demo" | "live";
   /** live 모드에서 Nmap/Trivy 같은 외부 스캔 시 승인 메타. 보고서 머리에 표기. */
   scan_consent?: ScanConsent;
+  /** SKT 가이드 §3 평가 착수 전 확정사항 — 보고서 첫 장 고정값. */
+  evaluation_version?: EvaluationVersion;
+  evaluation_scope_assets?: ScopeAsset[];
+  data_classifications?: DataClassification[];
+  reviewers?: Reviewers;
 }
 
 export interface AssessmentRunResponse {
@@ -297,6 +329,11 @@ export interface EvaluationMeta {
     trivy?: string;
   };
   scan_consent?: ScanConsent;
+  // SKT 가이드 §3 평가 착수 전 확정사항
+  evaluation_version?: EvaluationVersion;
+  evaluation_scope_assets?: ScopeAsset[];
+  data_classifications?: DataClassification[];
+  reviewers?: Reviewers;
 }
 
 export interface AssessmentResultResponse {
