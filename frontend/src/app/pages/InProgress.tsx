@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import {
   getAssessmentStatus, finalizeAssessment, getManualItems, uploadManualExcel, uploadEvidence,
-  evidenceDownloadUrl, ApiError,
+  evidenceDownloadUrl, downloadSessionManualTemplate, ApiError,
   type AssessmentStatusResponse,
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
@@ -747,20 +747,30 @@ export function InProgress() {
 
           <div className="px-5 py-5 space-y-4">
             <ol className="text-sm text-gray-600 space-y-2 list-decimal list-inside">
-              <li><strong>템플릿 다운로드</strong>로 빈 체크리스트(.xlsx)를 받습니다.</li>
+              <li><strong>템플릿 다운로드</strong>로 이 세션 전용 체크리스트(.xlsx)를 받습니다. — 사용자의 IdP/SIEM 환경에 맞춰 자동 폴백 항목까지 포함됩니다.</li>
               <li>각 항목의 <strong>★ 담당자 선택 (필수)</strong> 열에 드롭다운 값을 입력합니다.</li>
               <li>작성 완료 후 <strong>Excel 파일 선택</strong>으로 업로드하면 즉시 점수 계산이 시작됩니다.</li>
             </ol>
 
             <div className="flex gap-3">
-              <a
-                href={`${import.meta.env.VITE_API_BASE ?? "http://localhost:8000"}/api/manual/template`}
-                download="manual-checklist-template.xlsx"
+              <button
+                type="button"
+                onClick={() => {
+                  if (!sid) {
+                    toast.error("세션 ID가 없어 양식을 다운로드할 수 없습니다.");
+                    return;
+                  }
+                  downloadSessionManualTemplate(sid).catch((err) => {
+                    console.warn("[in-progress] manual template download failed:", err);
+                    toast.error("양식 다운로드에 실패했습니다.");
+                  });
+                }}
                 className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
+                title="이 세션 환경에 맞춘 동적 양식 (자동 폴백 항목 포함)"
               >
                 <Download size={15} />
                 템플릿 다운로드
-              </a>
+              </button>
               <label className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer transition-colors ${
                 uploading ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
               }`}>

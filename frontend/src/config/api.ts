@@ -395,6 +395,34 @@ export function getManualItems(sessionId: number | string, excludedTools?: strin
   });
 }
 
+// 세션별 동적 수동 진단 양식 다운로드 (자동 폴백 항목 포함).
+// 기존 정적 /api/manual/template 와 달리 사용자의 IdP/SIEM 환경을 반영해
+// 자동→수동 폴백된 항목까지 xlsx 안에 들어간다.
+export async function downloadSessionManualTemplate(sessionId: number | string): Promise<void> {
+  const url = `${API_BASE}/api/manual/template/${sessionId}`;
+  const accessToken = _getTokensFromStorage()?.access_token ?? null;
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  else {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) headers["X-Login-Id"] = loginId;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`양식 다운로드 실패 (HTTP ${res.status})`, res.status, text);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = `manual-checklist-session-${sessionId}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
 export function finalizeAssessment(sessionId: number | string) {
   return apiFetch<{ status: string; session_id: number }>(
     `/api/assessment/finalize/${sessionId}`,
