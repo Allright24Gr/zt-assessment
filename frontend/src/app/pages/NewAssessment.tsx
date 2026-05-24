@@ -7,21 +7,36 @@ import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
-  IdpType, SiemType, YesNoUnknown, ProfileSelect,
+  IdpType, SiemType, YesNoUnknown, ProfileSelect, ScanConsent,
 } from "../../types/api";
 
 const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
-const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"];
+const INFRA_TYPES = [
+  "온프레미스",
+  "클라우드 (AWS)",
+  "클라우드 (Azure)",
+  "클라우드 (GCP)",
+  "SaaS형 (Vercel·Railway·Supabase 등)",
+  "하이브리드",
+];
 
-// 사전 프로파일링 — 4 오픈소스 도구만 지원 (학생 프로젝트, 라이선스 비용 0)
+// 사전 프로파일링.
+// supported=true 한 도구만 자동 진단 — 그 외(상용 SaaS 등)는 선택 가능하지만
+// backend가 자동 항목을 수동 폴백으로 돌린다(manual.py /items 가 노출).
 const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported: boolean }> = [
-  { key: "keycloak", label: "Keycloak",          desc: "오픈소스 IAM/SSO",   supported: true  },
-  { key: "none",     label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백", supported: false },
+  { key: "keycloak",         label: "Keycloak",          desc: "오픈소스 IAM/SSO",        supported: true  },
+  { key: "google_workspace", label: "Google Workspace",  desc: "Google OAuth 기반",       supported: false },
+  { key: "entra",            label: "MS Entra ID",       desc: "Microsoft 365 / Azure AD", supported: false },
+  { key: "okta",             label: "Okta",              desc: "Okta Workforce Identity",  supported: false },
+  { key: "ldap_ad",          label: "자체 LDAP / AD",    desc: "온프레미스 디렉터리",       supported: false },
+  { key: "none",             label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백",        supported: false },
 ];
 
 const SIEM_OPTIONS: Array<{ key: SiemType; label: string; desc: string; supported: boolean }> = [
-  { key: "wazuh", label: "Wazuh",             desc: "오픈소스 SIEM/HIDS", supported: true  },
-  { key: "none",  label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백", supported: false },
+  { key: "wazuh",   label: "Wazuh",             desc: "오픈소스 SIEM/HIDS",      supported: true  },
+  { key: "splunk",  label: "Splunk",            desc: "Splunk Enterprise/Cloud", supported: false },
+  { key: "elastic", label: "Elastic SIEM",      desc: "Elastic Security",         supported: false },
+  { key: "none",    label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백",        supported: false },
 ];
 
 export function NewAssessment() {
@@ -106,6 +121,14 @@ export function NewAssessment() {
   const [scanMode, setScanMode] = useState<"demo" | "live">("demo");
   // 외부 스캔 동의 체크박스 (작업 C)
   const [consentExternalScan, setConsentExternalScan] = useState(false);
+  // 외부 스캔 승인 메타 (SKT 가이드 §3·§4 — 승인자/시간/강도/제외/비상연락처)
+  const [scanConsent, setScanConsent] = useState<ScanConsent>({
+    approver: "",
+    scheduled_window: "",
+    intensity: "standard",
+    exclude_paths: "",
+    emergency_contact: "",
+  });
   // Keycloak 연결 카드 입력값 (작업 E-fe)
   const [keycloakCreds, setKeycloakCreds] = useState<{ url: string; admin_user: string; admin_pass: string }>({
     url: "", admin_user: "", admin_pass: "",
@@ -156,7 +179,13 @@ export function NewAssessment() {
     (toolScope.nmap && scanTargets.nmap.trim()) ||
     (toolScope.trivy && scanTargets.trivy.trim())
   );
-  const submitDisabled = !!liveScanIntent && !consentExternalScan;
+  // 승인 메타 필수값(승인자 + 비상연락처) — 외부 스캔 시 책임 추적을 위해 보고서에 기록.
+  const consentMetaMissing = !!liveScanIntent && (
+    !scanConsent.approver?.trim() ||
+    !scanConsent.emergency_contact?.trim()
+  );
+  const submitDisabled =
+    !!liveScanIntent && (!consentExternalScan || consentMetaMissing);
 
   const handleSubmit = () => {
     const excludedTools = Object.entries(toolScope)
@@ -190,6 +219,21 @@ export function NewAssessment() {
     }
     const hasWz = Object.keys(wzPayload).length > 0;
 
+    // 외부 스캔 승인 메타 — live + 스캔 타겟 있을 때만 전송 (빈 필드 제거).
+    const consentPayload: ScanConsent = {};
+    if (liveScanIntent) {
+      const approver = (scanConsent.approver || "").trim();
+      const window_  = (scanConsent.scheduled_window || "").trim();
+      const exclude  = (scanConsent.exclude_paths || "").trim();
+      const contact  = (scanConsent.emergency_contact || "").trim();
+      if (approver) consentPayload.approver = approver;
+      if (window_)  consentPayload.scheduled_window = window_;
+      if (scanConsent.intensity) consentPayload.intensity = scanConsent.intensity;
+      if (exclude)  consentPayload.exclude_paths = exclude;
+      if (contact)  consentPayload.emergency_contact = contact;
+    }
+    const hasConsent = Object.keys(consentPayload).length > 0;
+
     runAssessment({
       org_name: formData.orgName,
       manager: formData.manager,
@@ -209,6 +253,7 @@ export function NewAssessment() {
       ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),
+      ...(hasConsent ? { scan_consent: consentPayload } : {}),
     })
       .then((res) =>
         navigate(`/in-progress/${res.session_id}`, {
@@ -237,6 +282,7 @@ export function NewAssessment() {
           externalScanTools,
           scanTargets,
           scanMode,
+          scanConsent,
           keycloakCreds: { url: keycloakCreds.url, admin_user: keycloakCreds.admin_user },
           wazuhCreds:    { url: wazuhCreds.url,    api_user:   wazuhCreds.api_user   },
         }),
@@ -365,7 +411,7 @@ export function NewAssessment() {
               {/* 신원 관리(IdP) */}
               <div className="mb-4">
                 <p className="mb-2 text-xs font-semibold text-gray-700">신원 관리 (IdP)</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2" role="radiogroup" aria-label="신원 관리 도구">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" role="radiogroup" aria-label="신원 관리 도구">
                   {IDP_OPTIONS.map((opt) => {
                     const checked = profileSelect.idp_type === opt.key;
                     return (
@@ -779,6 +825,94 @@ export function NewAssessment() {
                         외부 스캔 수행으로 인한 모든 책임을 인지하고 진행합니다.
                       </span>
                     </label>
+
+                    {/* 외부 스캔 승인 메타 (SKT 가이드 §3·§4) — 보고서 머리에 표기 */}
+                    <div className="mt-3 p-3 bg-white border border-red-200 rounded-lg">
+                      <p className="text-xs font-semibold text-gray-800 mb-2">
+                        스캔 승인 기록
+                        <span className="ml-1 text-[11px] font-normal text-gray-500">
+                          (보고서 첫 장에 자동 기록됩니다)
+                        </span>
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">
+                            승인자 <span className="text-red-600">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.approver || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, approver: e.target.value })
+                            }
+                            placeholder="예: 최주용 팀장(SKT)"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">
+                            비상 연락처 <span className="text-red-600">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.emergency_contact || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, emergency_contact: e.target.value })
+                            }
+                            placeholder="예: 010-0000-0000 / oncall@example.com"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">스캔 시간대</label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.scheduled_window || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, scheduled_window: e.target.value })
+                            }
+                            placeholder="예: 2026-05-25 22:00~24:00 KST"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">스캔 강도</label>
+                          <select
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+                            value={scanConsent.intensity || "standard"}
+                            onChange={(e) =>
+                              setScanConsent({
+                                ...scanConsent,
+                                intensity: e.target.value as "light" | "standard",
+                              })
+                            }
+                          >
+                            <option value="light">light (최소 — top-100 포트 등)</option>
+                            <option value="standard">standard (기본 옵션)</option>
+                          </select>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block mb-1 text-xs text-gray-700">
+                            제외 경로 / 자산
+                            <span className="ml-1 text-[11px] text-gray-500">(쉼표로 구분)</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.exclude_paths || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, exclude_paths: e.target.value })
+                            }
+                            placeholder="예: /admin/*, api.internal.example.com"
+                          />
+                        </div>
+                      </div>
+                      {consentMetaMissing && (
+                        <p className="mt-2 text-[11px] text-red-600">
+                          승인자와 비상 연락처는 필수입니다. (감사 추적 목적)
+                        </p>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
@@ -1070,6 +1204,8 @@ export function NewAssessment() {
                     <p className="text-xs mt-1">
                       입력한 외부 시스템(Keycloak/Wazuh/Nmap/Trivy)을 실제로 스캔합니다.
                       {liveScanIntent && !consentExternalScan && " 외부 스캔 동의 체크가 필요합니다."}
+                      {liveScanIntent && consentExternalScan && consentMetaMissing &&
+                        " 승인자/비상연락처 입력이 필요합니다."}
                     </p>
                   </div>
                 </div>
@@ -1087,7 +1223,13 @@ export function NewAssessment() {
               <button
                 onClick={handleSubmit}
                 disabled={submitDisabled}
-                title={submitDisabled ? "외부 스캔 동의 체크 후 진행 가능합니다." : undefined}
+                title={
+                  submitDisabled
+                    ? consentMetaMissing
+                      ? "승인자/비상연락처를 입력해야 외부 스캔을 시작할 수 있습니다."
+                      : "외부 스캔 동의 체크 후 진행 가능합니다."
+                    : undefined
+                }
                 className={`px-8 py-3 text-white rounded-lg ${
                   submitDisabled
                     ? "bg-gray-300 cursor-not-allowed"

@@ -269,6 +269,12 @@ class AssessmentRunRequest(BaseModel):
     # 시연/실 스캔 토글 — "demo" 면 collector 실호출 없이 fake 결과 생성, "live" 면 실제 외부 호출.
     # frontend의 scanMode 토글(NewAssessment Step 1)에서 전달.
     scan_mode: Optional[str] = "demo"
+    # 외부 스캔 승인 메타 (SKT 가이드 §3·§4). live + Nmap/Trivy 타겟 있을 때만 의미.
+    # 예: {"approver": "최주용 팀장(SKT)", "scheduled_window": "2026-05-25 22:00~24:00 KST",
+    #      "intensity": "standard", "exclude_paths": "/admin/*",
+    #      "emergency_contact": "010-0000-0000 / oncall@example.com"}
+    # session.extra["scan_consent"] 로 보관 → Reporting/PDF 머리에 표기.
+    scan_consent: Optional[dict] = None
 
 
 # 4 오픈소스 도구만 운영. 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑.
@@ -435,6 +441,18 @@ def run_assessment(
     scan_mode = (req.scan_mode or "demo").strip().lower()
     if scan_mode not in ("demo", "live"):
         scan_mode = "demo"
+
+    # 외부 스캔 승인 메타 — 허용 키만 추리고 문자열 trim. intensity 는 화이트리스트.
+    sc_in = req.scan_consent if isinstance(req.scan_consent, dict) else {}
+    sc_meta: dict = {}
+    for _k in ("approver", "scheduled_window", "exclude_paths", "emergency_contact"):
+        _v = sc_in.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            sc_meta[_k] = _v.strip()[:300]  # 과도한 길이 방지
+    _intensity = (sc_in.get("intensity") or "").strip().lower()
+    if _intensity in ("light", "standard"):
+        sc_meta["intensity"] = _intensity
+
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -445,6 +463,7 @@ def run_assessment(
         "pillar_scope": req.pillar_scope,
         "scan_mode":    scan_mode,
         "scan_targets": scan_targets_in,
+        "scan_consent": sc_meta,
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용

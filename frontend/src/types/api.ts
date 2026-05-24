@@ -209,9 +209,20 @@ export interface ManualEvidenceUploadResponse {
   uploaded_at: string;
 }
 
-// 4 오픈소스 도구만 운영 — 학생 프로젝트
-export type IdpType = "keycloak" | "none";
-export type SiemType = "wazuh" | "none";
+// 자동 진단은 4 오픈소스 도구만 — 그 외 값은 backend가 수동 폴백으로 처리.
+// (SKT T-Markov 등 SaaS형 평가 대비: Google/Entra/Okta/Splunk/Elastic 등도 선택만 가능)
+export type IdpType =
+  | "keycloak"
+  | "google_workspace"
+  | "entra"
+  | "okta"
+  | "ldap_ad"
+  | "none";
+export type SiemType =
+  | "wazuh"
+  | "splunk"
+  | "elastic"
+  | "none";
 // SKT XDR 명세 §6 흡수 — emit 자체가 안 되면 수집 불가이므로 사전 입력.
 export type YesNoUnknown = "yes" | "no" | "unknown";
 
@@ -226,6 +237,16 @@ export interface ProfileSelect {
   edr_product?: string;
   /** OT 세그먼트 존재 여부 — 'yes' 면 OT 트랙 분리 */
   ot_segment_present?: YesNoUnknown;
+}
+
+/** 외부 스캔 승인 메타데이터 (SKT 가이드 §3·§4 요구).
+ *  Reporting/PDF 머리에 "어떤 권한으로, 언제, 어디까지 스캔했는가" 를 표기하기 위함. */
+export interface ScanConsent {
+  approver?: string;            // 승인자(이름/직위)
+  scheduled_window?: string;    // 시간대 (예: "2026-05-25 22:00~24:00 KST")
+  intensity?: "light" | "standard"; // 스캔 강도
+  exclude_paths?: string;       // 제외 경로/자산
+  emergency_contact?: string;   // 비상 연락처
 }
 
 export interface AssessmentRunRequest {
@@ -248,6 +269,8 @@ export interface AssessmentRunRequest {
   profile_select?: ProfileSelect;
   /** "demo" | "live" — NewAssessment 토글. demo면 backend가 collector 실호출 없이 fake 결과 생성 */
   scan_mode?: "demo" | "live";
+  /** live 모드에서 Nmap/Trivy 같은 외부 스캔 시 승인 메타. 보고서 머리에 표기. */
+  scan_consent?: ScanConsent;
 }
 
 export interface AssessmentRunResponse {

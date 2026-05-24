@@ -646,7 +646,7 @@ export function Settings() {
                 onChange={(e) => setProfileForm({ ...profileForm, infra_type: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg"
               >
-                {["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"].map((t) => <option key={t}>{t}</option>)}
+                {["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "SaaS형 (Vercel·Railway·Supabase 등)", "하이브리드"].map((t) => <option key={t}>{t}</option>)}
               </select>
             </div>
             <div>

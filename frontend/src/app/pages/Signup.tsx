@@ -6,7 +6,7 @@ import type { ProfileFields } from "../../config/api";
 import { TERMS_OF_SERVICE, PRIVACY_POLICY, MARKETING_NOTICE } from "../data/legalText";
 
 const ORG_TYPES = ["IT/SW", "금융", "의료", "공공", "교육", "제조", "유통/서비스", "기타"];
-const INFRA_TYPES = ["온프레미스", "퍼블릭 클라우드", "프라이빗 클라우드", "하이브리드"];
+const INFRA_TYPES = ["온프레미스", "퍼블릭 클라우드", "프라이빗 클라우드", "SaaS형 (Vercel·Railway·Supabase 등)", "하이브리드"];
 
 type LegalKey = null | "tos" | "privacy" | "marketing";
 
