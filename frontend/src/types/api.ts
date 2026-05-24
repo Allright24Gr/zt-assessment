@@ -280,6 +280,25 @@ export interface AssessmentRunResponse {
   started_at?: string;
 }
 
+/** SKT 가이드 §3 §4 §7 §9 — Reporting/PDF 머리에 표기할 평가 메타.
+ *  backend build_evaluation_meta() 결과를 그대로 전달. */
+export interface EvaluationMeta {
+  scan_mode: "demo" | "live" | string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  selected_tools: string[];
+  excluded_tools: string[];
+  profile_select: {
+    idp_type: string;
+    siem_type: string;
+  };
+  scan_targets?: {
+    nmap?: string;
+    trivy?: string;
+  };
+  scan_consent?: ScanConsent;
+}
+
 export interface AssessmentResultResponse {
   session: AssessmentSession;
   pillar_scores: PillarScore[];
@@ -294,6 +313,8 @@ export interface AssessmentResultResponse {
   evaluable_items?: number;
   unevaluable_items?: number;
   confidence?: number;
+  // SKT 가이드 §3 §4 §7 §9 — Reporting 상단·PDF 표지 표기용
+  evaluation_meta?: EvaluationMeta;
 }
 
 export interface AssessmentHistoryResponse {

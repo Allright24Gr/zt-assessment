@@ -15,6 +15,7 @@ from models import (
 )
 from scoring.engine import determine_maturity_level
 from routers.auth import get_current_user, assert_session_access
+from routers.assessment import build_evaluation_meta
 from services.standards_mapping import map_item_to_standards, session_standards_summary
 
 router = APIRouter()
@@ -177,6 +178,8 @@ def _build_data(session_id: int, db: Session) -> dict:
         "checklist_results":  checklist_results,
         "improvement_targets": fail_items,
         "improvements":       improvements,
+        # SKT 가이드 §3 §4 §7 §9 — PDF 표지에 표기할 평가 메타
+        "evaluation_meta":    build_evaluation_meta(session),
     }
 
 
@@ -240,6 +243,7 @@ def _make_pdf(data: dict) -> bytes:
     cr  = data["checklist_results"]
     imps = data["improvements"]
     gen  = data["generated_at"][:10]
+    em  = data.get("evaluation_meta") or {}
 
     story = []
 
@@ -252,13 +256,41 @@ def _make_pdf(data: dict) -> bytes:
         HRFlowable(width=W, thickness=2, color=colors.HexColor("#2563eb"), spaceAfter=20),
     ]
 
+    # ── 평가 메타 표기 ─────────────────────────────────────────────────────────
+    # SKT 가이드 §3 §4 §7 §9 — 보고서 첫 장에 평가 기준 시점·범위·승인기록 고정.
+    scan_mode_label = {"demo": "데모 (외부 시스템 미접근)", "live": "실 스캔 (외부 시스템 접근)"}.get(
+        em.get("scan_mode") or "demo", em.get("scan_mode") or "demo"
+    )
+    sel_tools = em.get("selected_tools") or []
+    exc_tools = em.get("excluded_tools") or []
+    profile   = em.get("profile_select") or {}
+    targets   = em.get("scan_targets") or {}
+    consent   = em.get("scan_consent") or {}
+
+    def _join(items):
+        return ", ".join(items) if items else "(없음)"
+
+    def _kv(key, value):
+        return [key, value if value else "(미입력)"]
+
     cover_info = [
         ["진단 대상",  s["org"]],
         ["담당자",     s["manager"]],
         ["진단 시작",  s["started_at"][:10] if s["started_at"] else "-"],
         ["진단 완료",  s["completed_at"][:10] if s["completed_at"] else "-"],
         ["보고서 생성", gen],
+        ["진단 모드",  scan_mode_label],
+        ["사용 환경",  f"IdP: {profile.get('idp_type') or 'none'}  /  SIEM: {profile.get('siem_type') or 'none'}"],
+        ["수행 도구",  _join(sel_tools)],
+        ["제외 도구",  _join(exc_tools)],
     ]
+    if targets:
+        target_lines = []
+        if targets.get("nmap"):  target_lines.append(f"Nmap: {targets['nmap']}")
+        if targets.get("trivy"): target_lines.append(f"Trivy: {targets['trivy']}")
+        if target_lines:
+            cover_info.append(["스캔 대상", " · ".join(target_lines)])
+
     story.append(Table(
         cover_info,
         colWidths=[4*cm, W - 4*cm],
@@ -270,6 +302,35 @@ def _make_pdf(data: dict) -> bytes:
             ("BOTTOMPADDING", (0,0), (-1,-1), 6),
         ]),
     ))
+
+    # 외부 스캔 승인 기록 — 실 스캔이고 승인 메타가 있을 때만 별도 카드.
+    if em.get("scan_mode") == "live" and consent:
+        story += [Spacer(1, 0.5*cm)]
+        story.append(Paragraph("외부 스캔 승인 기록", h3))
+        consent_rows = [
+            _kv("승인자",       consent.get("approver")),
+            _kv("시간대",       consent.get("scheduled_window")),
+            _kv("강도",         consent.get("intensity")),
+            _kv("제외 경로",    consent.get("exclude_paths")),
+            _kv("비상 연락처", consent.get("emergency_contact")),
+        ]
+        story.append(Table(
+            consent_rows,
+            colWidths=[3.2*cm, W - 3.2*cm],
+            style=TableStyle([
+                ("FONTNAME",      (0,0), (-1,-1), F),
+                ("FONTSIZE",      (0,0), (-1,-1), 9),
+                ("TEXTCOLOR",     (0,0), (0,-1), colors.HexColor("#6b7280")),
+                ("TEXTCOLOR",     (1,0), (1,-1), colors.HexColor("#111827")),
+                ("BACKGROUND",    (0,0), (-1,-1), colors.HexColor("#fef9c3")),
+                ("BOX",           (0,0), (-1,-1), 0.5, colors.HexColor("#facc15")),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                ("TOPPADDING",    (0,0), (-1,-1), 5),
+                ("LEFTPADDING",   (0,0), (-1,-1), 8),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+            ]),
+        ))
+
     story += [Spacer(1, 1.2*cm)]
 
     story.append(Paragraph(f"{sm['overall_score']:.2f} / 4.0", cover_score))

@@ -103,6 +103,38 @@ def _mask_creds(extra: dict) -> dict:
     return safe
 
 
+def build_evaluation_meta(session: DiagnosisSession) -> dict:
+    """Reporting/PDF 머리에 표기할 평가 메타데이터.
+
+    SKT T-Markov 가이드 §3 §4 §7 §9 요구사항 — 평가 기준 시점·범위·승인기록·
+    수행된 도구·제외된 도구를 한 곳에 노출. session.extra 와 selected_tools 를
+    조합해 만든다. 자격 비밀번호는 절대 포함하지 않는다.
+    """
+    extra = session.extra if isinstance(session.extra, dict) else {}
+    selected_map = session.selected_tools if isinstance(session.selected_tools, dict) else {}
+    selected = sorted(t for t, v in selected_map.items() if v and t in ALL_TOOLS)
+    excluded = sorted(t for t in ALL_TOOLS if t not in selected)
+
+    scan_mode = (extra.get("scan_mode") or "demo").lower()
+    profile_select = extra.get("profile_select") if isinstance(extra.get("profile_select"), dict) else {}
+    scan_targets = extra.get("scan_targets") if isinstance(extra.get("scan_targets"), dict) else {}
+    scan_consent = extra.get("scan_consent") if isinstance(extra.get("scan_consent"), dict) else {}
+
+    return {
+        "scan_mode":      scan_mode,        # "demo" | "live"
+        "started_at":     session.started_at.isoformat() if session.started_at else None,
+        "completed_at":   session.completed_at.isoformat() if session.completed_at else None,
+        "selected_tools": selected,
+        "excluded_tools": excluded,
+        "profile_select": {
+            "idp_type":  profile_select.get("idp_type")  or "none",
+            "siem_type": profile_select.get("siem_type") or "none",
+        },
+        "scan_targets":   {k: v for k, v in scan_targets.items() if v},
+        "scan_consent":   {k: v for k, v in scan_consent.items() if v},  # 빈 키 제거
+    }
+
+
 # ─── 자격(비밀번호) 메모리 보관 ────────────────────────────────────────────────
 # DB 평문 저장을 피하기 위해 세션 ID → 자격 dict 매핑을 메모리에만 보관한다.
 # BackgroundTask(_run_collectors) 가 꺼내 쓰고 finally 에서 즉시 폐기.
@@ -758,6 +790,8 @@ def get_result(
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
         "checklist_results": checklist_results,
+        # SKT 가이드 §3 §4 §7 §9 — 보고서 머리 표기용 평가 메타
+        "evaluation_meta":   build_evaluation_meta(session),
     }
 
 
@@ -2033,6 +2067,8 @@ def _build_result_payload(db: Session, session: DiagnosisSession) -> dict:
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
         "checklist_results": checklist_results,
+        # SKT 가이드 §3 §4 §7 §9 — 보고서 머리 표기용 평가 메타
+        "evaluation_meta":   build_evaluation_meta(session),
     }
 
 

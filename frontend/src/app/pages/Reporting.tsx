@@ -28,7 +28,7 @@ import { PILLARS } from "../data/constants";
 import { getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
 import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
-import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem } from "../../types/api";
+import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem, EvaluationMeta } from "../../types/api";
 
 import { getStoredTargetScores } from "../lib/settingsStore";
 
@@ -283,6 +283,8 @@ export function Reporting() {
   const [backendConfidence, setBackendConfidence] = useState<number | null>(null);
   const [backendEvaluableCount, setBackendEvaluableCount] = useState<number | null>(null);
   const [backendUnevaluableCount, setBackendUnevaluableCount] = useState<number | null>(null);
+  // SKT 가이드 §3 §4 §7 §9 — 평가 메타 (스캔 모드/도구 범위/승인 기록)
+  const [evalMeta, setEvalMeta] = useState<EvaluationMeta | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -345,6 +347,7 @@ export function Reporting() {
             ? Number((data as AssessmentResultResponse).unevaluable_items)
             : null,
         );
+        setEvalMeta((data as AssessmentResultResponse).evaluation_meta ?? null);
       })
       .catch((err) => {
         console.warn("[reporting] result fetch failed:", err);
@@ -597,6 +600,126 @@ export function Reporting() {
           </Link>
         </div>
       </div>
+
+      {/* SKT 가이드 §3 §4 §7 §9 — 평가 메타 (스캔 모드 · 도구 범위 · 승인 기록) */}
+      {evalMeta && (
+        <div className={`rounded-xl border p-4 ${
+          evalMeta.scan_mode === "live"
+            ? "border-red-200 bg-red-50/40"
+            : "border-blue-200 bg-blue-50/40"
+        }`}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-gray-800">평가 기준 시점 · 범위</p>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                  evalMeta.scan_mode === "live"
+                    ? "bg-red-600 text-white"
+                    : "bg-blue-600 text-white"
+                }`}>
+                  {evalMeta.scan_mode === "live" ? "실 스캔" : "데모"}
+                </span>
+              </div>
+              <p className="text-xs text-gray-600 mt-0.5">
+                보고서 PDF 첫 장에 동일하게 표기됩니다.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(evalMeta.selected_tools || []).map((t) => (
+                <span
+                  key={`sel-${t}`}
+                  className="px-2 py-0.5 text-[11px] rounded bg-green-100 text-green-800 border border-green-200"
+                  title="이번 진단에서 수행된 자동 도구"
+                >
+                  ✓ {t}
+                </span>
+              ))}
+              {(evalMeta.excluded_tools || []).map((t) => (
+                <span
+                  key={`exc-${t}`}
+                  className="px-2 py-0.5 text-[11px] rounded bg-gray-100 text-gray-500 border border-gray-200 line-through"
+                  title="이번 진단에서 제외된 도구 (수동 폴백 대상)"
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-1.5 text-xs">
+            <div>
+              <span className="text-gray-500">IdP</span>
+              <span className="ml-1.5 font-medium text-gray-800">
+                {evalMeta.profile_select?.idp_type || "none"}
+              </span>
+            </div>
+            <div>
+              <span className="text-gray-500">SIEM</span>
+              <span className="ml-1.5 font-medium text-gray-800">
+                {evalMeta.profile_select?.siem_type || "none"}
+              </span>
+            </div>
+            {evalMeta.scan_targets?.nmap && (
+              <div className="col-span-1 sm:col-span-2">
+                <span className="text-gray-500">Nmap 대상</span>
+                <span className="ml-1.5 font-mono text-gray-800 break-all">
+                  {evalMeta.scan_targets.nmap}
+                </span>
+              </div>
+            )}
+            {evalMeta.scan_targets?.trivy && (
+              <div className="col-span-1 sm:col-span-2">
+                <span className="text-gray-500">Trivy 대상</span>
+                <span className="ml-1.5 font-mono text-gray-800 break-all">
+                  {evalMeta.scan_targets.trivy}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* 외부 스캔 승인 기록 — 실 스캔이고 메타가 있을 때만 */}
+          {evalMeta.scan_mode === "live" && evalMeta.scan_consent &&
+           Object.keys(evalMeta.scan_consent).length > 0 && (
+            <div className="mt-3 p-3 rounded-lg border border-yellow-300 bg-yellow-50">
+              <p className="text-xs font-semibold text-gray-800 mb-1.5">
+                외부 스캔 승인 기록
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                {evalMeta.scan_consent.approver && (
+                  <div>
+                    <span className="text-gray-500">승인자</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.approver}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.emergency_contact && (
+                  <div>
+                    <span className="text-gray-500">비상 연락처</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.emergency_contact}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.scheduled_window && (
+                  <div>
+                    <span className="text-gray-500">시간대</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.scheduled_window}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.intensity && (
+                  <div>
+                    <span className="text-gray-500">강도</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.intensity}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.exclude_paths && (
+                  <div className="sm:col-span-2">
+                    <span className="text-gray-500">제외 경로</span>
+                    <span className="ml-1.5 text-gray-800 break-all">{evalMeta.scan_consent.exclude_paths}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 이 진단 결과의 출처 — 자동/자가 비율 배지 */}
       {totalSourceCount > 0 && (
