@@ -399,14 +399,18 @@ def _pillar_sort_key(pillar: str) -> int:
 
 
 def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> bytes:
-    """세션 기반 동적 xlsx 생성 — 기존 정적 양식에 폴백 항목 추가.
+    """세션 기반 동적 xlsx 생성 — 기존 정적 양식에 폴백 항목 추가 +
+    공개 URL 자동 점검 결과를 비고/부록 시트에 자동 채움.
 
     동작:
       1) base manual-checklist.xlsx 로드.
       2) 폴백 도구의 Checklist 항목을 DB 에서 조회 (이미 수동 양식에 있는 항목은 제외).
-      3) manual_diagnosis 시트 끝에 카테고리 구분행 + 데이터 행 추가.
-      4) judgment_mapping 시트 끝에 동일 M_id 의 4선택지(_FALLBACK_CHOICES) 추가.
-      5) bytes 로 직렬화.
+      3) 공개 URL 자동 점검 (web_evidence_collector) — HTTP 헤더/DNS/TLS/공개노출/GitHub repo
+      4) manual_diagnosis 시트 끝에 카테고리 구분행 + 데이터 행 추가.
+         각 행의 비고/증적메모 컬럼에 Pillar 관련 자동 점검 요약 미리 채움.
+      5) judgment_mapping 시트 끝에 동일 M_id 의 4선택지(_FALLBACK_CHOICES) 추가.
+      6) 새 시트 "외부 자동 점검 결과" — 자동 점검 raw 결과 정리 (참고용).
+      7) bytes 로 직렬화.
     """
     base = _find_base_template()
     if not base:
@@ -415,6 +419,27 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     wb = openpyxl.load_workbook(base)
     ws_diag = wb["manual_diagnosis"]
     ws_judg = wb["judgment_mapping"]
+
+    # ── 공개 URL 자동 점검 (실패해도 양식 생성은 진행) ───────────────────────
+    extra = session.extra if isinstance(session.extra, dict) else {}
+    scan_targets = extra.get("scan_targets") if isinstance(extra.get("scan_targets"), dict) else {}
+    nmap_target = (scan_targets.get("nmap") or "").strip()
+    trivy_target = (scan_targets.get("trivy") or "").strip()
+    # Trivy target 이 GitHub 형식이면 repo 분석에 활용
+    github_ref = trivy_target if trivy_target and ("github.com" in trivy_target or "/" in trivy_target and ":" not in trivy_target) else ""
+
+    evidence: dict = {}
+    if nmap_target or github_ref:
+        try:
+            from collectors import web_evidence_collector as _wec
+            evidence = _wec.collect_public_evidence(
+                nmap_target=nmap_target,
+                github_repo=github_ref,
+                timeout=8.0,
+            )
+        except Exception as exc:
+            logger.warning("[manual] web evidence collection failed: %s", exc)
+            evidence = {"error": str(exc)}
 
     # 기존 양식에 이미 포함된 (item_no_prefix, maturity) 조합 — 중복 추가 방지.
     existing_keys: set[tuple[str, str]] = set()
@@ -528,6 +553,15 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             if cs.get("alignment"): c.alignment = copy(cs["alignment"])
         append_at += 1
 
+        # Pillar 별 자동 점검 요약 (한 번만 계산해서 같은 Pillar 행에 공유)
+        pillar_evidence_text = ""
+        if evidence and not evidence.get("error"):
+            try:
+                from collectors import web_evidence_collector as _wec
+                pillar_evidence_text = _wec.summarize_for_pillar(evidence, pillar)
+            except Exception:
+                pillar_evidence_text = ""
+
         for cl, item_no_prefix in items:
             m_id = f"M{next_m:03d}"
             next_m += 1
@@ -539,8 +573,8 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
                 cl.maturity or "",
                 cl.item_name or "",
                 cl.criteria or "",
-                None,  # ★ 담당자 선택 (필수) — 빈 칸
-                None,  # 비고/증적메모
+                None,                       # ★ 담당자 선택 (필수) — 빈 칸
+                pillar_evidence_text or None,  # 비고/증적메모 — 자동 점검 요약 미리 채움
             ]
             for col, val in enumerate(row_vals, start=1):
                 c = ws_diag.cell(append_at, col)
@@ -583,9 +617,146 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         dv.add(f"G{first_data_row}:G{last_data_row}")
         ws_diag.add_data_validation(dv)
 
+    # ── 부록 시트: 외부 자동 점검 결과 (참고용) ─────────────────────────────
+    if evidence and not evidence.get("error"):
+        _append_evidence_sheet(wb, evidence)
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _append_evidence_sheet(wb: openpyxl.Workbook, evidence: dict) -> None:
+    """양식에 '외부 자동 점검 결과' 시트 추가 — 양식 비고 자동 채움의 raw 결과 노출.
+
+    사용자가 양식 작성 시 비고에 적힌 한 줄 요약 외에 자세한 발견 사항을 참고할 수 있도록.
+    """
+    ws = wb.create_sheet("외부 자동 점검 결과")
+    bold = Font(name="Arial", size=11, bold=True, color="FF1E3A5F")
+    header_fill = PatternFill("solid", fgColor="FFE7F5F2")
+    section = Font(name="Arial", size=10, bold=True, color="FF0F766E")
+
+    def header(text: str):
+        nonlocal row
+        c = ws.cell(row, 1, text)
+        c.font = bold
+        c.fill = header_fill
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        row += 1
+
+    def section_title(text: str):
+        nonlocal row
+        c = ws.cell(row, 1, text)
+        c.font = section
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        row += 1
+
+    def kv(k: str, v):
+        nonlocal row
+        ws.cell(row, 1, k).font = Font(name="Arial", size=9, color="FF617087")
+        ws.cell(row, 2, str(v) if v is not None else "")
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
+        row += 1
+
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 30
+    ws.column_dimensions["C"].width = 30
+    ws.column_dimensions["D"].width = 40
+
+    row = 1
+    header("Readyz-T 자동 점검 결과 (참고)")
+    kv("생성 시각", evidence.get("generated_at", ""))
+    kv("점검 대상 (Nmap target)", evidence.get("nmap_target") or "(미지정)")
+    kv("점검 대상 (GitHub repo)", evidence.get("github_repo") or "(미지정)")
+    row += 1
+
+    # HTTP 헤더
+    http = evidence.get("http_headers") or {}
+    if http and not http.get("error"):
+        section_title("◆ HTTP 보안 헤더")
+        kv("URL", http.get("url"))
+        kv("Status", http.get("status"))
+        kv("종합 점수", f"{http.get('score', 0):.2f} / 1.0")
+        for k, v in (http.get("assessment") or {}).items():
+            kv(f"  · {k}", v)
+        for i, issue in enumerate(http.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+        row += 1
+
+    # DNS
+    dns = evidence.get("dns") or {}
+    if dns and not dns.get("error"):
+        section_title("◆ DNS 보안 레코드")
+        kv("도메인", dns.get("domain"))
+        kv("종합 점수", f"{dns.get('score', 0):.2f} / 1.0")
+        spf = dns.get("spf") or {}
+        kv("SPF", f"[{spf.get('verdict', '?')}] {spf.get('value', '')}")
+        dmarc = dns.get("dmarc") or {}
+        kv("DMARC", f"[{dmarc.get('verdict', '?')}] {dmarc.get('value', '')}")
+        kv("DKIM 힌트", dns.get("dkim_hint"))
+        caa = dns.get("caa") or {}
+        kv("CAA", f"[{caa.get('verdict', '?')}] {len(caa.get('records', []))}개 발견")
+        for i, issue in enumerate(dns.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+        row += 1
+
+    # TLS
+    tls = evidence.get("tls") or {}
+    if tls and not tls.get("error"):
+        section_title("◆ TLS 인증서")
+        kv("도메인", tls.get("domain"))
+        kv("판정", tls.get("verdict"))
+        kv("발급자", tls.get("issuer"))
+        kv("주체", tls.get("subject"))
+        kv("만료일", tls.get("not_after"))
+        kv("남은 일수", tls.get("days_remaining"))
+        kv("키 유형/길이", f"{tls.get('key_type', '?')} {tls.get('key_bits', '?')}bit")
+        sans = tls.get("sans") or []
+        kv("SAN", ", ".join(sans[:5]) + (f" 외 {len(sans)-5}개" if len(sans) > 5 else ""))
+        for i, issue in enumerate(tls.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+        row += 1
+    elif tls.get("error"):
+        section_title("◆ TLS 인증서")
+        kv("오류", tls.get("error"))
+        row += 1
+
+    # 공개 노출
+    expo = evidence.get("exposure") or {}
+    if expo and not expo.get("error"):
+        section_title("◆ 공개 노출 (security.txt / robots.txt / .well-known/)")
+        kv("기준 URL", expo.get("base_url"))
+        kv("요약", expo.get("summary"))
+        for c in (expo.get("checked") or []):
+            status = c.get("status")
+            path = c.get("path")
+            if status == 200:
+                kv(f"  · {path}", f"HTTP 200 ({c.get('size', 0)}B)")
+            elif status:
+                kv(f"  · {path}", f"HTTP {status}")
+            else:
+                kv(f"  · {path}", c.get("error", "?"))
+        row += 1
+
+    # GitHub repo
+    gh = evidence.get("github") or {}
+    if gh and not gh.get("error"):
+        section_title("◆ GitHub repo 분석")
+        kv("repo", f"{gh.get('owner')}/{gh.get('name')}")
+        kv("default branch", gh.get("default_branch"))
+        kv("Language", gh.get("language"))
+        kv("License", gh.get("license"))
+        kv("Stars", gh.get("stars"))
+        kv("종합 점수", f"{gh.get('score', 0):.2f} / 1.0")
+        for fname, exists in (gh.get("files") or {}).items():
+            kv(f"  · {fname}", "있음" if exists else "없음")
+        ci = gh.get("ci_workflows") or []
+        kv("CI workflows", ", ".join(ci) if ci else "(없음)")
+        for i, issue in enumerate(gh.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+    elif gh.get("error"):
+        section_title("◆ GitHub repo 분석")
+        kv("오류", gh.get("error"))
 
 
 @router.get("/template/{session_id}")
