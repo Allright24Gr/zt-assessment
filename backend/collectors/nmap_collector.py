@@ -1,10 +1,17 @@
 """
 nmap_collector.py — Nmap 래퍼 기반 수집 모듈 (14개 함수)
 엔드포인트: POST /scan/ports, /scan/subnets, /scan/tls
+
+SKT T-Markov 가이드 대응: collect_tls_services / collect_tls_advanced 는
+http_headers_collector.assess_target 결과를 raw_json 에 첨부하고,
+보안 헤더 결함이 있으면 결과를 한 단계 강등(부분충족)한다.
+xlsx 매핑(자동 212항목 1:1) 은 그대로 유지된다.
 """
 from datetime import datetime, timezone
 import os
 import httpx
+
+from collectors import http_headers_collector as _hh
 
 CollectedResult = dict
 
@@ -182,8 +189,18 @@ def collect_tls_ratio() -> CollectedResult:
     return _ok(item_id, maturity, result, mk, ratio, thr, data)
 
 
+def _downgrade(result: str) -> str:
+    """충족 → 부분충족 한 단계 강등. 그 외는 유지."""
+    return "부분충족" if result == "충족" else result
+
+
 def collect_tls_services() -> CollectedResult:
-    """3.3.1.1_2 — TLS 적용 서비스 수: tls_service_count >= 1"""
+    """3.3.1.1_2 — TLS 적용 서비스 수 + CORS·정보노출 헤더 검사.
+
+    base: tls_service_count >= 1 (충족 기준)
+    enhance: HTTP 응답 헤더에서 CORS wildcard 또는 Server/X-Powered-By 정보 노출이
+             있으면 결과를 부분충족으로 강등(가이드 §5 네트워크 Pillar).
+    """
     item_id, maturity = "3.3.1.1_2", "초기"
     mk, thr = "tls_service_count", 1.0
     data, error = _scan_tls({"target_ip": _get_target()})
@@ -191,12 +208,25 @@ def collect_tls_services() -> CollectedResult:
         return _err(item_id, maturity, mk, thr, error, data)
     count = float(data.get("tls_service_count", data.get("metric_value", 0)))
     result = "충족" if count >= thr else "미충족"
-    return _ok(item_id, maturity, result, mk, count, thr, data)
+
+    # HTTP 보안 헤더 추가 검사 — CORS wildcard, 정보 노출.
+    hdr = _hh.assess_target(_get_target())
+    cors_fail = hdr.get("assessment", {}).get("cors_safe") == "fail"
+    info_warn = hdr.get("assessment", {}).get("info_disclosure") == "warn"
+    if cors_fail or info_warn:
+        result = _downgrade(result)
+    enriched = {**data, "security_headers": hdr}
+    return _ok(item_id, maturity, result, mk, count, thr, enriched)
 
 
 def collect_tls_advanced() -> CollectedResult:
-    """3.3.1.3_2 — TLS 1.3 적용률: tls13_ratio >= 0.8"""
-    item_id, maturity = "3.3.1.3_2", "초기"
+    """3.3.1.3_2 — TLS 1.3 적용률 + 보안 응답 헤더 종합 평가.
+
+    base: tls13_ratio >= 0.8 (충족 기준)
+    enhance: HSTS/CSP/X-Frame-Options/X-Content-Type-Options 등 8개 헤더
+             종합 점수가 0.7 미만이면 결과를 한 단계 강등(가이드 §5 §B).
+    """
+    item_id, maturity = "3.3.1.3_2", "향상"
     mk, thr = "tls13_ratio", 0.8
     data, error = _scan_tls({"target_ip": _get_target()})
     if error:
@@ -208,7 +238,13 @@ def collect_tls_advanced() -> CollectedResult:
         result = "부분충족"
     else:
         result = "미충족"
-    return _ok(item_id, maturity, result, mk, ratio, thr, data)
+
+    # 보안 헤더 종합 점수가 낮으면 강등.
+    hdr = _hh.assess_target(_get_target())
+    if hdr.get("score", 0.0) < 0.7:
+        result = _downgrade(result)
+    enriched = {**data, "security_headers": hdr}
+    return _ok(item_id, maturity, result, mk, ratio, thr, enriched)
 
 
 def collect_app_traffic_map() -> CollectedResult:
