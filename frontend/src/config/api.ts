@@ -395,6 +395,34 @@ export function getManualItems(sessionId: number | string, excludedTools?: strin
   });
 }
 
+// 증적 목록 xlsx 다운로드 (가이드 §7 산출물 evidence_register.xlsx).
+// 자동 수집(CollectedData) + 수동 등록(Evidence) 모두 한 시트로 정리.
+export async function downloadEvidenceRegister(sessionId: number | string): Promise<void> {
+  const url = `${API_BASE}/api/report/evidence-register/${sessionId}`;
+  const accessToken = _getTokensFromStorage()?.access_token ?? null;
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  else {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) headers["X-Login-Id"] = loginId;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`증적 목록 다운로드 실패 (HTTP ${res.status})`, res.status, text);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  const today = new Date().toISOString().slice(0, 10);
+  a.download = `evidence-register-${sessionId}-${today}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
 // 세션별 동적 수동 진단 양식 다운로드 (자동 폴백 항목 포함).
 // 기존 정적 /api/manual/template 와 달리 사용자의 IdP/SIEM 환경을 반영해
 // 자동→수동 폴백된 항목까지 xlsx 안에 들어간다.

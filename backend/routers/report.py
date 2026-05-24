@@ -3,6 +3,7 @@ import io
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import (
     DiagnosisSession, DiagnosisResult, MaturityScore,
-    Checklist, Organization, User, ImprovementGuide,
+    Checklist, Organization, User, ImprovementGuide, Evidence, CollectedData,
 )
 from scoring.engine import determine_maturity_level
 from routers.auth import get_current_user, assert_session_access
@@ -624,3 +625,200 @@ def get_standards_mapping(
         "cis_controls_v8": summary["cis_controls_v8"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     })
+
+
+# ─── 증적 목록 xlsx (가이드 §7 산출물) ──────────────────────────────────────
+# 각 진단 결과에 연결된 Evidence(수동) + CollectedData(자동) 를 한 xlsx 로
+# 정리. 컬럼: 항목/Pillar/결과/출처/증적유형/파일/위치/관찰내용/수집시각 등.
+# 가이드 §7 산출물 "evidence_register.xlsx" 에 해당.
+
+def _build_evidence_register_xlsx(session_id: int, db: Session) -> bytes:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
+    user = db.query(User).filter(User.user_id == session.user_id).first()
+
+    # 진단 결과 + Checklist join
+    results = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    # check_id → DiagnosisResult/Checklist 매핑
+    by_check: dict[int, dict] = {}
+    for dr, cl in results:
+        by_check[cl.check_id] = {"dr": dr, "cl": cl}
+
+    # 같은 세션의 모든 Evidence / CollectedData
+    evidences = db.query(Evidence).filter(Evidence.session_id == session_id).all()
+    collected = db.query(CollectedData).filter(CollectedData.session_id == session_id).all()
+    coll_by_check: dict[int, CollectedData] = {c.check_id: c for c in collected}
+
+    # check_id 별로 evidence 묶기 (없으면 [])
+    ev_by_check: dict[int, list[Evidence]] = {}
+    for ev in evidences:
+        ev_by_check.setdefault(ev.check_id, []).append(ev)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "증적 목록"
+
+    header_font = Font(name="Arial", size=10, bold=True, color="FFFFFFFF")
+    header_fill = PatternFill("solid", fgColor="FF1E3A5F")
+    sub_font    = Font(name="Arial", size=9)
+    sub_fill_a  = PatternFill("solid", fgColor="FFFFFFFF")
+    sub_fill_b  = PatternFill("solid", fgColor="FFF8FAFC")
+    result_fill = {
+        "충족":      PatternFill("solid", fgColor="FFDCFCE7"),
+        "부분충족":  PatternFill("solid", fgColor="FFFEF9C3"),
+        "미충족":    PatternFill("solid", fgColor="FFFEE2E2"),
+        "평가불가":  PatternFill("solid", fgColor="FFF3F4F6"),
+    }
+    wrap = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    # 헤더 (가이드 §7: 항목별 파일명, 캡처 위치, 담당자, 민감도, 만료 여부)
+    headers = [
+        "항목ID", "Pillar", "카테고리", "항목명", "성숙도",
+        "진단결과", "점수", "출처(자동/수동)", "도구",
+        "증적유형", "관찰 내용", "파일명", "파일크기(B)", "MIME",
+        "위치/URL", "원인/근거", "영향도", "수집·등록 시각",
+    ]
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(1, col, h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    # 행 폭 설정
+    widths = [12, 12, 22, 36, 8, 10, 6, 14, 10, 14, 50, 28, 12, 16, 36, 36, 8, 22]
+    for col, w in enumerate(widths, start=1):
+        ws.column_dimensions[ws.cell(1, col).column_letter].width = w
+
+    row = 2
+    # check_id 순회 — 결과가 있는 항목 우선
+    for check_id in sorted(by_check.keys()):
+        entry = by_check[check_id]
+        cl = entry["cl"]
+        dr = entry["dr"]
+        evs = ev_by_check.get(check_id, [])
+        coll = coll_by_check.get(check_id)
+        tool = coll.tool if coll else ""
+        source = "수동" if tool == "수동" else ("자동" if tool else "")
+        coll_at = coll.collected_at.isoformat() if coll and coll.collected_at else ""
+
+        # 자동 raw_json 요약 (수집된 metric_value/threshold/issues 등)
+        auto_obs = ""
+        if coll and isinstance(coll.raw_json, dict):
+            rj = coll.raw_json
+            parts = []
+            if "score" in rj:
+                parts.append(f"score={rj.get('score')}")
+            if "metric_value" in rj or coll.metric_value is not None:
+                mv = rj.get("metric_value", coll.metric_value)
+                parts.append(f"{coll.metric_key}={mv}/{coll.threshold}")
+            if rj.get("issues"):
+                parts.append(f"issues={len(rj['issues'])}건")
+            auto_obs = " · ".join(parts)
+
+        def _write_row(r, ev: Optional[Evidence]):
+            vals = [
+                cl.item_id, cl.pillar, cl.category, cl.item_name, cl.maturity,
+                dr.result, round(dr.score or 0.0, 2),
+                source, tool,
+                (ev.source if ev else "자동수집") if (ev or coll) else "",
+                (ev.observed if ev and ev.observed else "") or auto_obs,
+                ev.original_filename if ev and ev.original_filename else "",
+                ev.file_size if ev and ev.file_size else "",
+                ev.mime_type if ev and ev.mime_type else "",
+                ev.location if ev and ev.location else "",
+                ev.reason if ev and ev.reason else "",
+                ev.impact if ev and ev.impact is not None else "",
+                coll_at,
+            ]
+            fill_zebra = sub_fill_b if (r % 2 == 0) else sub_fill_a
+            for col, v in enumerate(vals, start=1):
+                c = ws.cell(r, col, v)
+                c.font = sub_font
+                c.alignment = wrap
+                c.fill = fill_zebra
+            # 결과 컬럼만 색깔로 강조
+            rcell = ws.cell(r, 6)
+            if dr.result in result_fill:
+                rcell.fill = result_fill[dr.result]
+                rcell.font = Font(name="Arial", size=9, bold=True)
+
+        if evs:
+            # 같은 check_id 에 evidence 가 여러 개면 각 evidence 별 한 행씩
+            for ev in evs:
+                _write_row(row, ev)
+                row += 1
+        else:
+            _write_row(row, None)
+            row += 1
+
+    # 메타 정보 시트
+    ws_meta = wb.create_sheet("메타")
+    ws_meta.column_dimensions["A"].width = 20
+    ws_meta.column_dimensions["B"].width = 60
+    meta_rows = [
+        ("기관",           org.name if org else ""),
+        ("담당자",         user.name if user else ""),
+        ("세션 ID",        session.session_id),
+        ("진단 시작",      session.started_at.isoformat() if session.started_at else ""),
+        ("진단 완료",      session.completed_at.isoformat() if session.completed_at else ""),
+        ("상태",           session.status),
+        ("총 항목 수",     len(by_check)),
+        ("증적 파일 수",   sum(1 for ev in evidences if ev.file_path)),
+        ("자동 수집 수",   len([c for c in collected if c.tool != "수동"])),
+        ("수동 등록 수",   len([c for c in collected if c.tool == "수동"])),
+        ("생성 시각",      datetime.now(timezone.utc).isoformat()),
+    ]
+    for r, (k, v) in enumerate(meta_rows, start=1):
+        ws_meta.cell(r, 1, k).font = Font(name="Arial", size=10, bold=True, color="FF617087")
+        ws_meta.cell(r, 2, str(v) if v is not None else "")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/evidence-register/{session_id}")
+async def download_evidence_register(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """증적 목록 xlsx 다운로드 — 가이드 §7 산출물 "evidence_register.xlsx".
+
+    각 진단 결과에 연결된 자동 수집(CollectedData) + 수동 등록 증적(Evidence)
+    을 한 xlsx 로 정리. 컬럼: 항목/결과/출처/증적유형/파일/위치/관찰내용/시각 등.
+    """
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
+    try:
+        data = await asyncio.to_thread(_build_evidence_register_xlsx, session_id, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[report] evidence register build failed: %s", exc)
+        raise HTTPException(status_code=500, detail="증적 목록 생성에 실패했습니다.")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"evidence-register-{session_id}-{today}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

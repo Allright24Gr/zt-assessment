@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import {
   createAssessmentShare,
   downloadReportPdf,
+  downloadEvidenceRegister,
   listAssessmentShares,
   revokeAssessmentShare,
   getOcsfEvents,
@@ -1531,7 +1532,7 @@ export function Reporting() {
             <h2 className="mb-2">보고서 PDF 내보내기</h2>
             <p className="text-gray-500 mb-2">진단 결과 전체를 PDF 문서로 다운로드합니다.</p>
             <p className="text-sm text-gray-500 mb-8">
-              표지 · 필러별 점수 · 체크리스트 세부항목 · 개선 권고 순으로 구성됩니다.
+              표지(평가 메타·승인 기록) · 필러별 점수 · 체크리스트 세부항목 · 개선 권고 순으로 구성됩니다.
             </p>
             <div className="flex justify-center">
               <button
@@ -1561,6 +1562,44 @@ export function Reporting() {
               >
                 <Download size={18} />
                 {pdfDownloading ? "생성 중..." : "PDF 다운로드"}
+              </button>
+            </div>
+          </div>
+
+          {/* 증적 목록 xlsx — 가이드 §7 산출물 evidence_register.xlsx */}
+          <div className="bg-white rounded-xl border border-gray-200 p-8">
+            <div className="flex items-start gap-4">
+              <FileText className="text-emerald-500 shrink-0 mt-1" size={36} />
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-semibold text-gray-800">증적 목록 (Excel)</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  자동 수집(CollectedData) + 수동 등록 증적(Evidence) 을 한 xlsx 로 정리.
+                  항목별 결과 · 출처 · 파일명 · 위치 · 관찰 내용 · 수집 시각 18개 컬럼.
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  SKT 가이드 §7 산출물 패키지 — <code>evidence_register.xlsx</code>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!sessionId) return;
+                  try {
+                    await downloadEvidenceRegister(sessionId);
+                    toast.success("증적 목록 다운로드가 시작되었습니다.");
+                  } catch (err) {
+                    const status = err instanceof ApiError ? err.status : 0;
+                    if (status === 401) toast.error("로그인이 필요합니다.");
+                    else if (status === 403) toast.error("다운로드 권한이 없습니다.");
+                    else if (status === 404) toast.error("세션을 찾을 수 없습니다.");
+                    else toast.error("증적 목록 생성에 실패했습니다.");
+                  }
+                }}
+                disabled={!sessionId}
+                className="shrink-0 px-5 py-2.5 rounded-lg flex items-center gap-2 text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                <Download size={16} />
+                xlsx 다운로드
               </button>
             </div>
           </div>
