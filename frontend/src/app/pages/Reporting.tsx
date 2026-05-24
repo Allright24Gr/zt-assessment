@@ -758,8 +758,12 @@ export function Reporting() {
           )}
 
           {/* SKT 가이드 §3 평가 착수 전 확정사항 — 버전 / 자산 / 데이터 등급 / 판정자 */}
-          {(evalMeta.evaluation_version || evalMeta.evaluation_scope_assets ||
-            evalMeta.data_classifications || evalMeta.reviewers) && (
+          {(
+            (evalMeta.evaluation_version && Object.keys(evalMeta.evaluation_version).length > 0) ||
+            (evalMeta.evaluation_scope_assets && evalMeta.evaluation_scope_assets.length > 0) ||
+            (evalMeta.data_classifications && evalMeta.data_classifications.length > 0) ||
+            (evalMeta.reviewers && Object.keys(evalMeta.reviewers).length > 0)
+          ) && (
             <details className="mt-3 rounded-lg border border-gray-200 bg-white">
               <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50">
                 평가 착수 전 확정사항 (SKT 가이드 §3)

@@ -931,9 +931,75 @@ def _build_evidence_register_xlsx(session_id: int, db: Session) -> bytes:
         ("수동 등록 수",   len([c for c in collected if c.tool == "수동"])),
         ("생성 시각",      datetime.now(timezone.utc).isoformat()),
     ]
+
+    # SKT 가이드 §3 평가 착수 전 확정사항 — evidence_register 메타 시트에도 동기화.
+    em = build_evaluation_meta(session)
+    eval_ver = em.get("evaluation_version") or {}
+    scope_as = em.get("evaluation_scope_assets") or []
+    data_cls = em.get("data_classifications") or []
+    reviewers_m = em.get("reviewers") or {}
+
+    if em.get("scan_mode"):
+        meta_rows.append(("진단 모드", em.get("scan_mode")))
+    if em.get("selected_tools"):
+        meta_rows.append(("수행 도구", ", ".join(em.get("selected_tools"))))
+    if em.get("excluded_tools"):
+        meta_rows.append(("제외 도구", ", ".join(em.get("excluded_tools"))))
+    if eval_ver.get("version_label"):
+        meta_rows.append(("버전 라벨", eval_ver["version_label"]))
+    if eval_ver.get("git_commit"):
+        meta_rows.append(("Git commit", eval_ver["git_commit"]))
+    if eval_ver.get("frontend_deployment"):
+        meta_rows.append(("Frontend deployment", eval_ver["frontend_deployment"]))
+    if eval_ver.get("backend_deployment"):
+        meta_rows.append(("Backend deployment", eval_ver["backend_deployment"]))
+    if reviewers_m.get("app_owner"):
+        meta_rows.append(("App owner", reviewers_m["app_owner"]))
+    if reviewers_m.get("backend_owner"):
+        meta_rows.append(("Backend owner", reviewers_m["backend_owner"]))
+    if reviewers_m.get("cloud_owner"):
+        meta_rows.append(("Cloud owner", reviewers_m["cloud_owner"]))
+    if reviewers_m.get("security_reviewer"):
+        meta_rows.append(("Security reviewer", reviewers_m["security_reviewer"]))
+
     for r, (k, v) in enumerate(meta_rows, start=1):
         ws_meta.cell(r, 1, k).font = Font(name="Arial", size=10, bold=True, color="FF617087")
         ws_meta.cell(r, 2, str(v) if v is not None else "")
+
+    # SKT 가이드 §3 — 자산 목록 / 데이터 등급은 별도 작은 시트로 분리.
+    if scope_as:
+        ws_assets = wb.create_sheet("평가 범위 자산")
+        ws_assets.column_dimensions["A"].width = 8
+        ws_assets.column_dimensions["B"].width = 24
+        ws_assets.column_dimensions["C"].width = 60
+        ws_assets.cell(1, 1, "포함").font = Font(name="Arial", size=10, bold=True, color="FFFFFFFF")
+        ws_assets.cell(1, 2, "자산").font = Font(name="Arial", size=10, bold=True, color="FFFFFFFF")
+        ws_assets.cell(1, 3, "값").font = Font(name="Arial", size=10, bold=True, color="FFFFFFFF")
+        for c in (ws_assets.cell(1, 1), ws_assets.cell(1, 2), ws_assets.cell(1, 3)):
+            c.fill = PatternFill("solid", fgColor="FF1E3A5F")
+        for ri, a in enumerate(scope_as, start=2):
+            ws_assets.cell(ri, 1, "✓" if a.get("included") else "—")
+            ws_assets.cell(ri, 2, a.get("name", ""))
+            ws_assets.cell(ri, 3, a.get("value", ""))
+
+    if data_cls:
+        ws_data = wb.create_sheet("데이터 등급")
+        ws_data.column_dimensions["A"].width = 10
+        ws_data.column_dimensions["B"].width = 28
+        ws_data.column_dimensions["C"].width = 40
+        sens_fill = {"높음": "FFFEE2E2", "중간": "FFFEF9C3", "낮음": "FFF3F4F6"}
+        ws_data.cell(1, 1, "민감도").font = Font(name="Arial", size=10, bold=True, color="FFFFFFFF")
+        ws_data.cell(1, 2, "데이터 항목").font = Font(name="Arial", size=10, bold=True, color="FFFFFFFF")
+        ws_data.cell(1, 3, "보관 위치").font = Font(name="Arial", size=10, bold=True, color="FFFFFFFF")
+        for c in (ws_data.cell(1, 1), ws_data.cell(1, 2), ws_data.cell(1, 3)):
+            c.fill = PatternFill("solid", fgColor="FF1E3A5F")
+        for ri, d in enumerate(data_cls, start=2):
+            sens = d.get("sensitivity", "")
+            sc = ws_data.cell(ri, 1, sens)
+            if sens in sens_fill:
+                sc.fill = PatternFill("solid", fgColor=sens_fill[sens])
+            ws_data.cell(ri, 2, d.get("name", ""))
+            ws_data.cell(ri, 3, d.get("storage_location", ""))
 
     buf = io.BytesIO()
     wb.save(buf)
