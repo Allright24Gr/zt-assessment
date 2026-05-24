@@ -466,8 +466,33 @@ def _make_pdf(data: dict) -> bytes:
 
     story.append(PageBreak())
 
-    # ── 4. 개선 권고 ──────────────────────────────────────────────────────────
-    story += [Paragraph("개선 권고", h2), Spacer(1, 0.2*cm)]
+    # ── 4. 개선 권고 (SKT 가이드 §8 30/60/90일 로드맵) ─────────────────────
+    story += [Paragraph("개선 권고 — 30/60/90일 로드맵", h2), Spacer(1, 0.2*cm)]
+
+    # SKT 가이드 §8 권장 활동 (각 단계별)
+    term_label_map = {
+        "단기": "단기 (30일 — quick win)",
+        "중기": "중기 (60일 — 정착)",
+        "장기": "장기 (90일 — 운영)",
+    }
+    term_guide_map = {
+        "단기": (
+            "권장 활동: 평가 범위 확정 · 데모/운영 데이터 분리 · 관리자 MFA 강제 · "
+            "Vercel·Railway·Supabase·Notion·Drive 권한 목록 정리 · CORS·보안 헤더 검토",
+            "완료 증거: 권한 표, 설정 캡처, deployment id, 보안 헤더 diff",
+        ),
+        "중기": (
+            "권장 활동: API 인증/인가 점검 · Supabase RLS 검증 · Drive/Notion 공유 최소화 · "
+            "secret rotation · dependency/Trivy 스캔 정례화",
+            "완료 증거: 테스트 결과, rotation 로그, Trivy/SCA 리포트",
+        ),
+        "장기": (
+            "권장 활동: audit log·보관 기간 정책 확정 · LLM 데이터 처리 정책 문서화 · "
+            "incident runbook 작성 · Readyz-T 재평가 수행",
+            "완료 증거: 정책 문서, 로그 샘플, 재평가 점수 비교표",
+        ),
+    }
+    guide_box_sty = sty("guide_box", fontSize=7, leading=9, textColor=colors.HexColor("#374151"))
 
     if not imps:
         story.append(Paragraph("미충족·부분충족 항목에 대한 개선 권고가 없습니다.", body))
@@ -476,8 +501,31 @@ def _make_pdf(data: dict) -> bytes:
             term_items = [t for t in imps if t["term"] == term]
             if not term_items:
                 continue
-            term_label = {"단기": "단기 (0–6개월)", "중기": "중기 (6–18개월)", "장기": "장기 (18개월+)"}[term]
+            term_label = term_label_map[term]
             story += [Paragraph(term_label, h3), Spacer(1, 0.1*cm)]
+            # 가이드 §8 권장 활동 안내 박스
+            guide_act, guide_ev = term_guide_map.get(term, ("", ""))
+            if guide_act:
+                guide_rows = [[
+                    Paragraph(
+                        f"<b>SKT 가이드 §8</b><br/>{guide_act}<br/><font color='#6b7280'>{guide_ev}</font>",
+                        guide_box_sty,
+                    )
+                ]]
+                story.append(Table(
+                    guide_rows,
+                    colWidths=[W],
+                    style=TableStyle([
+                        ("FONTNAME",      (0,0), (-1,-1), F),
+                        ("BACKGROUND",    (0,0), (-1,-1), colors.HexColor("#f8fafc")),
+                        ("BOX",           (0,0), (-1,-1), 0.4, colors.HexColor("#cbd5e1")),
+                        ("LEFTPADDING",   (0,0), (-1,-1), 8),
+                        ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+                        ("TOPPADDING",    (0,0), (-1,-1), 5),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                    ]),
+                ))
+                story.append(Spacer(1, 0.15*cm))
 
             hdr = ["필러", "개선 과제", "우선순위", "도구"]
             rows = [hdr]

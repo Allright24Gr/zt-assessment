@@ -234,7 +234,12 @@ function getRoadmapMeta(task: {
   };
 }
 
-const TERM_LABELS: Record<string, string> = { 단기: "단기 (0–6개월)", 중기: "중기 (6–18개월)", 장기: "장기 (18개월+)" };
+// SKT 가이드 §8 30/60/90일 개선 로드맵 톤에 맞춤. 각 단계에 권장 활동 안내.
+const TERM_LABELS: Record<string, string> = {
+  단기: "단기 (30일 — quick win)",
+  중기: "중기 (60일 — 정착)",
+  장기: "장기 (90일 — 운영)",
+};
 const TERM_COLORS: Record<string, string> = {
   단기: "border-red-200 bg-red-50",
   중기: "border-yellow-200 bg-yellow-50",
@@ -244,6 +249,27 @@ const TERM_HEADER: Record<string, string> = {
   단기: "text-red-700",
   중기: "text-yellow-700",
   장기: "text-blue-700",
+};
+// SKT 가이드 §8 — 각 단계별 권장 활동 + 완료 증거.
+const TERM_GUIDE_ACTIVITIES: Record<string, { activities: string; evidence: string }> = {
+  단기: {
+    activities:
+      "평가 범위 확정 · 데모/운영 데이터 분리 · 관리자 MFA 강제 · " +
+      "Vercel·Railway·Supabase·Notion·Drive 권한 목록 정리 · CORS·보안 헤더 검토",
+    evidence: "권한 표, 설정 캡처, deployment id, 보안 헤더 diff",
+  },
+  중기: {
+    activities:
+      "API 인증/인가 점검 · Supabase RLS 검증 · Drive/Notion 공유 최소화 · " +
+      "secret rotation · dependency/Trivy 스캔 정례화",
+    evidence: "테스트 결과, rotation 로그, Trivy/SCA 리포트",
+  },
+  장기: {
+    activities:
+      "audit log·보관 기간 정책 확정 · LLM 데이터 처리 정책 문서화 · " +
+      "incident runbook 작성 · Readyz-T 재평가 수행",
+    evidence: "정책 문서, 로그 샘플, 재평가 점수 비교표",
+  },
 };
 
 export function Reporting() {
@@ -1263,9 +1289,21 @@ export function Reporting() {
 
           {/* 칸반 보드 */}
           <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
-            {byTerm.map(({ term, tasks }) => (
+            {byTerm.map(({ term, tasks }) => {
+              const guide = TERM_GUIDE_ACTIVITIES[term];
+              return (
               <div key={term} className={`rounded-xl border p-4 ${TERM_COLORS[term]}`}>
-                <h3 className={`text-sm font-bold mb-3 ${TERM_HEADER[term]}`}>{TERM_LABELS[term]}</h3>
+                <h3 className={`text-sm font-bold mb-2 ${TERM_HEADER[term]}`}>{TERM_LABELS[term]}</h3>
+                {/* SKT 가이드 §8 — 각 단계별 권장 활동 안내 */}
+                {guide && (
+                  <div className="mb-3 rounded-lg border border-white/60 bg-white/70 p-2.5 text-[11px] leading-relaxed">
+                    <p className="font-semibold text-gray-700 mb-0.5">SKT 가이드 §8 권장 활동</p>
+                    <p className="text-gray-600">{guide.activities}</p>
+                    <p className="mt-1 text-gray-500">
+                      <span className="font-medium">완료 증거:</span> {guide.evidence}
+                    </p>
+                  </div>
+                )}
                 <div className="space-y-3">
                   {tasks.length === 0 ? (
                     <p className="text-xs text-gray-500 text-center py-4">과제 없음</p>
@@ -1365,7 +1403,8 @@ export function Reporting() {
                   })}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
