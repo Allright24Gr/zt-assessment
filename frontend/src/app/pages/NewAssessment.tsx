@@ -151,6 +151,12 @@ export function NewAssessment() {
 
   // 데모/실 스캔 모드: 기본은 데모(외부 시스템 미접근).
   const [scanMode, setScanMode] = useState<"demo" | "live">("demo");
+  // user1(박기웅) 은 시연 안전을 위해 *데모 모드만 허용* — 실 스캔 비활성.
+  const isDemoOnlyUser = (user?.id ?? "") === "user1";
+  // user1 이 어쩌다 live 였더라도 강제로 demo 로 되돌림.
+  useEffect(() => {
+    if (isDemoOnlyUser && scanMode !== "demo") setScanMode("demo");
+  }, [isDemoOnlyUser, scanMode]);
   // 외부 스캔 동의 체크박스 (작업 C)
   const [consentExternalScan, setConsentExternalScan] = useState(false);
   // 외부 스캔 승인 메타 (SKT 가이드 §3·§4 — 승인자/시간/강도/제외/비상연락처)
@@ -541,15 +547,21 @@ export function NewAssessment() {
                   </div>
                 </label>
                 <label
-                  className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                    isLive ? "border-red-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  className={`flex items-start gap-3 p-3 border rounded-lg transition-colors ${
+                    isDemoOnlyUser
+                      ? "border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed"
+                      : isLive
+                      ? "border-red-500 bg-white shadow-sm cursor-pointer"
+                      : "border-gray-200 bg-white hover:bg-gray-50 cursor-pointer"
                   }`}
+                  title={isDemoOnlyUser ? "이 계정은 시연용 데모 계정이라 실 스캔이 비활성화되어 있습니다." : undefined}
                 >
                   <input
                     type="radio"
                     name="scanMode"
                     value="live"
                     checked={isLive}
+                    disabled={isDemoOnlyUser}
                     onChange={() => setScanMode("live")}
                     className="mt-1 w-4 h-4"
                   />
@@ -557,9 +569,16 @@ export function NewAssessment() {
                     <div className="flex items-center gap-1.5">
                       <Activity size={14} className="text-red-600" />
                       <p className="text-sm font-semibold text-gray-800">실 스캔 모드</p>
+                      {isDemoOnlyUser && (
+                        <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">
+                          데모 계정 비활성
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-gray-600 mt-0.5">
-                      입력한 외부 시스템을 실제로 스캔합니다. 권한 보유 자산만 대상으로 사용하세요.
+                      {isDemoOnlyUser
+                        ? "박기웅(user1)은 시연용 계정이라 외부 시스템에 실제로 스캔하지 않습니다."
+                        : "입력한 외부 시스템을 실제로 스캔합니다. 권한 보유 자산만 대상으로 사용하세요."}
                     </p>
                   </div>
                 </label>

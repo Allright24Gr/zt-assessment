@@ -903,7 +903,10 @@ def get_result(
     # 수동 미제출·자동 미수집 항목도 "평가불가 (미제출)" 로 노출 — 가이드 §6
     # 정신에 맞춰 *진단 안 한 항목* 자체를 결과에서 빠뜨리지 않음.
     # pillar_scope 활성 Pillar 만 노출 (사용자가 진단 범위에서 선택하지 않은 Pillar 는 제외).
+    # frontend PILLARS.key 는 "Identify/Device/Network/System/Application/Data" (영문 대문자).
+    # 안전을 위해 소문자 변형도 같이 매핑.
     _PILLAR_KEY_TO_NAME = {
+        "identify":    "식별자 및 신원",
         "identity":    "식별자 및 신원",
         "device":      "기기 및 엔드포인트",
         "network":     "네트워크",
@@ -914,7 +917,17 @@ def get_result(
     extra_meta = session.extra if isinstance(session.extra, dict) else {}
     pillar_scope_dict = extra_meta.get("pillar_scope") if isinstance(extra_meta.get("pillar_scope"), dict) else {}
     if pillar_scope_dict:
-        active_pillars = {name for key, name in _PILLAR_KEY_TO_NAME.items() if pillar_scope_dict.get(key)}
+        # key 는 대소문자 무시하고 lookup
+        active_pillars: set = set()
+        for k, v in pillar_scope_dict.items():
+            if not v:
+                continue
+            nm = _PILLAR_KEY_TO_NAME.get(str(k).lower())
+            if nm:
+                active_pillars.add(nm)
+        if not active_pillars:
+            # scope 입력은 있는데 매핑된 게 하나도 없으면 전체 활성으로 fallback
+            active_pillars = set(_PILLAR_KEY_TO_NAME.values())
     else:
         active_pillars = set(_PILLAR_KEY_TO_NAME.values())
 
