@@ -1243,6 +1243,17 @@ export function Reporting() {
                   {/* 카테고리 (예: "1.2.1 다중인증") 단위로 묶고, 안에 4단계 (기존/초기/향상/최적화) row 표시 */}
                   {(() => {
                     const MATURITY_ORDER: Record<string, number> = { 기존: 1, 초기: 2, 향상: 3, 최적화: 4 };
+                    // 도구명 표시 라벨 — 자동/수동 메타 없이 도구 이름만 노출.
+                    const TOOL_DISPLAY: Record<string, string> = {
+                      keycloak: "Keycloak", wazuh: "Wazuh", nmap: "Nmap", trivy: "Trivy",
+                      "수동": "수동",
+                    };
+                    const toolLabel = (t?: string) => {
+                      const key = (t || "").trim().toLowerCase();
+                      if (!key) return "";
+                      if (key === "수동" || t === "수동") return "수동";
+                      return TOOL_DISPLAY[key] ?? (t || "");
+                    };
                     const byCategory = items.reduce<Record<string, typeof items>>((acc, d) => {
                       const key = d.category;
                       if (!acc[key]) acc[key] = [];
@@ -1266,6 +1277,15 @@ export function Reporting() {
                         : sortedLevels[sortedLevels.length - 1];
                       const repColor = getMaturityColor(repLevel.maturity as string);
                       const passCount = passedLevels.length;
+                      // 카테고리 안 4단계의 도구 set — 수동 있으면 포함, "자동" 메타 없이 도구 이름만.
+                      const categoryTools = Array.from(new Set(
+                        sortedLevels.map((l) => toolLabel(l.tool)).filter(Boolean)
+                      ));
+                      // 자동 도구 먼저, 수동을 마지막에 두기 (시각적 그룹화)
+                      const sortedCategoryTools = [
+                        ...categoryTools.filter((t) => t !== "수동"),
+                        ...categoryTools.filter((t) => t === "수동"),
+                      ];
 
                       return (
                         <details
@@ -1281,11 +1301,18 @@ export function Reporting() {
                                 <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
                                   {passCount}/{sortedLevels.length} 단계 충족
                                 </span>
-                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                                  {repLevel.diagnosisType === repLevel.tool
-                                    ? repLevel.diagnosisType
-                                    : `${repLevel.diagnosisType} / ${repLevel.tool}`}
-                                </span>
+                                {sortedCategoryTools.map((t) => (
+                                  <span
+                                    key={t}
+                                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                                      t === "수동"
+                                        ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
+                                        : "bg-slate-100 text-slate-700 border border-slate-200"
+                                    }`}
+                                  >
+                                    {t}
+                                  </span>
+                                ))}
                               </div>
                               <p className="font-semibold text-gray-900">{category}</p>
                             </div>
@@ -1325,6 +1352,17 @@ export function Reporting() {
                                         }`}>
                                           {raw}
                                         </span>
+                                        {toolLabel(level.tool) && (
+                                          <span
+                                            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                              toolLabel(level.tool) === "수동"
+                                                ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
+                                                : "bg-slate-100 text-slate-700 border border-slate-200"
+                                            }`}
+                                          >
+                                            {toolLabel(level.tool)}
+                                          </span>
+                                        )}
                                         {raw === "평가불가" && (level.unevaluableReasonLabel || level.unevaluableReasonCode) && (
                                           <span
                                             className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200"
