@@ -81,6 +81,9 @@ class Checklist(Base):
     maturity_score = Column(Integer, nullable=False)
     diagnosis_type = Column(String(20), nullable=False)
     tool = Column(String(100), nullable=False)
+    # 세부 질문 (xlsx '세부 질문' 컬럼) — 실제 진단 설문 텍스트.
+    # 예: "사용자 목록에 대한 문서화가 되어 있는가?"
+    question = Column(Text, nullable=True)
     evidence = Column(Text, nullable=True)
     criteria = Column(Text, nullable=True)
     fields = Column(Text, nullable=True)

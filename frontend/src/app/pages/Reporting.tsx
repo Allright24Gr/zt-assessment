@@ -1274,9 +1274,12 @@ export function Reporting() {
                               }`}>
                                 {raw}
                               </span>
-                              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${scoreColors.badge}`}>
-                                {maturityLabel(getMaturityLevel(detail.score))}
-                              </span>
+                              {/* 미충족/평가불가 항목엔 maturity 라벨 숨김 — 의미 없는 정보 노출 차단 */}
+                              {raw !== "미충족" && raw !== "평가불가" && (
+                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${scoreColors.badge}`}>
+                                  {maturityLabel(getMaturityLevel(detail.score))}
+                                </span>
+                              )}
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
                                 {detail.diagnosisType === detail.tool
                                   ? detail.diagnosisType

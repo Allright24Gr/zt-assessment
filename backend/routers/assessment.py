@@ -869,6 +869,7 @@ def get_result(
             collected_by_check[r.check_id] = r.raw_json
 
     checklist_results = []
+    submitted_check_ids: set[int] = set()
     for dr, cl in results:
         raw = collected_by_check.get(cl.check_id) or {}
         entry = {
@@ -882,6 +883,7 @@ def get_result(
             "tool":           cl.tool,
             "result":         dr.result,
             "score":          dr.score or 0.0,
+            "question":       cl.question or "",
             "evidence":       cl.evidence or "",
             "criteria":       cl.criteria or "",
             "fields":         cl.fields or "",
@@ -896,6 +898,57 @@ def get_result(
                 entry["unevaluable_reason_code"]  = rc
                 entry["unevaluable_reason_label"] = raw.get("reason_label") or UNAVAILABLE_REASONS.get(rc, "")
         checklist_results.append(entry)
+        submitted_check_ids.add(cl.check_id)
+
+    # 수동 미제출·자동 미수집 항목도 "평가불가 (미제출)" 로 노출 — 가이드 §6
+    # 정신에 맞춰 *진단 안 한 항목* 자체를 결과에서 빠뜨리지 않음.
+    # pillar_scope 활성 Pillar 만 노출 (사용자가 진단 범위에서 선택하지 않은 Pillar 는 제외).
+    _PILLAR_KEY_TO_NAME = {
+        "identity":    "식별자 및 신원",
+        "device":      "기기 및 엔드포인트",
+        "network":     "네트워크",
+        "system":      "시스템",
+        "application": "애플리케이션 및 워크로드",
+        "data":        "데이터",
+    }
+    extra_meta = session.extra if isinstance(session.extra, dict) else {}
+    pillar_scope_dict = extra_meta.get("pillar_scope") if isinstance(extra_meta.get("pillar_scope"), dict) else {}
+    if pillar_scope_dict:
+        active_pillars = {name for key, name in _PILLAR_KEY_TO_NAME.items() if pillar_scope_dict.get(key)}
+    else:
+        active_pillars = set(_PILLAR_KEY_TO_NAME.values())
+
+    all_checklists = db.query(Checklist).all()
+    for cl in all_checklists:
+        if cl.check_id in submitted_check_ids:
+            continue
+        if cl.pillar not in active_pillars:
+            continue
+        is_manual = (cl.diagnosis_type or "").strip() == "수동" or (cl.tool or "").strip() == "수동"
+        reason_code = "manual_not_submitted" if is_manual else "auto_not_collected"
+        reason_label = "수동 진단 양식 미제출 — 양식 다운로드 후 작성·업로드 시 점수 산정" if is_manual \
+                       else "자동 수집 결과 없음 — 도구 미연결 또는 진단 미실행"
+        checklist_results.append({
+            "id":             cl.item_id,
+            "pillar":         cl.pillar,
+            "category":       cl.category,
+            "item":           cl.item_name,
+            "maturity":       cl.maturity,
+            "maturity_score": cl.maturity_score,
+            "diagnosis_type": cl.diagnosis_type,
+            "tool":           cl.tool,
+            "result":         "평가불가",
+            "score":          0.0,
+            "question":       cl.question or "",
+            "evidence":       cl.evidence or "",
+            "criteria":       cl.criteria or "",
+            "fields":         cl.fields or "",
+            "logic":          cl.logic or "",
+            "exceptions":     cl.exceptions or "",
+            "recommendation": "",
+            "unevaluable_reason_code":  reason_code,
+            "unevaluable_reason_label": reason_label,
+        })
 
     return {
         "session": {
@@ -2165,6 +2218,7 @@ def _build_result_payload(db: Session, session: DiagnosisSession) -> dict:
             "tool":           cl.tool,
             "result":         dr.result,
             "score":          dr.score or 0.0,
+            "question":       cl.question or "",
             "evidence":       cl.evidence or "",
             "criteria":       cl.criteria or "",
             "fields":         cl.fields or "",

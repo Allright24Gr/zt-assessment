@@ -42,6 +42,8 @@ export interface ChecklistItemResult {
   tool: string;
   result: AssessmentResult;
   score: number;
+  /** 세부 질문 (xlsx '세부 질문' 컬럼) — UI 카드 메인 텍스트 */
+  question?: string;
   evidence: string;
   criteria: string;
   fields: string;
