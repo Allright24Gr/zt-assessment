@@ -314,7 +314,9 @@ export function History() {
                       <td className="py-3 px-4">
                         {session.score !== null ? (
                           <>
-                            <span className="font-semibold">{session.score}</span>
+                            <span className="font-semibold">
+                              {typeof session.score === "number" ? session.score.toFixed(2) : session.score}
+                            </span>
                             <span className="text-gray-400 text-sm"> / 4.0</span>
                           </>
                         ) : (
@@ -397,7 +399,7 @@ export function History() {
                 </div>
                 <p className="text-xs text-gray-500 mb-1">{session.date} / {session.manager}</p>
                 <p className="text-2xl font-bold" style={{ color: COMPARE_COLORS[idx % COMPARE_COLORS.length] }}>
-                  {session.score ?? "-"}
+                  {typeof session.score === "number" ? session.score.toFixed(2) : "-"}
                   <span className="text-sm font-normal text-gray-400"> / 4.0</span>
                 </p>
               </div>
