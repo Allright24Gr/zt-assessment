@@ -98,11 +98,15 @@ export function NewAssessment() {
     if (drafted) return;
 
     const p = user.profile || {};
+    // backend 가 email 비워두면 `{login_id}@local` placeholder 를 만드는데,
+    // 우리 이메일 정규식 fail 이라 빈 칸으로 두어 사용자가 직접 입력하게.
+    const userEmail = user.email ?? "";
+    const isLocalPlaceholder = userEmail.endsWith("@local") || /@local$/.test(userEmail);
     const next = {
       orgName:      p.org_name      ?? user.orgName ?? "",
       manager:      user.username   ?? "",
       department:   p.department    ?? "",
-      email:        user.email      ?? "",
+      email:        isLocalPlaceholder ? "" : userEmail,
       contact:      p.contact       ?? "",
       orgType:      p.org_type      ?? "기업",
       infraType:    p.infra_type    ?? "온프레미스",

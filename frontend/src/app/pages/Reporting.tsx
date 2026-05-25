@@ -548,9 +548,14 @@ export function Reporting() {
     [],
   );
 
+  // 위험도 정렬 — Critical > High > Medium > Low (그 외는 맨 뒤).
+  const PRIORITY_RANK: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+  const sortByPriority = (a: Improvement, b: Improvement) =>
+    (PRIORITY_RANK[a.priority] ?? 99) - (PRIORITY_RANK[b.priority] ?? 99);
+
   const byTerm = ["단기", "중기", "장기"].map((term) => ({
     term,
-    tasks: improvements.filter((t) => t.term === term),
+    tasks: improvements.filter((t) => t.term === term).slice().sort(sortByPriority),
   }));
 
   // 자동/자가 비율 — checklistDetails 의 tool / rawResult 를 source 별로 카운트
@@ -936,7 +941,9 @@ export function Reporting() {
                 <h2 className="text-red-900">위험 영역</h2>
               </div>
               <div className="space-y-2">
-                {session.errors.map((error, i) => (
+                {[...session.errors]
+                  .sort((a, b) => (PRIORITY_RANK[a.severity ?? ""] ?? 99) - (PRIORITY_RANK[b.severity ?? ""] ?? 99))
+                  .map((error, i) => (
                   <div key={i} className="flex items-center justify-between p-3 bg-white rounded-lg border border-red-100">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -1016,7 +1023,7 @@ export function Reporting() {
               <div>
                 <p className="text-blue-200 text-sm mb-1">종합 성숙도 등급</p>
                 <h1 className="text-6xl font-bold mb-2">
-                  {session.score !== null ? session.score : "-"}
+                  {typeof session.score === "number" ? session.score.toFixed(2) : "-"}
                   <span className="ml-2 text-2xl font-semibold text-blue-200">/ 4.0</span>
                 </h1>
                 <p className="text-blue-200">
@@ -1271,7 +1278,9 @@ export function Reporting() {
                                 {maturityLabel(getMaturityLevel(detail.score))}
                               </span>
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                                {detail.diagnosisType} / {detail.tool}
+                                {detail.diagnosisType === detail.tool
+                                  ? detail.diagnosisType
+                                  : `${detail.diagnosisType} / ${detail.tool}`}
                               </span>
                               {raw === "평가불가" && (detail.unevaluableReasonLabel || detail.unevaluableReasonCode) && (
                                 <span

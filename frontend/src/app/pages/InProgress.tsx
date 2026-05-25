@@ -418,9 +418,8 @@ export function InProgress() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [logs]);
 
-  // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만)
-  // 시연용 부드러운 진행을 위해 backend 완료 + smooth 진행률 100% 모두 만족해야 finalize.
-  // navigate setTimeout 은 ref 로 저장 → 언마운트 시 cleanup.
+  // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만 자동 이동)
+  // 수동 항목 있으면 [수동 건너뛰고 결과 보기] 버튼으로 사용자가 명시적으로 트리거.
   useEffect(() => {
     if (!sid || !collectionDone || progress < 100 || finalized || finalizing || manualCount > 0) return;
     setFinalizing(true);
@@ -436,6 +435,23 @@ export function InProgress() {
       })
       .finally(() => setFinalizing(false));
   }, [sid, collectionDone, progress, manualCount, finalized, finalizing, navigate]);
+
+  // 사용자가 명시적으로 *수동 건너뛰고 결과 보기* — 진행률 100% + 수동 미작성 시 노출.
+  const handleSkipManualAndFinalize = async () => {
+    if (!sid || finalizing) return;
+    setFinalizing(true);
+    try {
+      await finalizeAssessment(sid);
+      setFinalized(true);
+      toast.success("결과 페이지로 이동합니다 (수동 항목은 나중에 보강 가능).");
+      navigate(`/reporting/${sid}`);
+    } catch (err) {
+      console.warn("[in-progress] skip-manual finalize:", err);
+      toast.error("결과 확정 중 오류가 발생했습니다.");
+    } finally {
+      setFinalizing(false);
+    }
+  };
 
   // 언마운트 시 finalize navigate 타이머 정리
   useEffect(() => {
@@ -832,6 +848,28 @@ export function InProgress() {
                 />
               </label>
             </div>
+
+            {/* 진행률 100% + 수동 미작성 시 — 사용자가 명시적으로 건너뛰고 결과 보기 가능 */}
+            {collectionDone && progress >= 100 && !finalized && (
+              <div className="mt-4 flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <div className="flex-1 text-xs text-amber-900">
+                  자동 수집이 끝났지만 수동 양식 {manualCount}건이 미작성 상태입니다.
+                  지금 결과를 먼저 보고, Reporting에서 부족한 항목을 보강하실 수 있습니다.
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSkipManualAndFinalize}
+                  disabled={finalizing}
+                  className={`shrink-0 px-3 py-1.5 text-xs rounded-lg ${
+                    finalizing
+                      ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                      : "bg-amber-600 text-white hover:bg-amber-700"
+                  }`}
+                >
+                  {finalizing ? "이동 중..." : "수동 건너뛰고 결과 보기"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -1,10 +1,10 @@
-// 백엔드 enum은 그대로 유지(점수/판정 비교 로직과 동일).
-// UI 표기만 "근간"으로 매핑한다.
+// 백엔드 enum 그대로 사용 (KISA 가이드라인 2.0 라벨과 일치).
 export const MATURITY_STEPS = ["기존", "초기", "향상", "최적화"] as const;
 
 // UI 표시용 라벨 매핑 — API raw 값 비교에는 사용하지 말 것.
+// (UI 라벨이 백엔드 enum 과 동일해도 향후 i18n 등에서 매핑 지점 보존)
 export const MATURITY_LABEL: Record<string, string> = {
-  기존: "근간",
+  기존: "기존",
   초기: "초기",
   향상: "향상",
   최적화: "최적화",
