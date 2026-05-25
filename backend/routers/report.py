@@ -106,13 +106,62 @@ def _build_data(session_id: int, db: Session) -> dict:
         .all()
     )
 
+    # 증적/관찰 (CollectedData.raw_json + metric) - 항목별 미리 캐시.
+    collected_by_check: dict[int, dict] = {}
+    for row in db.query(CollectedData).filter(CollectedData.session_id == session_id).all():
+        collected_by_check[row.check_id] = {
+            "tool":         row.tool,
+            "metric_key":   row.metric_key,
+            "metric_value": row.metric_value,
+            "threshold":    row.threshold,
+            "raw_json":     row.raw_json if isinstance(row.raw_json, dict) else {},
+            "error":        row.error,
+            "collected_at": row.collected_at.isoformat() if row.collected_at else None,
+        }
+    # Evidence (수동 입력 관찰) — 항목별 1건씩만 (최신).
+    evidence_by_check: dict[int, dict] = {}
+    for ev in db.query(Evidence).filter(Evidence.session_id == session_id).all():
+        # 같은 check_id 에 여러 evidence 가 있으면 마지막 1건 유지 (PDF는 요약)
+        evidence_by_check[ev.check_id] = {
+            "source":   ev.source or "",
+            "observed": ev.observed or "",
+            "location": ev.location or "",
+            "reason":   ev.reason or "",
+        }
+
     checklist_results, fail_items = [], []
     for dr, cl in results:
+        coll = collected_by_check.get(cl.check_id) or {}
+        raw = coll.get("raw_json") or {}
+        ev = evidence_by_check.get(cl.check_id) or {}
+
+        # 증적/관찰 요약 문자열 — 자동 metric or 수동 observed
+        evidence_summary_parts: list[str] = []
+        if coll.get("metric_key"):
+            mv = coll.get("metric_value")
+            th = coll.get("threshold")
+            evidence_summary_parts.append(
+                f"{coll['metric_key']} = {mv}" + (f" / 임계값 {th}" if th is not None else "")
+            )
+        if raw.get("issues"):
+            evidence_summary_parts.append(f"발견 이슈 {len(raw['issues'])}건")
+        if ev.get("observed"):
+            evidence_summary_parts.append(f"관찰: {ev['observed'][:200]}")
+        evidence_summary = " · ".join(evidence_summary_parts) if evidence_summary_parts else ""
+
+        # 평가불가 사유
+        reason_label = raw.get("reason_label") or raw.get("reason_code") or ""
+
+        # 자동 발견 이슈 top 3 (HTTP 헤더/DNS 등)
+        issues = (raw.get("issues") or [])[:3] if isinstance(raw.get("issues"), list) else []
+
         item = {
             "item_id":       cl.item_id,
+            "check_id":      cl.check_id,
             "pillar":        cl.pillar,
             "category":      cl.category,
             "item_name":     cl.item_name,
+            "question":      cl.question or "",
             "maturity":      cl.maturity,
             "maturity_score": cl.maturity_score,
             "diagnosis_type": cl.diagnosis_type,
@@ -121,12 +170,21 @@ def _build_data(session_id: int, db: Session) -> dict:
             "score":         dr.score or 0.0,
             "criteria":      cl.criteria or "",
             "recommendation": dr.recommendation or "",
+            "evidence_summary": evidence_summary,
+            "evidence_source": ev.get("source", ""),
+            "evidence_observed": ev.get("observed", ""),
+            "evidence_location": ev.get("location", ""),
+            "evidence_reason": ev.get("reason", ""),
+            "auto_issues": issues,
+            "auto_error": coll.get("error", ""),
+            "reason_label": reason_label,
+            "collected_at": coll.get("collected_at"),
         }
         checklist_results.append(item)
         if dr.result in ("미충족", "부분충족"):
             fail_items.append(item)
 
-    # 개선권고 (check_id 기준으로 조회)
+    # 개선권고 (check_id 기준으로 조회) — steps 풀텍스트 포함.
     fail_check_ids = [
         dr.check_id for dr, _ in results
         if dr.result in ("미충족", "부분충족")
@@ -135,17 +193,37 @@ def _build_data(session_id: int, db: Session) -> dict:
         ImprovementGuide.check_id.in_(fail_check_ids)
     ).order_by(ImprovementGuide.priority, ImprovementGuide.term).all() if fail_check_ids else []
 
-    improvements = [
-        {
-            "pillar":   g.pillar,
-            "task":     g.task,
-            "priority": g.priority,
-            "term":     g.term,
-            "tool":     g.recommended_tool or "",
-            "solution": _first_step(g.steps),
-        }
-        for g in guide_rows
-    ]
+    # check_id → category 매핑 (개선 카드에 항목 정보 노출용)
+    check_meta = {cl.check_id: cl for _, cl in results}
+
+    def _steps_list(steps) -> list[str]:
+        if not steps:
+            return []
+        if isinstance(steps, list):
+            return [str(s.get("description") or s.get("step") or s.get("text") or s) if isinstance(s, dict) else str(s) for s in steps]
+        if isinstance(steps, dict):
+            return [str(v) for _, v in sorted(steps.items())]
+        if isinstance(steps, str):
+            return [line.strip() for line in steps.split("\n") if line.strip()]
+        return [str(steps)]
+
+    improvements = []
+    for g in guide_rows:
+        cl_meta = check_meta.get(g.check_id)
+        improvements.append({
+            "pillar":         g.pillar,
+            "category":       cl_meta.category if cl_meta else "",
+            "item_id":        cl_meta.item_id if cl_meta else "",
+            "task":           g.task,
+            "priority":       g.priority,
+            "term":           g.term,
+            "tool":           g.recommended_tool or "",
+            "current_level":  g.current_level or "",
+            "expected_gain":  g.expected_gain or "",
+            "expected_effect": g.expected_effect or "",
+            "steps":          _steps_list(g.steps),
+            "solution":       _first_step(g.steps),
+        })
 
     total = len(checklist_results)
     pass_cnt    = sum(1 for r in checklist_results if r["result"] == "충족")
@@ -520,52 +598,147 @@ def _make_pdf(data: dict) -> bytes:
         ])))
     story.append(PageBreak())
 
-    # ── 3. 체크리스트 세부 항목 (필러별) ──────────────────────────────────────
+    # ── 3. 체크리스트 세부 항목 (필러 → 카테고리 → 단계별 카드) ──────────────
     story += [Paragraph("체크리스트 세부 항목", h2), Spacer(1, 0.2*cm)]
+    story.append(Paragraph(
+        "각 진단 항목별 결과·증적·판정 근거를 정리했습니다. "
+        "미충족·부분충족·평가불가 항목은 개선 권고 페이지에서 보완 방안을 확인하세요.",
+        small,
+    ))
+    story.append(Spacer(1, 0.3*cm))
 
-    by_pillar: dict[str, list] = {}
+    body_small = sty("body_sm", fontSize=8, leading=11, textColor=colors.HexColor("#374151"))
+    body_meta = sty("body_meta", fontSize=7, leading=10, textColor=colors.HexColor("#6b7280"))
+    body_question = sty("body_q", fontSize=9, leading=13, textColor=colors.HexColor("#111827"))
+
+    # maturity 단계 정렬 (기존 → 초기 → 향상 → 최적화)
+    MATURITY_ORDER = {"기존": 1, "초기": 2, "향상": 3, "최적화": 4}
+    MATURITY_BADGE_COLOR = {
+        "기존":    colors.HexColor("#fee2e2"),
+        "초기":    colors.HexColor("#ffedd5"),
+        "향상":    colors.HexColor("#dbeafe"),
+        "최적화":  colors.HexColor("#d1fae5"),
+    }
+    RESULT_BADGE_COLOR = {
+        "충족":    colors.HexColor("#dcfce7"),
+        "부분충족": colors.HexColor("#fef9c3"),
+        "미충족":  colors.HexColor("#fee2e2"),
+        "평가불가": colors.HexColor("#f3f4f6"),
+    }
+    RESULT_TEXT_COLOR = {
+        "충족":    colors.HexColor("#15803d"),
+        "부분충족": colors.HexColor("#92400e"),
+        "미충족":  colors.HexColor("#b91c1c"),
+        "평가불가": colors.HexColor("#6b7280"),
+    }
+
+    by_pillar_dict: dict[str, list] = {}
     for item in cr:
-        by_pillar.setdefault(item["pillar"], []).append(item)
+        by_pillar_dict.setdefault(item["pillar"], []).append(item)
 
-    for pillar, items in by_pillar.items():
-        story += [Paragraph(pillar, h3), Spacer(1, 0.1*cm)]
-        hdr = ["항목ID", "항목명", "성숙도", "진단유형", "결과", "점수"]
-        rows = [hdr]
-        for it in items:
-            rows.append([
-                it["item_id"],
-                Paragraph(it["item_name"], sty("cell", fontSize=7, leading=9)),
-                it["maturity"],
-                it["diagnosis_type"],
-                it["result"],
-                f"{it['score']:.2f}",
-            ])
-        col_w = [2.2*cm, W - 2.2*cm - 1.8*cm - 1.6*cm - 1.6*cm - 1.2*cm, 1.8*cm, 1.6*cm, 1.6*cm, 1.2*cm]
-
-        def _result_bg(result):
-            return {
-                "충족": colors.HexColor("#dcfce7"),
-                "부분충족": colors.HexColor("#fef9c3"),
-                "미충족": colors.HexColor("#fee2e2"),
-            }.get(result, colors.white)
-
-        ts = [
-            ("FONTNAME",     (0,0), (-1,-1), F),
-            ("FONTSIZE",     (0,0), (-1,-1), 7),
-            ("BACKGROUND",   (0,0), (-1,0),  colors.HexColor("#334155")),
-            ("TEXTCOLOR",    (0,0), (-1,0),  colors.white),
-            ("ALIGN",        (2,0), (-1,-1), "CENTER"),
-            ("BOX",          (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
-            ("INNERGRID",    (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
-            ("TOPPADDING",   (0,0), (-1,-1), 3),
-            ("BOTTOMPADDING",(0,0), (-1,-1), 3),
+    for pillar, items in by_pillar_dict.items():
+        # Pillar 헤더
+        story += [
+            Paragraph(pillar, h3),
+            Spacer(1, 0.1*cm),
         ]
-        for row_i, it in enumerate(items, start=1):
-            bg = _result_bg(it["result"])
-            ts.append(("BACKGROUND", (4, row_i), (4, row_i), bg))
+        # 카테고리별 그룹화
+        by_category: dict[str, list] = {}
+        for it in items:
+            by_category.setdefault(it["category"] or "(미분류)", []).append(it)
 
-        story.append(Table(rows, colWidths=col_w, style=TableStyle(ts), repeatRows=1))
-        story.append(Spacer(1, 0.3*cm))
+        for cat_idx, (category, cat_items) in enumerate(sorted(by_category.items())):
+            # 4단계 정렬
+            sorted_items = sorted(cat_items, key=lambda x: MATURITY_ORDER.get(x.get("maturity"), 5))
+            # 대표 단계 (가장 높은 충족) - 카테고리 헤더에 표시
+            passed = [x for x in sorted_items if x["result"] == "충족"]
+            rep = passed[-1] if passed else sorted_items[-1]
+            pass_count = len(passed)
+
+            # ── 카테고리 헤더 박스 ──
+            header_text = (
+                f"<b>{category}</b>  "
+                f"<font size='7' color='#6b7280'>현재 단계 "
+                f"<b>{rep.get('maturity', '-')}</b> · {pass_count}/{len(sorted_items)} 단계 충족</font>"
+            )
+            cat_header_row = [[Paragraph(header_text, body_question)]]
+            story.append(Table(
+                cat_header_row,
+                colWidths=[W],
+                style=TableStyle([
+                    ("FONTNAME",      (0,0), (-1,-1), F),
+                    ("BACKGROUND",    (0,0), (-1,-1), colors.HexColor("#f1f5f9")),
+                    ("BOX",           (0,0), (-1,-1), 0.6, colors.HexColor("#94a3b8")),
+                    ("LEFTPADDING",   (0,0), (-1,-1), 10),
+                    ("RIGHTPADDING",  (0,0), (-1,-1), 10),
+                    ("TOPPADDING",    (0,0), (-1,-1), 6),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+                ]),
+            ))
+
+            # ── 4단계 row (단계 + 결과 + 점수 / 질문 / 증적·근거) ──
+            for it in sorted_items:
+                mat = it.get("maturity", "")
+                res = it.get("result", "")
+                score = it.get("score", 0.0)
+                tool_display = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap", "trivy": "Trivy"}.get(
+                    (it.get("tool") or "").lower(), it.get("tool", "")
+                )
+                if tool_display == "수동" or it.get("tool") == "수동":
+                    tool_display = "수동"
+
+                # 좌측 라벨 셀 (단계 / 결과 / 도구 / 점수)
+                left_html = (
+                    f"<font color='{RESULT_TEXT_COLOR.get(res, colors.black).hexval()}'><b>{mat}</b></font><br/>"
+                    f"<font size='7' color='#6b7280'>{res}</font><br/>"
+                    f"<font size='7' color='#6b7280'>{tool_display}</font><br/>"
+                    f"<font size='9' color='{RESULT_TEXT_COLOR.get(res, colors.black).hexval()}'><b>{score:.2f}</b></font>"
+                )
+                left_cell = Paragraph(left_html, body_small)
+
+                # 우측 본문 (질문 + 판정 기준 + 증적·근거)
+                question_text = it.get("question") or it.get("item_name") or "-"
+                criteria_text = it.get("criteria") or "-"
+                evidence_text = it.get("evidence_summary") or ""
+                if it.get("evidence_observed"):
+                    evidence_text = (evidence_text + " · " if evidence_text else "") + f"수동 관찰: {it['evidence_observed'][:200]}"
+                if it.get("auto_issues"):
+                    issues_str = " / ".join(it["auto_issues"])
+                    evidence_text = (evidence_text + " · " if evidence_text else "") + f"이슈: {issues_str[:200]}"
+                if it.get("auto_error"):
+                    evidence_text = (evidence_text + " · " if evidence_text else "") + f"오류: {it['auto_error'][:120]}"
+                if res == "평가불가" and it.get("reason_label"):
+                    evidence_text = f"평가불가 사유: {it['reason_label']}" + ((" · " + evidence_text) if evidence_text else "")
+                if not evidence_text:
+                    evidence_text = "(수집된 증적 없음 — 자동 미수집 또는 수동 미제출)"
+
+                right_html = (
+                    f"<b>질문</b> {question_text}<br/>"
+                    f"<font color='#6b7280'><b>판정 기준</b> {criteria_text}</font><br/>"
+                    f"<font color='#374151'><b>증적·근거</b> {evidence_text}</font>"
+                )
+                right_cell = Paragraph(right_html, body_small)
+
+                row_table = Table(
+                    [[left_cell, right_cell]],
+                    colWidths=[2.6*cm, W - 2.6*cm],
+                    style=TableStyle([
+                        ("FONTNAME",      (0,0), (-1,-1), F),
+                        ("BACKGROUND",    (0,0), (0,0),  MATURITY_BADGE_COLOR.get(mat, colors.HexColor("#f3f4f6"))),
+                        ("BACKGROUND",    (1,0), (1,0),  RESULT_BADGE_COLOR.get(res, colors.white)),
+                        ("BOX",           (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
+                        ("LEFTPADDING",   (0,0), (-1,-1), 8),
+                        ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+                        ("TOPPADDING",    (0,0), (-1,-1), 6),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+                        ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                    ]),
+                )
+                story.append(row_table)
+
+            story.append(Spacer(1, 0.25*cm))
+
+        story.append(Spacer(1, 0.2*cm))
 
     story.append(PageBreak())
 
@@ -597,6 +770,20 @@ def _make_pdf(data: dict) -> bytes:
     }
     guide_box_sty = sty("guide_box", fontSize=7, leading=9, textColor=colors.HexColor("#374151"))
 
+    # 단계별 색상 톤
+    TERM_STAGE_COLOR = {
+        "단기": {"bg": colors.HexColor("#fee2e2"), "border": colors.HexColor("#fca5a5"),
+                 "text": colors.HexColor("#991b1b")},
+        "중기": {"bg": colors.HexColor("#fef3c7"), "border": colors.HexColor("#fcd34d"),
+                 "text": colors.HexColor("#92400e")},
+        "장기": {"bg": colors.HexColor("#dbeafe"), "border": colors.HexColor("#93c5fd"),
+                 "text": colors.HexColor("#1e40af")},
+    }
+    PRIORITY_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+
+    card_label_sty = sty("card_label", fontSize=7, leading=10, textColor=colors.HexColor("#6b7280"))
+    card_body_sty  = sty("card_body", fontSize=8, leading=12, textColor=colors.HexColor("#111827"))
+
     if not imps:
         story.append(Paragraph("미충족·부분충족 항목에 대한 개선 권고가 없습니다.", body))
     else:
@@ -604,19 +791,40 @@ def _make_pdf(data: dict) -> bytes:
             term_items = [t for t in imps if t["term"] == term]
             if not term_items:
                 continue
+            # Critical 우선 정렬
+            term_items.sort(key=lambda x: (PRIORITY_RANK.get(x["priority"], 99),
+                                           -PRIORITY_RANK.get(x["priority"], 99)))
+
             term_label = term_label_map[term]
-            story += [Paragraph(term_label, h3), Spacer(1, 0.1*cm)]
-            # 가이드 §8 권장 활동 안내 박스
+            stage = TERM_STAGE_COLOR[term]
+
+            # 단계 헤더 — 색 띠 + 라벨
+            header_html = f"<b><font size='12' color='{stage['text'].hexval()}'>{term_label}</font></b>  " \
+                          f"<font size='8' color='#6b7280'>· 과제 {len(term_items)}건</font>"
+            story.append(Table(
+                [[Paragraph(header_html, body)]],
+                colWidths=[W],
+                style=TableStyle([
+                    ("FONTNAME",      (0,0), (-1,-1), F),
+                    ("BACKGROUND",    (0,0), (-1,-1), stage["bg"]),
+                    ("BOX",           (0,0), (-1,-1), 0.6, stage["border"]),
+                    ("LINEBELOW",     (0,0), (-1,-1), 2, stage["border"]),
+                    ("LEFTPADDING",   (0,0), (-1,-1), 10),
+                    ("RIGHTPADDING",  (0,0), (-1,-1), 10),
+                    ("TOPPADDING",    (0,0), (-1,-1), 7),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+                ]),
+            ))
+
+            # 권장 활동 안내 박스
             guide_act, guide_ev = term_guide_map.get(term, ("", ""))
             if guide_act:
-                guide_rows = [[
-                    Paragraph(
-                        f"<b>권장 활동</b><br/>{guide_act}<br/><font color='#6b7280'>{guide_ev}</font>",
-                        guide_box_sty,
-                    )
-                ]]
                 story.append(Table(
-                    guide_rows,
+                    [[Paragraph(
+                        f"<b>권장 활동</b> {guide_act}<br/>"
+                        f"<font color='#6b7280'><b>완료 증거</b> {guide_ev}</font>",
+                        guide_box_sty,
+                    )]],
                     colWidths=[W],
                     style=TableStyle([
                         ("FONTNAME",      (0,0), (-1,-1), F),
@@ -628,37 +836,85 @@ def _make_pdf(data: dict) -> bytes:
                         ("BOTTOMPADDING", (0,0), (-1,-1), 5),
                     ]),
                 ))
+                story.append(Spacer(1, 0.2*cm))
+
+            # 과제 카드들 — 우선순위 배지 + Pillar + 도구 + 실행 단계 + 완료 증거
+            for t in term_items:
+                pc = PRIORITY_COLOR.get(t["priority"], colors.HexColor("#6b7280"))
+                tool_display = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap", "trivy": "Trivy"}.get(
+                    (t.get("tool") or "").lower(), t.get("tool", "")
+                ) or "—"
+
+                # 헤더 라인 (우선순위 + Pillar + 항목 + 도구)
+                header_html = (
+                    f"<font color='{pc.hexval()}'><b>{t['priority']}</b></font>  "
+                    f"<font color='#475569'>{t.get('pillar', '')}</font>  "
+                    f"<font color='#9ca3af'>· {t.get('category', '') or t.get('item_id', '')}</font>  "
+                    f"<font color='#6b7280'>· 도구: <b>{tool_display}</b></font>"
+                )
+                # 과제 본문
+                task_html = f"<b>{t.get('task', '').strip()}</b>"
+
+                # 실행 단계
+                steps = t.get("steps") or []
+                if steps:
+                    steps_html = "<br/>".join(
+                        f"<font color='#6b7280'>{i+1}.</font> {s}" for i, s in enumerate(steps[:6])
+                    )
+                else:
+                    steps_html = "<font color='#9ca3af'>(실행 단계 미입력)</font>"
+
+                # 기대 효과
+                expected = t.get("expected_effect") or t.get("expected_gain") or ""
+
+                # 좌측 색띠 (우선순위 색)
+                stripe_text = f"<font color='{pc.hexval()}'><b>●</b></font>"
+                stripe_cell = Paragraph(stripe_text, card_label_sty)
+
+                body_cells = [
+                    [Paragraph(header_html, card_label_sty)],
+                    [Paragraph(task_html, card_body_sty)],
+                    [Paragraph(f"<font color='#6b7280' size='7'><b>실행 단계</b></font><br/>{steps_html}", card_body_sty)],
+                ]
+                if expected:
+                    body_cells.append([Paragraph(
+                        f"<font color='#6b7280' size='7'><b>기대 효과</b></font> "
+                        f"<font color='#374151' size='8'>{expected}</font>",
+                        card_body_sty,
+                    )])
+
+                inner_body = Table(
+                    body_cells,
+                    colWidths=[W - 0.6*cm],
+                    style=TableStyle([
+                        ("FONTNAME",      (0,0), (-1,-1), F),
+                        ("LEFTPADDING",   (0,0), (-1,-1), 8),
+                        ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+                        ("TOPPADDING",    (0,0), (-1,-1), 3),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+                    ]),
+                )
+
+                card = Table(
+                    [[stripe_cell, inner_body]],
+                    colWidths=[0.6*cm, W - 0.6*cm],
+                    style=TableStyle([
+                        ("FONTNAME",      (0,0), (-1,-1), F),
+                        ("BACKGROUND",    (0,0), (0,0), pc),
+                        ("BACKGROUND",    (1,0), (1,0), colors.white),
+                        ("BOX",           (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
+                        ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                        ("LEFTPADDING",   (0,0), (0,0), 0),
+                        ("RIGHTPADDING",  (0,0), (0,0), 0),
+                        ("LEFTPADDING",   (1,0), (1,0), 0),
+                        ("RIGHTPADDING",  (1,0), (1,0), 0),
+                        ("TOPPADDING",    (0,0), (-1,-1), 0),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+                    ]),
+                )
+                story.append(card)
                 story.append(Spacer(1, 0.15*cm))
 
-            hdr = ["필러", "개선 과제", "우선순위", "도구"]
-            rows = [hdr]
-            for t in term_items:
-                rows.append([
-                    t["pillar"][:5],
-                    Paragraph(t["task"], sty("imp_cell", fontSize=7, leading=10)),
-                    t["priority"],
-                    t["tool"],
-                ])
-            col_w = [2.2*cm, W - 2.2*cm - 1.8*cm - 2.0*cm, 1.8*cm, 2.0*cm]
-
-            ts_imp = [
-                ("FONTNAME",     (0,0), (-1,-1), F),
-                ("FONTSIZE",     (0,0), (-1,-1), 7),
-                ("BACKGROUND",   (0,0), (-1,0),  TERM_COLOR[term]),
-                ("TEXTCOLOR",    (0,0), (-1,0),  colors.white),
-                ("ALIGN",        (2,0), (3,-1),  "CENTER"),
-                ("BOX",          (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
-                ("INNERGRID",    (0,0), (-1,-1), 0.4, colors.HexColor("#e5e7eb")),
-                ("ROWBACKGROUNDS",(0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
-                ("TOPPADDING",   (0,0), (-1,-1), 4),
-                ("BOTTOMPADDING",(0,0), (-1,-1), 4),
-                ("VALIGN",       (0,0), (-1,-1), "TOP"),
-            ]
-            for row_i, t in enumerate(term_items, start=1):
-                pc = PRIORITY_COLOR.get(t["priority"], colors.HexColor("#6b7280"))
-                ts_imp.append(("TEXTCOLOR", (2, row_i), (2, row_i), pc))
-
-            story.append(Table(rows, colWidths=col_w, style=TableStyle(ts_imp), repeatRows=1))
             story.append(Spacer(1, 0.4*cm))
 
     # ── 꼬리말 ────────────────────────────────────────────────────────────────
