@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router";
 import { useAuth } from "../context/AuthContext";
-import { Shield, AlertCircle, X, Mail } from "lucide-react";
+import { useNotifications } from "../context/NotificationContext";
+import { Shield, AlertCircle, X, Mail, KeyRound } from "lucide-react";
+import { requestPasswordReset, ApiError } from "../../config/api";
 
 const DEMO_ACCOUNTS = [
   { label: "관리자", id: "admin", role: "관리자" },
   { label: "박기웅 (세종대학교)", id: "user1", role: "일반 사용자" },
+  { label: "서진우 (T-Markov Framework)", id: "user2", role: "일반 사용자" },
 ];
 
-type RecoveryMode = null | "id";
+type RecoveryMode = null | "id" | "password";
 
 export function Login() {
   const [username, setUsername] = useState("");
@@ -20,6 +23,7 @@ export function Login() {
   const recoveryEmailInputRef = useRef<HTMLInputElement>(null);
   const recoveryCloseButtonRef = useRef<HTMLButtonElement>(null);
   const { user, login } = useAuth();
+  const { addNotification } = useNotifications();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -75,10 +79,11 @@ export function Login() {
 
     const ok = await login(username, password);
     if (ok) {
-      // 시드 계정(password === login_id) 감지 → Dashboard 배너 트리거 (작업 N)
+      // 시드 계정(password === login_id) 감지 → Dashboard 배너 + 알림 트리거.
       try {
         if (username && username === password) {
           sessionStorage.setItem("zt_seed_password_warning", "true");
+          addNotification("기본 비밀번호를 사용 중입니다. Settings에서 변경해주세요.", "warning");
         } else {
           sessionStorage.removeItem("zt_seed_password_warning");
         }
@@ -106,10 +111,23 @@ export function Login() {
     setRecoverySent(false);
   };
 
-  const submitRecovery = (e: React.FormEvent) => {
+  const submitRecovery = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryEmail.trim())) return;
-    // 데모 빌드 — 실제 메일 발송 미구현. UI만 동작.
+    if (recovery === "id") {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryEmail.trim())) return;
+      setRecoverySent(true);
+      return;
+    }
+    // password — backend requestPasswordReset 호출. 보안 정책상 결과는 항상 성공 표시.
+    if (!recoveryEmail.trim()) return;
+    try {
+      await requestPasswordReset(recoveryEmail.trim());
+    } catch (err) {
+      if (err instanceof ApiError && err.status >= 500) {
+        // 5xx만 사용자에게 알림 — 그 외 계정 존재 여부 노출 차단
+        console.warn("[recovery:password] failed:", err);
+      }
+    }
     setRecoverySent(true);
   };
 
@@ -172,12 +190,13 @@ export function Login() {
               아이디 찾기
             </button>
             <span className="text-gray-300">|</span>
-            <Link
-              to="/auth/request-password-reset"
+            <button
+              type="button"
+              onClick={() => openRecovery("password")}
               className="hover:text-blue-600 hover:underline"
             >
               비밀번호 찾기
-            </Link>
+            </button>
           </div>
         </form>
 
@@ -227,43 +246,54 @@ export function Login() {
               <X size={18} />
             </button>
             <div className="flex items-center gap-2 mb-3">
-              <Mail size={18} className="text-blue-600" aria-hidden="true" />
+              {recovery === "password" ? (
+                <KeyRound size={18} className="text-blue-600" aria-hidden="true" />
+              ) : (
+                <Mail size={18} className="text-blue-600" aria-hidden="true" />
+              )}
               <h2 id="recovery-modal-title" className="text-base font-semibold text-gray-900">
-                아이디 찾기
+                {recovery === "password" ? "비밀번호 찾기" : "아이디 찾기"}
               </h2>
             </div>
             {!recoverySent ? (
               <>
                 <p className="text-sm text-gray-600 mb-4">
-                  가입 시 등록한 이메일을 입력해주세요. 아이디 안내 메일을 발송합니다.
+                  {recovery === "password"
+                    ? "가입 시 사용한 아이디를 입력해주세요. 등록된 이메일로 재설정 링크를 발송합니다."
+                    : "가입 시 등록한 이메일을 입력해주세요. 아이디 안내 메일을 발송합니다."}
                 </p>
                 <form onSubmit={submitRecovery} className="space-y-3">
                   <input
                     ref={recoveryEmailInputRef}
-                    type="email"
+                    type={recovery === "password" ? "text" : "email"}
                     value={recoveryEmail}
                     onChange={(e) => setRecoveryEmail(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="user@example.com"
-                    aria-label="가입 이메일"
+                    placeholder={recovery === "password" ? "아이디" : "user@example.com"}
+                    aria-label={recovery === "password" ? "가입 아이디" : "가입 이메일"}
+                    autoComplete={recovery === "password" ? "username" : "email"}
                     required
                   />
                   <button
                     type="submit"
                     className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
                   >
-                    인증 메일 발송
+                    {recovery === "password" ? "재설정 메일 발송" : "인증 메일 발송"}
                   </button>
                 </form>
                 <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">
-                  * 데모 빌드입니다. 실제 메일 발송은 구현되어 있지 않으며,
-                  가입 시 입력한 이메일로 안내가 발송된다는 흐름만 시뮬레이션합니다.
+                  * 데모 빌드입니다. SMTP 미연결 환경에서는 실제 메일이 발송되지 않으며,
+                  발송 흐름만 시뮬레이션됩니다.
                 </p>
               </>
             ) : (
               <>
                 <p className="text-sm text-gray-700 mb-2">
-                  <span className="font-semibold">{recoveryEmail}</span> 으로 안내 메일을 발송했습니다.
+                  {recovery === "password" ? (
+                    <>입력하신 아이디가 등록된 계정이면 이메일로 <span className="font-semibold">재설정 링크</span>가 발송됩니다.</>
+                  ) : (
+                    <><span className="font-semibold">{recoveryEmail}</span> 으로 안내 메일을 발송했습니다.</>
+                  )}
                 </p>
                 <p className="text-xs text-gray-500 mb-4">
                   메일이 도착하지 않으면 스팸함을 확인하거나 시스템 관리자에게 문의해주세요.

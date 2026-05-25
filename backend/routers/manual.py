@@ -1,16 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import List, Optional
 from datetime import datetime, timezone
 from pathlib import Path
+from copy import copy
 import io
 import os
 import uuid
 import logging
 import openpyxl
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from database import get_db
 from models import DiagnosisSession, Checklist, DiagnosisResult, Evidence, CollectedData, User
@@ -310,19 +313,485 @@ def manual_submit(
 
 @router.get("/template")
 def download_template(current_user: User = Depends(get_current_user)):
-    """사용자에게 배포할 빈 manual-checklist.xlsx 템플릿을 반환한다."""
-    candidates = [
-        Path("/app/manual-checklist.xlsx"),
-        Path(__file__).parent.parent / "manual-checklist.xlsx",
-    ]
-    for p in candidates:
-        if p.exists():
-            return FileResponse(
-                path=str(p),
-                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                filename="manual-checklist.xlsx",
-            )
+    """사용자에게 배포할 빈 manual-checklist.xlsx 템플릿을 반환한다.
+
+    정적 양식 — xlsx 원래 수동 진단 98건만 포함. 자동 폴백 항목은 미포함이므로
+    세션이 있다면 GET /template/{session_id} 동적 양식 사용을 권장.
+    """
+    p = _find_base_template()
+    if p:
+        return FileResponse(
+            path=str(p),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename="manual-checklist.xlsx",
+        )
     raise HTTPException(status_code=404, detail="템플릿 파일을 찾을 수 없습니다.")
+
+
+def _find_base_template() -> Optional[Path]:
+    """배포 환경 (/app/...) 과 로컬 dev 환경 양쪽에서 base xlsx 위치 탐색."""
+    for p in (Path("/app/manual-checklist.xlsx"),
+              Path(__file__).parent.parent / "manual-checklist.xlsx"):
+        if p.exists():
+            return p
+    return None
+
+
+# ─── 세션별 동적 양식 생성 ──────────────────────────────────────────────────
+# T-Markov 같은 SaaS 환경(Keycloak/Wazuh 미사용)에서는 자동 항목이 수동으로
+# 폴백되는데, 정적 양식엔 그 폴백 항목이 없다. 세션의 profile_select 와
+# selected_tools 를 기반으로 폴백 항목까지 포함한 양식을 동적 생성한다.
+
+_IDP_AUTO_TOOLS_FOR_FALLBACK = {"keycloak", "entra"}
+_SIEM_AUTO_TOOLS_FOR_FALLBACK = {"wazuh"}
+
+
+def _resolve_fallback_tools(session: DiagnosisSession) -> set[str]:
+    """세션 환경에서 자동 폴백되는 도구 집합 산출.
+
+    예: profile_select={idp_type: 'google_workspace', siem_type: 'none'}
+        → {'keycloak', 'entra', 'wazuh'} 모두 폴백(자동 항목이 수동으로 떨어짐).
+    """
+    extra = session.extra if isinstance(session.extra, dict) else {}
+    ps = extra.get("profile_select") if isinstance(extra.get("profile_select"), dict) else {}
+    idp_sel = (ps.get("idp_type") or "").lower()
+    siem_sel = (ps.get("siem_type") or "").lower()
+
+    fallback: set[str] = set()
+    # IdP 자동 도구 중 사용자가 선택하지 않은 것 → 폴백
+    if idp_sel:
+        for t in _IDP_AUTO_TOOLS_FOR_FALLBACK:
+            if idp_sel != t:
+                fallback.add(t)
+    if siem_sel:
+        for t in _SIEM_AUTO_TOOLS_FOR_FALLBACK:
+            if siem_sel != t:
+                fallback.add(t)
+    return fallback
+
+
+# 폴백 항목 기본 선택지 — 가이드 §5 톤에 맞춘 4단계.
+# 기존 수동 항목 다수가 (운영 중, 계획, 미도입) 3선택지를 쓰므로 동일 패턴 유지.
+_FALLBACK_CHOICES = [
+    ("운영 중",     "충족"),
+    ("부분 운영",   "부분 충족"),
+    ("미도입",      "미충족"),
+    ("평가 불가",   "평가 불가"),
+]
+
+
+# 카테고리(Pillar) 정렬 순서 — 기존 양식과 동일하게 6 Pillar 순으로.
+_PILLAR_ORDER = [
+    "식별자 및 신원",
+    "기기 및 엔드포인트",
+    "네트워크",
+    "시스템",
+    "애플리케이션 및 워크로드",
+    "데이터",
+]
+
+
+def _pillar_sort_key(pillar: str) -> int:
+    try:
+        return _PILLAR_ORDER.index(pillar)
+    except ValueError:
+        return len(_PILLAR_ORDER)
+
+
+def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> bytes:
+    """세션 기반 동적 xlsx 생성 — 기존 정적 양식에 폴백 항목 추가 +
+    공개 URL 자동 점검 결과를 비고/부록 시트에 자동 채움.
+
+    동작:
+      1) base manual-checklist.xlsx 로드.
+      2) 폴백 도구의 Checklist 항목을 DB 에서 조회 (이미 수동 양식에 있는 항목은 제외).
+      3) 공개 URL 자동 점검 (web_evidence_collector) — HTTP 헤더/DNS/TLS/공개노출/GitHub repo
+      4) manual_diagnosis 시트 끝에 카테고리 구분행 + 데이터 행 추가.
+         각 행의 비고/증적메모 컬럼에 Pillar 관련 자동 점검 요약 미리 채움.
+      5) judgment_mapping 시트 끝에 동일 M_id 의 4선택지(_FALLBACK_CHOICES) 추가.
+      6) 새 시트 "외부 자동 점검 결과" — 자동 점검 raw 결과 정리 (참고용).
+      7) bytes 로 직렬화.
+    """
+    base = _find_base_template()
+    if not base:
+        raise HTTPException(status_code=500, detail="base 양식 파일을 찾을 수 없습니다.")
+
+    wb = openpyxl.load_workbook(base)
+    ws_diag = wb["manual_diagnosis"]
+    ws_judg = wb["judgment_mapping"]
+
+    # ── 공개 URL 자동 점검 (실패해도 양식 생성은 진행) ───────────────────────
+    extra = session.extra if isinstance(session.extra, dict) else {}
+    scan_targets = extra.get("scan_targets") if isinstance(extra.get("scan_targets"), dict) else {}
+    nmap_target = (scan_targets.get("nmap") or "").strip()
+    trivy_target = (scan_targets.get("trivy") or "").strip()
+    # Trivy target 이 GitHub 형식이면 repo 분석에 활용
+    github_ref = trivy_target if trivy_target and ("github.com" in trivy_target or "/" in trivy_target and ":" not in trivy_target) else ""
+
+    evidence: dict = {}
+    if nmap_target or github_ref:
+        try:
+            from collectors import web_evidence_collector as _wec
+            evidence = _wec.collect_public_evidence(
+                nmap_target=nmap_target,
+                github_repo=github_ref,
+                timeout=8.0,
+            )
+        except Exception as exc:
+            logger.warning("[manual] web evidence collection failed: %s", exc)
+            evidence = {"error": str(exc)}
+
+    # 기존 양식에 이미 포함된 (item_no_prefix, maturity) 조합 — 중복 추가 방지.
+    existing_keys: set[tuple[str, str]] = set()
+    for r in range(4, ws_diag.max_row + 1):
+        mid = ws_diag.cell(r, 1).value
+        if not mid or str(mid).startswith("▸"):
+            continue
+        item_no = str(ws_diag.cell(r, 3).value or "").split()[0] if ws_diag.cell(r, 3).value else ""
+        maturity = str(ws_diag.cell(r, 4).value or "").strip()
+        if item_no and maturity:
+            existing_keys.add((item_no, maturity))
+
+    fallback_tools = _resolve_fallback_tools(session)
+    if not fallback_tools:
+        # 폴백 없음 — 그대로 출력 (=정적 양식과 동일)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # 폴백 도구 매핑된 Checklist 항목 조회
+    rows = db.query(Checklist).filter(
+        Checklist.tool.in_(sorted(fallback_tools))
+    ).all()
+    # 카테고리·item_id 순으로 정렬
+    rows.sort(key=lambda c: (_pillar_sort_key(c.pillar or ""), c.item_id or ""))
+
+    # 기존 양식에 이미 있는 항목 제외
+    new_items = []
+    for cl in rows:
+        prefix = (cl.item_id or "").split("_", 1)[0]  # "1.1.1.1"
+        item_no_prefix = ".".join(prefix.split(".")[:3])  # "1.1.1"
+        key = (item_no_prefix, cl.maturity or "")
+        if key in existing_keys:
+            continue
+        new_items.append((cl, item_no_prefix))
+
+    if not new_items:
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # 다음 M_id 번호 산출
+    max_m_num = 0
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("M"):
+            try:
+                max_m_num = max(max_m_num, int(v[1:]))
+            except ValueError:
+                pass
+    next_m = max_m_num + 1
+
+    # 행 스타일 캐시 — base 양식의 데이터 행 1개를 샘플로 사용 (Row 5)
+    sample_row = 5
+    cell_styles = {}
+    for col in range(1, 9):
+        sc = ws_diag.cell(sample_row, col)
+        cell_styles[col] = {
+            "font":      copy(sc.font),
+            "fill":      copy(sc.fill),
+            "border":    copy(sc.border),
+            "alignment": copy(sc.alignment),
+        }
+
+    # 카테고리 구분행 스타일 (Row 4)
+    cat_styles = {}
+    for col in range(1, 9):
+        sc = ws_diag.cell(4, col)
+        cat_styles[col] = {
+            "font":      copy(sc.font),
+            "fill":      copy(sc.fill),
+            "border":    copy(sc.border),
+            "alignment": copy(sc.alignment),
+        }
+
+    # 폴백 항목을 Pillar 별로 그룹화
+    by_pillar: dict[str, list] = {}
+    for cl, item_no_prefix in new_items:
+        by_pillar.setdefault(cl.pillar or "기타", []).append((cl, item_no_prefix))
+
+    # manual_diagnosis 시트 끝에 추가
+    append_at = ws_diag.max_row + 2  # 한 줄 띄움
+
+    # 안내 헤더 (폴백 섹션 구분)
+    notice_row = append_at
+    nc = ws_diag.cell(notice_row, 1)
+    nc.value = (
+        f"▼ 자동 폴백 항목 — 사용 환경(IdP/SIEM)에서 자동 진단이 불가능해 수동으로 평가해야 하는 항목 "
+        f"({len(new_items)}건)"
+    )
+    nc.font = Font(name="Arial", size=11, bold=True, color="FFB91C1C")
+    nc.fill = PatternFill("solid", fgColor="FFFEE2E2")
+    ws_diag.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=8)
+    nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    append_at += 1
+
+    new_mapping_rows: list[tuple] = []  # (m_id, pillar, item_no_full, maturity, choice, verdict)
+
+    for pillar in sorted(by_pillar.keys(), key=_pillar_sort_key):
+        items = by_pillar[pillar]
+        # 카테고리 구분행
+        cat_cell = ws_diag.cell(append_at, 1)
+        cat_cell.value = f"▸  {pillar}"
+        ws_diag.merge_cells(start_row=append_at, start_column=1, end_row=append_at, end_column=8)
+        for col in range(1, 9):
+            c = ws_diag.cell(append_at, col)
+            cs = cat_styles.get(col, {})
+            if cs.get("font"):      c.font      = copy(cs["font"])
+            if cs.get("fill"):      c.fill      = copy(cs["fill"])
+            if cs.get("border"):    c.border    = copy(cs["border"])
+            if cs.get("alignment"): c.alignment = copy(cs["alignment"])
+        append_at += 1
+
+        # Pillar 별 자동 점검 요약 (한 번만 계산해서 같은 Pillar 행에 공유)
+        pillar_evidence_text = ""
+        if evidence and not evidence.get("error"):
+            try:
+                from collectors import web_evidence_collector as _wec
+                pillar_evidence_text = _wec.summarize_for_pillar(evidence, pillar)
+            except Exception:
+                pillar_evidence_text = ""
+
+        for cl, item_no_prefix in items:
+            m_id = f"M{next_m:03d}"
+            next_m += 1
+            item_no_full = (cl.category or item_no_prefix)
+            row_vals = [
+                m_id,
+                pillar,
+                item_no_full,
+                cl.maturity or "",
+                cl.item_name or "",
+                cl.criteria or "",
+                None,                       # ★ 담당자 선택 (필수) — 빈 칸
+                pillar_evidence_text or None,  # 비고/증적메모 — 자동 점검 요약 미리 채움
+            ]
+            for col, val in enumerate(row_vals, start=1):
+                c = ws_diag.cell(append_at, col)
+                c.value = val
+                cs = cell_styles.get(col, {})
+                if cs.get("font"):      c.font      = copy(cs["font"])
+                if cs.get("fill"):      c.fill      = copy(cs["fill"])
+                if cs.get("border"):    c.border    = copy(cs["border"])
+                if cs.get("alignment"): c.alignment = copy(cs["alignment"])
+
+            # judgment_mapping 행 누적
+            for choice, verdict in _FALLBACK_CHOICES:
+                new_mapping_rows.append(
+                    (m_id, pillar, item_no_full, cl.maturity or "", choice, verdict)
+                )
+            append_at += 1
+
+    # judgment_mapping 시트에 폴백 매핑 추가
+    judg_append = ws_judg.max_row + 1
+    for tup in new_mapping_rows:
+        for col, val in enumerate(tup, start=1):
+            ws_judg.cell(judg_append, col).value = val
+        judg_append += 1
+
+    # 드롭다운(데이터 검증) 추가 — ★ 담당자 선택 (필수) 컬럼(G)에 폴백 행만
+    # _FALLBACK_CHOICES 의 choice 값만 허용
+    fallback_choice_str = ",".join(c for c, _ in _FALLBACK_CHOICES)
+    dv = DataValidation(
+        type="list",
+        formula1=f'"{fallback_choice_str}"',
+        allow_blank=True,
+        showErrorMessage=True,
+        errorTitle="선택값 확인",
+        error="드롭다운에서 선택해주세요.",
+    )
+    # 폴백 데이터 행 범위 (notice_row+1 ~ append_at-1)
+    first_data_row = notice_row + 1
+    last_data_row = append_at - 1
+    if last_data_row >= first_data_row:
+        dv.add(f"G{first_data_row}:G{last_data_row}")
+        ws_diag.add_data_validation(dv)
+
+    # ── 부록 시트: 외부 자동 점검 결과 (참고용) ─────────────────────────────
+    if evidence and not evidence.get("error"):
+        _append_evidence_sheet(wb, evidence)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _append_evidence_sheet(wb: openpyxl.Workbook, evidence: dict) -> None:
+    """양식에 '외부 자동 점검 결과' 시트 추가 — 양식 비고 자동 채움의 raw 결과 노출.
+
+    사용자가 양식 작성 시 비고에 적힌 한 줄 요약 외에 자세한 발견 사항을 참고할 수 있도록.
+    """
+    ws = wb.create_sheet("외부 자동 점검 결과")
+    bold = Font(name="Arial", size=11, bold=True, color="FF1E3A5F")
+    header_fill = PatternFill("solid", fgColor="FFE7F5F2")
+    section = Font(name="Arial", size=10, bold=True, color="FF0F766E")
+
+    def header(text: str):
+        nonlocal row
+        c = ws.cell(row, 1, text)
+        c.font = bold
+        c.fill = header_fill
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        row += 1
+
+    def section_title(text: str):
+        nonlocal row
+        c = ws.cell(row, 1, text)
+        c.font = section
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        row += 1
+
+    def kv(k: str, v):
+        nonlocal row
+        ws.cell(row, 1, k).font = Font(name="Arial", size=9, color="FF617087")
+        ws.cell(row, 2, str(v) if v is not None else "")
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
+        row += 1
+
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 30
+    ws.column_dimensions["C"].width = 30
+    ws.column_dimensions["D"].width = 40
+
+    row = 1
+    header("Readyz-T 자동 점검 결과 (참고)")
+    kv("생성 시각", evidence.get("generated_at", ""))
+    kv("점검 대상 (Nmap target)", evidence.get("nmap_target") or "(미지정)")
+    kv("점검 대상 (GitHub repo)", evidence.get("github_repo") or "(미지정)")
+    row += 1
+
+    # HTTP 헤더
+    http = evidence.get("http_headers") or {}
+    if http and not http.get("error"):
+        section_title("◆ HTTP 보안 헤더")
+        kv("URL", http.get("url"))
+        kv("Status", http.get("status"))
+        kv("종합 점수", f"{http.get('score', 0):.2f} / 1.0")
+        for k, v in (http.get("assessment") or {}).items():
+            kv(f"  · {k}", v)
+        for i, issue in enumerate(http.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+        row += 1
+
+    # DNS
+    dns = evidence.get("dns") or {}
+    if dns and not dns.get("error"):
+        section_title("◆ DNS 보안 레코드")
+        kv("도메인", dns.get("domain"))
+        kv("종합 점수", f"{dns.get('score', 0):.2f} / 1.0")
+        spf = dns.get("spf") or {}
+        kv("SPF", f"[{spf.get('verdict', '?')}] {spf.get('value', '')}")
+        dmarc = dns.get("dmarc") or {}
+        kv("DMARC", f"[{dmarc.get('verdict', '?')}] {dmarc.get('value', '')}")
+        kv("DKIM 힌트", dns.get("dkim_hint"))
+        caa = dns.get("caa") or {}
+        kv("CAA", f"[{caa.get('verdict', '?')}] {len(caa.get('records', []))}개 발견")
+        for i, issue in enumerate(dns.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+        row += 1
+
+    # TLS
+    tls = evidence.get("tls") or {}
+    if tls and not tls.get("error"):
+        section_title("◆ TLS 인증서")
+        kv("도메인", tls.get("domain"))
+        kv("판정", tls.get("verdict"))
+        kv("발급자", tls.get("issuer"))
+        kv("주체", tls.get("subject"))
+        kv("만료일", tls.get("not_after"))
+        kv("남은 일수", tls.get("days_remaining"))
+        kv("키 유형/길이", f"{tls.get('key_type', '?')} {tls.get('key_bits', '?')}bit")
+        sans = tls.get("sans") or []
+        kv("SAN", ", ".join(sans[:5]) + (f" 외 {len(sans)-5}개" if len(sans) > 5 else ""))
+        for i, issue in enumerate(tls.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+        row += 1
+    elif tls.get("error"):
+        section_title("◆ TLS 인증서")
+        kv("오류", tls.get("error"))
+        row += 1
+
+    # 공개 노출
+    expo = evidence.get("exposure") or {}
+    if expo and not expo.get("error"):
+        section_title("◆ 공개 노출 (security.txt / robots.txt / .well-known/)")
+        kv("기준 URL", expo.get("base_url"))
+        kv("요약", expo.get("summary"))
+        for c in (expo.get("checked") or []):
+            status = c.get("status")
+            path = c.get("path")
+            if status == 200:
+                kv(f"  · {path}", f"HTTP 200 ({c.get('size', 0)}B)")
+            elif status:
+                kv(f"  · {path}", f"HTTP {status}")
+            else:
+                kv(f"  · {path}", c.get("error", "?"))
+        row += 1
+
+    # GitHub repo
+    gh = evidence.get("github") or {}
+    if gh and not gh.get("error"):
+        section_title("◆ GitHub repo 분석")
+        kv("repo", f"{gh.get('owner')}/{gh.get('name')}")
+        kv("default branch", gh.get("default_branch"))
+        kv("Language", gh.get("language"))
+        kv("License", gh.get("license"))
+        kv("Stars", gh.get("stars"))
+        kv("종합 점수", f"{gh.get('score', 0):.2f} / 1.0")
+        for fname, exists in (gh.get("files") or {}).items():
+            kv(f"  · {fname}", "있음" if exists else "없음")
+        ci = gh.get("ci_workflows") or []
+        kv("CI workflows", ", ".join(ci) if ci else "(없음)")
+        for i, issue in enumerate(gh.get("issues") or [], 1):
+            kv(f"이슈 {i}", issue)
+    elif gh.get("error"):
+        section_title("◆ GitHub repo 분석")
+        kv("오류", gh.get("error"))
+
+
+@router.get("/template/{session_id}")
+def download_session_template(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """세션별 동적 양식 — 자동 폴백 항목까지 포함한 xlsx 생성·반환.
+
+    SKT 가이드 §1·§5 권고: "자동수집이 안 되는 항목을 평가불가로 방치하지 말고
+    수동 증적을 붙여 판정" 하기 위한 핵심 도구. T-Markov 처럼 Keycloak/Wazuh 환경이
+    아닌 SaaS 형 평가에서는 이 동적 양식이 정적 양식보다 훨씬 많은 항목을 포함한다.
+    """
+    session = db.query(DiagnosisSession).filter(
+        DiagnosisSession.session_id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    assert_session_access(current_user, session)
+
+    try:
+        data = _build_session_template_xlsx(session, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[manual] session template build failed: %s", exc)
+        raise HTTPException(status_code=500, detail="양식 생성에 실패했습니다.")
+
+    filename = f"manual-checklist-session-{session_id}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/items/{session_id}")
@@ -346,20 +815,8 @@ def get_manual_items(
     assert_session_access(current_user, session)
 
     excluded_set = {t.strip().lower() for t in excluded_tools.split(",") if t.strip()}
-
-    # session.extra.profile_select 로부터 자동 폴백 도구 산출
-    extra = session.extra if isinstance(session.extra, dict) else {}
-    ps = extra.get("profile_select") if isinstance(extra.get("profile_select"), dict) else {}
-    idp_sel = (ps.get("idp_type") or "").lower()
-    siem_sel = (ps.get("siem_type") or "").lower()
-    # IdP/SIEM 자동 도구 목록 (assessment.py 와 동기화 필요 시 함께 갱신)
-    if idp_sel and idp_sel != "keycloak":
-        excluded_set.add("keycloak")
-    if idp_sel and idp_sel != "entra":
-        excluded_set.add("entra")
-    if siem_sel and siem_sel != "wazuh":
-        excluded_set.add("wazuh")
-
+    # session.extra.profile_select 기반 자동 폴백 — _resolve_fallback_tools 와 동일 규칙.
+    excluded_set |= _resolve_fallback_tools(session)
     excluded_list = sorted(excluded_set)
     if excluded_list:
         manual_items = db.query(Checklist).filter(

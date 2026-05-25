@@ -125,6 +125,26 @@ function _getLoginIdFromStorage(): string | null {
   }
 }
 
+// 다운로드 파일명 규칙 통일 — Readyz-T_<사용자명>_<날짜>_<용도>.<ext>
+function _getUserNameFromStorage(): string {
+  try {
+    const raw = localStorage.getItem("zt_user");
+    if (!raw) return "guest";
+    const parsed = JSON.parse(raw) as { name?: string; username?: string; login_id?: string };
+    const name = (parsed?.name ?? parsed?.username ?? parsed?.login_id ?? "guest").trim();
+    // 파일명 안전 문자만 (한글 허용)
+    return name.replace(/[^\w\d가-힣-]/g, "_") || "guest";
+  } catch {
+    return "guest";
+  }
+}
+
+export function makeDownloadFilename(purpose: string, ext: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const user = _getUserNameFromStorage();
+  return `Readyz-T_${user}_${today}_${purpose}.${ext}`;
+}
+
 function _getTokensFromStorage(): TokenPair | null {
   try {
     const raw = localStorage.getItem(TOKENS_STORAGE_KEY);
@@ -243,6 +263,22 @@ export function runAssessment(payload?: AssessmentRunRequest) {
   });
 }
 
+// 진단 시작 *전* 에 세션만 만들어 양식을 미리 받고 채우기 위한 헬퍼.
+// skip_collector=true 로 호출 → status='준비중' 세션 생성, collector 미실행.
+export function prepareAssessment(payload?: AssessmentRunRequest) {
+  return apiFetch<AssessmentRunResponse>(API_ENDPOINTS.ASSESSMENT_RUN, {
+    method: "POST",
+    body: JSON.stringify({ ...(payload ?? {}), skip_collector: true }),
+  });
+}
+
+// 준비중 세션의 collector 시작 (양식 미리 받기 흐름 마무리).
+export function startPreparedAssessment(sessionId: number | string) {
+  return apiFetch<AssessmentRunResponse>(`/api/assessment/start/${sessionId}`, {
+    method: "POST",
+  });
+}
+
 export function getAssessmentResult(sessionId?: number | string) {
   return apiFetch<AssessmentResultResponse>(API_ENDPOINTS.ASSESSMENT_RESULT, {
     params: { session_id: sessionId },
@@ -354,7 +390,7 @@ export async function downloadOcsfJson(sessionId: number | string): Promise<void
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
-  a.download = `zt-ocsf-${sessionId}.json`;
+  a.download = makeDownloadFilename("OCSF", "json");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -381,7 +417,7 @@ export async function downloadReportPdf(sessionId: number | string): Promise<voi
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
-  a.download = `zt-report-${sessionId}.pdf`;
+  a.download = makeDownloadFilename("결과보고서", "pdf");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -393,6 +429,88 @@ export function getManualItems(sessionId: number | string, excludedTools?: strin
   return apiFetch<ManualItemsFullResponse>(`/api/manual/items/${sessionId}`, {
     params: excludedTools ? { excluded_tools: excludedTools } : undefined,
   });
+}
+
+// 판정 로그 markdown 다운로드 (가이드 §7 산출물 decision_log.md).
+// 부분충족·평가불가 항목의 판정 근거 + 리뷰어 의견 빈 칸 정리.
+export async function downloadDecisionLog(sessionId: number | string): Promise<void> {
+  const url = `${API_BASE}/api/report/decision-log/${sessionId}`;
+  const accessToken = _getTokensFromStorage()?.access_token ?? null;
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  else {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) headers["X-Login-Id"] = loginId;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`판정 로그 다운로드 실패 (HTTP ${res.status})`, res.status, text);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = makeDownloadFilename("판정로그", "md");
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
+// 증적 목록 xlsx 다운로드 (가이드 §7 산출물 evidence_register.xlsx).
+// 자동 수집(CollectedData) + 수동 등록(Evidence) 모두 한 시트로 정리.
+export async function downloadEvidenceRegister(sessionId: number | string): Promise<void> {
+  const url = `${API_BASE}/api/report/evidence-register/${sessionId}`;
+  const accessToken = _getTokensFromStorage()?.access_token ?? null;
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  else {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) headers["X-Login-Id"] = loginId;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`증적 목록 다운로드 실패 (HTTP ${res.status})`, res.status, text);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = makeDownloadFilename("증적목록", "xlsx");
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
+// 세션별 동적 수동 진단 양식 다운로드 (자동 폴백 항목 포함).
+// 기존 정적 /api/manual/template 와 달리 사용자의 IdP/SIEM 환경을 반영해
+// 자동→수동 폴백된 항목까지 xlsx 안에 들어간다.
+export async function downloadSessionManualTemplate(sessionId: number | string): Promise<void> {
+  const url = `${API_BASE}/api/manual/template/${sessionId}`;
+  const accessToken = _getTokensFromStorage()?.access_token ?? null;
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  else {
+    const loginId = _getLoginIdFromStorage();
+    if (loginId) headers["X-Login-Id"] = loginId;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`양식 다운로드 실패 (HTTP ${res.status})`, res.status, text);
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = makeDownloadFilename("수동진단양식", "xlsx");
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
 export function finalizeAssessment(sessionId: number | string) {
@@ -421,10 +539,13 @@ export function uploadManualExcel(sessionId: number | string, file: File) {
   const form = new FormData();
   form.append("session_id", String(sessionId));
   form.append("file", file);
-  return apiFetch<{ status: string; session_id: number; parsed_count: number }>(
-    API_ENDPOINTS.MANUAL_UPLOAD,
-    { method: "POST", body: form },
-  );
+  return apiFetch<{
+    status: string;
+    session_id: number;
+    parsed_count: number;
+    skipped_count?: number;
+    unmatched_count?: number;
+  }>(API_ENDPOINTS.MANUAL_UPLOAD, { method: "POST", body: form });
 }
 
 // ─── Evidence 업로드 (P1-7) ───────────────────────────────────────────────────

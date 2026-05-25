@@ -6,17 +6,19 @@ import {
   Radar, RadarChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  AlertTriangle, CheckCircle, Clock, Database, Download,
-  Loader2, Paperclip, Server, Shield, Upload,
+  AlertTriangle, CheckCircle, ChevronDown, Clock, Database, Download,
+  FileText, Loader2, Paperclip, Server, Shield, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
+import { EVIDENCE_GUIDE } from "../data/evidenceGuide";
 import {
   getAssessmentStatus, finalizeAssessment, getManualItems, uploadManualExcel, uploadEvidence,
-  evidenceDownloadUrl, ApiError,
+  evidenceDownloadUrl, downloadSessionManualTemplate, ApiError,
   type AssessmentStatusResponse,
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
+import { useNotifications } from "../context/NotificationContext";
 import type { ManualItemDetail } from "../../types/api";
 
 const TOOL_NAMES = ["Keycloak", "Wazuh", "Nmap", "Trivy"] as const;
@@ -147,6 +149,7 @@ export function InProgress() {
   const navigate = useNavigate();
   const { sessionId } = useParams();
   const location = useLocation();
+  const { addNotification } = useNotifications();
   const { excludedTools = "", orgName = "", manager = "" } = (location.state ?? {}) as {
     excludedTools?: string; orgName?: string; manager?: string;
   };
@@ -160,6 +163,7 @@ export function InProgress() {
 
   // 증적 업로드 상태 (P1-7)
   const [evidenceShow, setEvidenceShow] = useState(false);
+  const [evidenceGuideShow, setEvidenceGuideShow] = useState(false);
   const [evidenceUploading, setEvidenceUploading] = useState<Record<number, boolean>>({});
   const [uploadedEvidence, setUploadedEvidence] = useState<Record<number, { id: number; name: string }>>({});
 
@@ -416,9 +420,8 @@ export function InProgress() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [logs]);
 
-  // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만)
-  // 시연용 부드러운 진행을 위해 backend 완료 + smooth 진행률 100% 모두 만족해야 finalize.
-  // navigate setTimeout 은 ref 로 저장 → 언마운트 시 cleanup.
+  // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만 자동 이동)
+  // 수동 항목 있으면 [수동 건너뛰고 결과 보기] 버튼으로 사용자가 명시적으로 트리거.
   useEffect(() => {
     if (!sid || !collectionDone || progress < 100 || finalized || finalizing || manualCount > 0) return;
     setFinalizing(true);
@@ -426,6 +429,7 @@ export function InProgress() {
       .then(() => {
         setFinalized(true);
         toast.success("자동 진단이 완료되었습니다.");
+        addNotification(`진단 #${sid} 자동 수집이 완료되어 결과 페이지로 이동합니다.`, "success");
         finalizeNavTimerRef.current = setTimeout(() => navigate(`/reporting/${sid}`), 1500);
       })
       .catch((err) => {
@@ -434,6 +438,24 @@ export function InProgress() {
       })
       .finally(() => setFinalizing(false));
   }, [sid, collectionDone, progress, manualCount, finalized, finalizing, navigate]);
+
+  // 사용자가 명시적으로 *수동 건너뛰고 결과 보기* — 진행률 100% + 수동 미작성 시 노출.
+  const handleSkipManualAndFinalize = async () => {
+    if (!sid || finalizing) return;
+    setFinalizing(true);
+    try {
+      await finalizeAssessment(sid);
+      setFinalized(true);
+      toast.success("결과 페이지로 이동합니다 (수동 항목은 나중에 보강 가능).");
+      addNotification(`진단 #${sid} 완료 (수동 항목 일부 미작성).`, "warning");
+      navigate(`/reporting/${sid}`);
+    } catch (err) {
+      console.warn("[in-progress] skip-manual finalize:", err);
+      toast.error("결과 확정 중 오류가 발생했습니다.");
+    } finally {
+      setFinalizing(false);
+    }
+  };
 
   // 언마운트 시 finalize navigate 타이머 정리
   useEffect(() => {
@@ -471,7 +493,7 @@ export function InProgress() {
 
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
-    score: Number(((pillars[i]?.progress / 100) * 4).toFixed(1)),
+    score: Number(((pillars[i]?.progress / 100) * 4).toFixed(2)),
   }));
 
   const activeStepIndex = Math.min(
@@ -731,6 +753,49 @@ export function InProgress() {
         </div>
       </div>
 
+      {/* SKT 가이드 §5 — 6 Pillar 증적 준비표 (운영자 안내) */}
+      {manualCount > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setEvidenceGuideShow((v) => !v)}
+            className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50 hover:bg-gray-100 transition-colors"
+          >
+            <span className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+              <FileText size={15} />
+              증적 준비표 — Pillar별로 어떤 증적을 준비해야 하는지
+            </span>
+            <ChevronDown
+              size={16}
+              className={`text-gray-500 transition-transform ${evidenceGuideShow ? "rotate-180" : ""}`}
+            />
+          </button>
+          {evidenceGuideShow && (
+            <div className="px-5 py-4 space-y-4">
+              {EVIDENCE_GUIDE.map((g) => (
+                <div key={g.pillarKey} className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-sm font-semibold text-gray-800 mb-2">{g.pillar}</p>
+                  <div className="space-y-1.5 text-xs">
+                    <div>
+                      <span className="font-semibold text-gray-600">준비할 증적: </span>
+                      <span className="text-gray-700">{g.prepare}</span>
+                    </div>
+                    <div>
+                      <span className="font-semibold text-gray-600">주요 질문: </span>
+                      <span className="text-gray-700">{g.questions}</span>
+                    </div>
+                    <div>
+                      <span className="font-semibold text-amber-700">판정 주의: </span>
+                      <span className="text-gray-700">{g.cautions}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Excel 업로드 (수동 항목 있을 때만) */}
       {manualCount > 0 && (
         <div className="bg-white rounded-xl border border-blue-200 overflow-hidden">
@@ -747,20 +812,31 @@ export function InProgress() {
 
           <div className="px-5 py-5 space-y-4">
             <ol className="text-sm text-gray-600 space-y-2 list-decimal list-inside">
-              <li><strong>템플릿 다운로드</strong>로 빈 체크리스트(.xlsx)를 받습니다.</li>
+              <li><strong>템플릿 다운로드</strong>로 이 세션 전용 체크리스트(.xlsx)를 받습니다. — 사용자의 IdP/SIEM 환경에 맞춰 자동 폴백 항목까지 포함됩니다.</li>
               <li>각 항목의 <strong>★ 담당자 선택 (필수)</strong> 열에 드롭다운 값을 입력합니다.</li>
               <li>작성 완료 후 <strong>Excel 파일 선택</strong>으로 업로드하면 즉시 점수 계산이 시작됩니다.</li>
+              <li>위 <strong>증적 준비표</strong> 토글을 펼치면 Pillar별 어떤 증적을 모아야 하는지 가이드가 나옵니다.</li>
             </ol>
 
             <div className="flex gap-3">
-              <a
-                href={`${import.meta.env.VITE_API_BASE ?? "http://localhost:8000"}/api/manual/template`}
-                download="manual-checklist-template.xlsx"
+              <button
+                type="button"
+                onClick={() => {
+                  if (!sid) {
+                    toast.error("세션 ID가 없어 양식을 다운로드할 수 없습니다.");
+                    return;
+                  }
+                  downloadSessionManualTemplate(sid).catch((err) => {
+                    console.warn("[in-progress] manual template download failed:", err);
+                    toast.error("양식 다운로드에 실패했습니다.");
+                  });
+                }}
                 className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
+                title="이 세션 환경에 맞춘 동적 양식 (자동 폴백 항목 포함)"
               >
                 <Download size={15} />
                 템플릿 다운로드
-              </a>
+              </button>
               <label className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer transition-colors ${
                 uploading ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
               }`}>
@@ -776,6 +852,28 @@ export function InProgress() {
                 />
               </label>
             </div>
+
+            {/* 진행률 100% + 수동 미작성 시 — 사용자가 명시적으로 건너뛰고 결과 보기 가능 */}
+            {collectionDone && progress >= 100 && !finalized && (
+              <div className="mt-4 flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <div className="flex-1 text-xs text-amber-900">
+                  자동 수집이 끝났지만 수동 양식 {manualCount}건이 미작성 상태입니다.
+                  지금 결과를 먼저 보고, Reporting에서 부족한 항목을 보강하실 수 있습니다.
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSkipManualAndFinalize}
+                  disabled={finalizing}
+                  className={`shrink-0 px-3 py-1.5 text-xs rounded-lg ${
+                    finalizing
+                      ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                      : "bg-amber-600 text-white hover:bg-amber-700"
+                  }`}
+                >
+                  {finalizing ? "이동 중..." : "수동 건너뛰고 결과 보기"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

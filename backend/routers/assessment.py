@@ -103,6 +103,49 @@ def _mask_creds(extra: dict) -> dict:
     return safe
 
 
+def build_evaluation_meta(session: DiagnosisSession) -> dict:
+    """Reporting/PDF 머리에 표기할 평가 메타데이터.
+
+    SKT T-Markov 가이드 §3 §4 §7 §9 요구사항 — 평가 기준 시점·범위·승인기록·
+    수행된 도구·제외된 도구를 한 곳에 노출. session.extra 와 selected_tools 를
+    조합해 만든다. 자격 비밀번호는 절대 포함하지 않는다.
+    """
+    extra = session.extra if isinstance(session.extra, dict) else {}
+    selected_map = session.selected_tools if isinstance(session.selected_tools, dict) else {}
+    selected = sorted(t for t, v in selected_map.items() if v and t in ALL_TOOLS)
+    excluded = sorted(t for t in ALL_TOOLS if t not in selected)
+
+    scan_mode = (extra.get("scan_mode") or "demo").lower()
+    profile_select = extra.get("profile_select") if isinstance(extra.get("profile_select"), dict) else {}
+    scan_targets = extra.get("scan_targets") if isinstance(extra.get("scan_targets"), dict) else {}
+    scan_consent = extra.get("scan_consent") if isinstance(extra.get("scan_consent"), dict) else {}
+
+    # SKT 가이드 §3 평가 착수 전 확정사항 4종
+    eval_version = extra.get("evaluation_version") if isinstance(extra.get("evaluation_version"), dict) else {}
+    scope_assets = extra.get("evaluation_scope_assets") if isinstance(extra.get("evaluation_scope_assets"), list) else []
+    data_class = extra.get("data_classifications") if isinstance(extra.get("data_classifications"), list) else []
+    reviewers = extra.get("reviewers") if isinstance(extra.get("reviewers"), dict) else {}
+
+    return {
+        "scan_mode":      scan_mode,        # "demo" | "live"
+        "started_at":     session.started_at.isoformat() if session.started_at else None,
+        "completed_at":   session.completed_at.isoformat() if session.completed_at else None,
+        "selected_tools": selected,
+        "excluded_tools": excluded,
+        "profile_select": {
+            "idp_type":  profile_select.get("idp_type")  or "none",
+            "siem_type": profile_select.get("siem_type") or "none",
+        },
+        "scan_targets":   {k: v for k, v in scan_targets.items() if v},
+        "scan_consent":   {k: v for k, v in scan_consent.items() if v},  # 빈 키 제거
+        # SKT 가이드 §3 평가 착수 전 확정사항
+        "evaluation_version":      {k: v for k, v in eval_version.items() if v},
+        "evaluation_scope_assets": scope_assets,
+        "data_classifications":    data_class,
+        "reviewers":               {k: v for k, v in reviewers.items() if v},
+    }
+
+
 # ─── 자격(비밀번호) 메모리 보관 ────────────────────────────────────────────────
 # DB 평문 저장을 피하기 위해 세션 ID → 자격 dict 매핑을 메모리에만 보관한다.
 # BackgroundTask(_run_collectors) 가 꺼내 쓰고 finally 에서 즉시 폐기.
@@ -217,15 +260,29 @@ def _build_session_errors(db: Session, session_id: int) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ProfileSelect(BaseModel):
-    """Step 0 사전 환경 프로파일링 — 사용자 환경의 IdP/SIEM 종류.
+    """Step 0 사전 환경 프로파일링 — 사용자 환경의 IdP/SIEM/엔드포인트 종류.
 
     4개 오픈소스 도구만 지원 (학생 프로젝트, 라이선스 비용 0).
     값에 따라 _resolve_supported_tools 가 tool_scope 를 자동 보정한다.
     예: idp_type='keycloak' → keycloak 매핑 활성.
          idp_type='none' / 기타 → 자동 항목 수동 폴백.
+
+    SKT XDR 명세 §6 "확인 필요 사항" 흡수 4개 항목:
+      windows_audit_policy_enabled — 'yes'|'no'|'unknown'. Security 채널 4688/4697/4720
+        등 emit 가능 여부. Wazuh Windows 룰 평가 가능성을 좌우한다.
+      sysmon_deployed — 'yes'|'no'|'unknown'. Sysmon EID 1·3·10·22·25 등 정밀 행위
+        탐지 룰의 측정 가능성을 좌우한다.
+      edr_product — 자유 텍스트. 기 운영 EDR 제품명/SKU (없으면 빈문자열). 신원·기기
+        Pillar 가산 지표.
+      ot_segment_present — 'yes'|'no'|'unknown'. OT 세그먼트 존재 여부. 'yes' 면
+        해당 자산은 별도 트랙으로 분리(평가불가 사유 ot_segment_excluded).
     """
     idp_type:   Optional[str] = None  # keycloak | none
     siem_type:  Optional[str] = None  # wazuh | none
+    windows_audit_policy_enabled: Optional[str] = None  # yes | no | unknown
+    sysmon_deployed:              Optional[str] = None  # yes | no | unknown
+    edr_product:                  Optional[str] = None  # 자유 텍스트
+    ot_segment_present:           Optional[str] = None  # yes | no | unknown
 
 
 class AssessmentRunRequest(BaseModel):
@@ -255,6 +312,26 @@ class AssessmentRunRequest(BaseModel):
     # 시연/실 스캔 토글 — "demo" 면 collector 실호출 없이 fake 결과 생성, "live" 면 실제 외부 호출.
     # frontend의 scanMode 토글(NewAssessment Step 1)에서 전달.
     scan_mode: Optional[str] = "demo"
+    # 외부 스캔 승인 메타 (SKT 가이드 §3·§4). live + Nmap/Trivy 타겟 있을 때만 의미.
+    # 예: {"approver": "최주용 팀장(SKT)", "scheduled_window": "2026-05-25 22:00~24:00 KST",
+    #      "intensity": "standard", "exclude_paths": "/admin/*",
+    #      "emergency_contact": "010-0000-0000 / oncall@example.com"}
+    # session.extra["scan_consent"] 로 보관 → Reporting/PDF 머리에 표기.
+    scan_consent: Optional[dict] = None
+    # SKT 가이드 §3 평가 착수 전 확정사항 4종 — Reporting/PDF 첫 장에 평가 기준 시점 고정.
+    # 예: {"frontend_deployment": "Vercel dpl_abc", "backend_deployment": "Railway xyz",
+    #      "git_commit": "a156b40", "version_label": "2026-05-22 배포본"}
+    evaluation_version: Optional[dict] = None
+    # 예: [{"name": "Frontend URL", "value": "https://...", "included": true}, ...]
+    #     기본 8개 항목 (Frontend URL/Backend API/Supabase/Notion/Drive/GitHub/CI·CD/운영자 계정)
+    evaluation_scope_assets: Optional[list] = None
+    # 예: [{"name": "영업 고객명", "sensitivity": "높음", "storage_location": "Supabase"}, ...]
+    data_classifications: Optional[list] = None
+    # 예: {"app_owner": "홍길동", "backend_owner": "...", "cloud_owner": "...", "security_reviewer": "..."}
+    reviewers: Optional[dict] = None
+    # 진단 시작 전 *수동 양식 미리 받기* 흐름용. True 면 세션만 만들고 collector 호출 안 함
+    # (status='준비중'). 이후 POST /start/{id} 로 collector 실행 가능.
+    skip_collector: Optional[bool] = False
 
 
 # 4 오픈소스 도구만 운영. 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑.
@@ -421,6 +498,59 @@ def run_assessment(
     scan_mode = (req.scan_mode or "demo").strip().lower()
     if scan_mode not in ("demo", "live"):
         scan_mode = "demo"
+
+    # 외부 스캔 승인 메타 — 허용 키만 추리고 문자열 trim. intensity 는 화이트리스트.
+    sc_in = req.scan_consent if isinstance(req.scan_consent, dict) else {}
+    sc_meta: dict = {}
+    for _k in ("approver", "scheduled_window", "exclude_paths", "emergency_contact"):
+        _v = sc_in.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            sc_meta[_k] = _v.strip()[:300]  # 과도한 길이 방지
+    _intensity = (sc_in.get("intensity") or "").strip().lower()
+    if _intensity in ("light", "standard"):
+        sc_meta["intensity"] = _intensity
+
+    # SKT 가이드 §3 평가 착수 전 확정사항 — 4 카드 정제.
+    # (1) 평가 대상 버전
+    ev_in = req.evaluation_version if isinstance(req.evaluation_version, dict) else {}
+    ev_meta: dict = {}
+    for _k in ("frontend_deployment", "backend_deployment", "git_commit", "version_label"):
+        _v = ev_in.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            ev_meta[_k] = _v.strip()[:200]
+
+    # (2) 평가 범위 자산 목록
+    sa_in = req.evaluation_scope_assets if isinstance(req.evaluation_scope_assets, list) else []
+    sa_meta: list = []
+    for _row in sa_in[:30]:  # 최대 30개 자산
+        if not isinstance(_row, dict):
+            continue
+        _name = (_row.get("name") or "").strip()[:80]
+        _value = (_row.get("value") or "").strip()[:300]
+        _included = bool(_row.get("included", True))
+        if _name and _value:
+            sa_meta.append({"name": _name, "value": _value, "included": _included})
+
+    # (3) 데이터 등급 분류
+    dc_in = req.data_classifications if isinstance(req.data_classifications, list) else []
+    dc_meta: list = []
+    for _row in dc_in[:30]:
+        if not isinstance(_row, dict):
+            continue
+        _name = (_row.get("name") or "").strip()[:80]
+        _sens = (_row.get("sensitivity") or "").strip()
+        _loc = (_row.get("storage_location") or "").strip()[:200]
+        if _name and _sens in ("낮음", "중간", "높음"):
+            dc_meta.append({"name": _name, "sensitivity": _sens, "storage_location": _loc})
+
+    # (4) 판정자 4역할
+    rv_in = req.reviewers if isinstance(req.reviewers, dict) else {}
+    rv_meta: dict = {}
+    for _k in ("app_owner", "backend_owner", "cloud_owner", "security_reviewer"):
+        _v = rv_in.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            rv_meta[_k] = _v.strip()[:80]
+
     extra = {
         "department":   req.department,
         "contact":      req.contact,
@@ -431,16 +561,25 @@ def run_assessment(
         "pillar_scope": req.pillar_scope,
         "scan_mode":    scan_mode,
         "scan_targets": scan_targets_in,
+        "scan_consent": sc_meta,
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
+        # SKT 가이드 §3 평가 착수 전 확정사항 4종
+        "evaluation_version":      ev_meta,
+        "evaluation_scope_assets": sa_meta,
+        "data_classifications":    dc_meta,
+        "reviewers":               rv_meta,
     }
 
+    # skip_collector=True 면 세션만 만들고 collector 안 돌림. 사용자가 양식 미리 받아
+    # 채워서 업로드한 뒤 POST /start/{session_id} 로 진단 시작.
+    initial_status = "준비중" if req.skip_collector else "진행 중"
     session = DiagnosisSession(
         org_id=org.org_id,
         user_id=user.user_id,
-        status="진행 중",
+        status=initial_status,
         started_at=datetime.now(timezone.utc),
         selected_tools={t: True for t in selected_tools},
         extra=extra,
@@ -452,7 +591,59 @@ def run_assessment(
     # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
     _store_session_secrets(session.session_id, kc_in, wz_in)
 
-    # Shuffle 경로 우선, 미설정 시 직접 collector 실행
+    if not req.skip_collector:
+        # Shuffle 경로 우선, 미설정 시 직접 collector 실행
+        has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
+        if has_shuffle:
+            background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)
+        elif selected_tools:
+            background.add_task(_run_collectors, session.session_id, list(selected_tools))
+        message = "진단이 시작되었습니다."
+    else:
+        message = "세션이 준비되었습니다. 양식 작성 후 진단을 시작하세요."
+
+    return {
+        "session_id":   session.session_id,
+        "status":       initial_status,
+        "message":      message,
+        "started_at":   session.started_at.isoformat(),
+        "selected_tools": selected_tools,
+    }
+
+
+@router.post("/start/{session_id}")
+def start_prepared_assessment(
+    session_id: int,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """준비중 세션의 자동 collector 를 시작한다.
+
+    POST /run + skip_collector=True 로 미리 만들어둔 세션에 대해 호출.
+    수동 양식 채워 업로드 후 [진단 시작] 누르면 frontend 가 이걸 호출.
+    """
+    session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
+
+    if session.status not in ("준비중", "진행 중"):
+        # 완료/실패 세션은 재시작 불가
+        raise HTTPException(status_code=400, detail=f"세션이 시작 가능한 상태가 아닙니다 (현재: {session.status})")
+
+    # 이미 진행 중이면 멱등 — 같은 응답
+    if session.status == "진행 중":
+        return {
+            "session_id":   session.session_id,
+            "status":       "진행 중",
+            "message":      "이미 진단이 시작되어 있습니다.",
+            "started_at":   session.started_at.isoformat() if session.started_at else None,
+        }
+
+    session.status = "진행 중"
+    session.started_at = datetime.now(timezone.utc)
+    db.commit()
+
+    selected_tools = sorted(_selected_tools_set(session))
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
     if has_shuffle:
         background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)
@@ -668,8 +859,20 @@ def get_result(
         .all()
     )
 
-    checklist_results = [
-        {
+    # 평가불가 사유 코드(raw_json.reason_code/reason_label) — CollectedData 에서 조회.
+    collected_rows = db.query(CollectedData).filter(
+        CollectedData.session_id == session_id
+    ).all()
+    collected_by_check: dict[int, dict] = {}
+    for r in collected_rows:
+        if isinstance(r.raw_json, dict):
+            collected_by_check[r.check_id] = r.raw_json
+
+    checklist_results = []
+    submitted_check_ids: set[int] = set()
+    for dr, cl in results:
+        raw = collected_by_check.get(cl.check_id) or {}
+        entry = {
             "id":             cl.item_id,
             "pillar":         cl.pillar,
             "category":       cl.category,
@@ -680,6 +883,7 @@ def get_result(
             "tool":           cl.tool,
             "result":         dr.result,
             "score":          dr.score or 0.0,
+            "question":       cl.question or "",
             "evidence":       cl.evidence or "",
             "criteria":       cl.criteria or "",
             "fields":         cl.fields or "",
@@ -687,8 +891,77 @@ def get_result(
             "exceptions":     cl.exceptions or "",
             "recommendation": dr.recommendation or "",
         }
-        for dr, cl in results
-    ]
+        # 평가불가 항목은 사유 코드/라벨을 표면 필드로 추가 노출 (frontend 툴팁용).
+        if dr.result == "평가불가":
+            rc = raw.get("reason_code")
+            if rc:
+                entry["unevaluable_reason_code"]  = rc
+                entry["unevaluable_reason_label"] = raw.get("reason_label") or UNAVAILABLE_REASONS.get(rc, "")
+        checklist_results.append(entry)
+        submitted_check_ids.add(cl.check_id)
+
+    # 수동 미제출·자동 미수집 항목도 "평가불가 (미제출)" 로 노출 — 가이드 §6
+    # 정신에 맞춰 *진단 안 한 항목* 자체를 결과에서 빠뜨리지 않음.
+    # pillar_scope 활성 Pillar 만 노출 (사용자가 진단 범위에서 선택하지 않은 Pillar 는 제외).
+    # frontend PILLARS.key 는 "Identify/Device/Network/System/Application/Data" (영문 대문자).
+    # 안전을 위해 소문자 변형도 같이 매핑.
+    _PILLAR_KEY_TO_NAME = {
+        "identify":    "식별자 및 신원",
+        "identity":    "식별자 및 신원",
+        "device":      "기기 및 엔드포인트",
+        "network":     "네트워크",
+        "system":      "시스템",
+        "application": "애플리케이션 및 워크로드",
+        "data":        "데이터",
+    }
+    extra_meta = session.extra if isinstance(session.extra, dict) else {}
+    pillar_scope_dict = extra_meta.get("pillar_scope") if isinstance(extra_meta.get("pillar_scope"), dict) else {}
+    if pillar_scope_dict:
+        # key 는 대소문자 무시하고 lookup
+        active_pillars: set = set()
+        for k, v in pillar_scope_dict.items():
+            if not v:
+                continue
+            nm = _PILLAR_KEY_TO_NAME.get(str(k).lower())
+            if nm:
+                active_pillars.add(nm)
+        if not active_pillars:
+            # scope 입력은 있는데 매핑된 게 하나도 없으면 전체 활성으로 fallback
+            active_pillars = set(_PILLAR_KEY_TO_NAME.values())
+    else:
+        active_pillars = set(_PILLAR_KEY_TO_NAME.values())
+
+    all_checklists = db.query(Checklist).all()
+    for cl in all_checklists:
+        if cl.check_id in submitted_check_ids:
+            continue
+        if cl.pillar not in active_pillars:
+            continue
+        is_manual = (cl.diagnosis_type or "").strip() == "수동" or (cl.tool or "").strip() == "수동"
+        reason_code = "manual_not_submitted" if is_manual else "auto_not_collected"
+        reason_label = "수동 진단 양식 미제출 — 양식 다운로드 후 작성·업로드 시 점수 산정" if is_manual \
+                       else "자동 수집 결과 없음 — 도구 미연결 또는 진단 미실행"
+        checklist_results.append({
+            "id":             cl.item_id,
+            "pillar":         cl.pillar,
+            "category":       cl.category,
+            "item":           cl.item_name,
+            "maturity":       cl.maturity,
+            "maturity_score": cl.maturity_score,
+            "diagnosis_type": cl.diagnosis_type,
+            "tool":           cl.tool,
+            "result":         "평가불가",
+            "score":          0.0,
+            "question":       cl.question or "",
+            "evidence":       cl.evidence or "",
+            "criteria":       cl.criteria or "",
+            "fields":         cl.fields or "",
+            "logic":          cl.logic or "",
+            "exceptions":     cl.exceptions or "",
+            "recommendation": "",
+            "unevaluable_reason_code":  reason_code,
+            "unevaluable_reason_label": reason_label,
+        })
 
     return {
         "session": {
@@ -709,6 +982,8 @@ def get_result(
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
         "checklist_results": checklist_results,
+        # SKT 가이드 §3 §4 §7 §9 — 보고서 머리 표기용 평가 메타
+        "evaluation_meta":   build_evaluation_meta(session),
     }
 
 
@@ -1338,7 +1613,49 @@ def _tool_health(tool: str) -> Optional[str]:
     return f"unknown tool: {tool}"
 
 
-def _unavailable_result(tool: str, item_id: str, maturity: str, error_msg: str) -> dict:
+UNAVAILABLE_REASONS = {
+    "tool_not_connected":   "도구 미연결 (placeholder URL 또는 자격 미설정)",
+    "tool_unreachable":     "도구 TCP 도달 실패",
+    "collector_error":      "수집기 호출 중 예외",
+    "audit_policy_disabled": "Windows Audit Policy 비활성 — Security 채널 이벤트 emit 안 됨",
+    "sysmon_not_deployed":  "Sysmon 미설치 — 정밀 행위 탐지 룰 측정 불가",
+    "ot_segment_excluded":  "OT 세그먼트 — 별도 트랙으로 분리",
+    "unknown":              "기타/미분류",
+}
+
+
+def _classify_health_error(tool: str, error_msg: str) -> str:
+    """_tool_health/_tool_configured 가 돌려준 메시지를 reason_code 로 분류.
+
+    placeholder/자격 미설정 류 → tool_not_connected
+    TCP 실패 류 → tool_unreachable
+    그 외 → unknown
+    """
+    if not error_msg:
+        return "unknown"
+    msg = error_msg.lower()
+    if "미연결" in error_msg or "미설정" in error_msg or "placeholder" in msg:
+        return "tool_not_connected"
+    if "timeout" in msg or "refused" in msg or "unreachable" in msg or "connection" in msg or "host" in msg:
+        return "tool_unreachable"
+    return "unknown"
+
+
+def _unavailable_result(
+    tool: str,
+    item_id: str,
+    maturity: str,
+    error_msg: str,
+    reason_code: Optional[str] = None,
+) -> dict:
+    """평가불가 항목의 표준 결과 dict.
+
+    reason_code 가 명시되면 그대로 사용, 미명시면 error_msg 휴리스틱 분류.
+    프론트는 raw_json['reason_code'] 와 raw_json['reason_label'] 를 읽어
+    리포트/툴팁에 사람이 이해할 사유로 표시한다.
+    """
+    code = reason_code or _classify_health_error(tool, error_msg)
+    label = UNAVAILABLE_REASONS.get(code, UNAVAILABLE_REASONS["unknown"])
     return {
         "item_id":      item_id,
         "maturity":     maturity,
@@ -1347,7 +1664,10 @@ def _unavailable_result(tool: str, item_id: str, maturity: str, error_msg: str) 
         "metric_key":   "tool_unavailable",
         "metric_value": 0.0,
         "threshold":    1.0,
-        "raw_json":     {},
+        "raw_json":     {
+            "reason_code":  code,
+            "reason_label": label,
+        },
         "error":        error_msg,
         "collected_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1391,6 +1711,7 @@ def _safe_call(fn, item_id: str, maturity: str, takes_args: bool, tool_name: str
     return _unavailable_result(
         tool_name, item_id, maturity,
         str(last_exc) if last_exc else "unknown error",
+        reason_code="collector_error",
     )
 
 
@@ -1542,6 +1863,7 @@ def _run_collectors(session_id: int, tools: list[str]):
     scan_targets: dict = {}
     keycloak_creds: dict = {}
     wazuh_creds: dict = {}
+    profile_select_runtime: dict = {}
     db_pre = SessionLocal()
     try:
         sess = db_pre.query(DiagnosisSession).filter(
@@ -1557,6 +1879,9 @@ def _run_collectors(session_id: int, tools: list[str]):
             wz_meta = sess.extra.get("wazuh_creds") or {}
             if isinstance(wz_meta, dict):
                 wazuh_creds = {k: v for k, v in wz_meta.items() if v}
+            ps_meta = sess.extra.get("profile_select") or {}
+            if isinstance(ps_meta, dict):
+                profile_select_runtime = ps_meta
     except Exception as exc:
         logger.warning("[collector] session lookup failed: %s", exc)
     finally:
@@ -1632,7 +1957,36 @@ def _run_collectors(session_id: int, tools: list[str]):
                             results.append(unavail)
                     continue
 
+                # Wazuh 한정: profile_select 의 audit_policy/sysmon 'no' 응답 시
+                # 의존 item_id 들을 사전 평가불가 분류 (SKT XDR §6 흡수).
+                # 그 외 항목은 정상 collector 호출 경로로 진입한다.
+                wazuh_skip: dict[str, str] = {}
+                if tool == "wazuh" and profile_select_runtime:
+                    audit = (profile_select_runtime.get("windows_audit_policy_enabled") or "").lower()
+                    sysmon = (profile_select_runtime.get("sysmon_deployed") or "").lower()
+                    if audit == "no":
+                        for iid in _wz.AUDIT_POLICY_DEPENDENT_ITEM_IDS:
+                            wazuh_skip[iid] = "audit_policy_disabled"
+                    if sysmon == "no":
+                        for iid in _wz.SYSMON_DEPENDENT_ITEM_IDS:
+                            # audit 사유가 먼저 잡혔으면 그대로 두고, 아니면 sysmon 사유 부여.
+                            wazuh_skip.setdefault(iid, "sysmon_not_deployed")
+
                 for fn, item_id, maturity in mapping:
+                    skip_reason = wazuh_skip.get(item_id)
+                    if skip_reason:
+                        unavail = _unavailable_result(
+                            tool, item_id, maturity,
+                            UNAVAILABLE_REASONS.get(skip_reason, skip_reason),
+                            reason_code=skip_reason,
+                        )
+                        if DEMO_DELAY_MS > 0:
+                            _persist_one_result(session_id, unavail)
+                            time.sleep(DEMO_DELAY_MS / 1000.0)
+                        else:
+                            results.append(unavail)
+                        continue
+
                     result = _safe_call(fn, item_id, maturity, takes_args, tool)
                     if DEMO_DELAY_MS > 0:
                         # 실 collector 호출도 데모 모드면 단건 commit (자체 호출 시간이 sleep 역할)
@@ -1877,6 +2231,7 @@ def _build_result_payload(db: Session, session: DiagnosisSession) -> dict:
             "tool":           cl.tool,
             "result":         dr.result,
             "score":          dr.score or 0.0,
+            "question":       cl.question or "",
             "evidence":       cl.evidence or "",
             "criteria":       cl.criteria or "",
             "fields":         cl.fields or "",
@@ -1905,6 +2260,8 @@ def _build_result_payload(db: Session, session: DiagnosisSession) -> dict:
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
         "checklist_results": checklist_results,
+        # SKT 가이드 §3 §4 §7 §9 — 보고서 머리 표기용 평가 메타
+        "evaluation_meta":   build_evaluation_meta(session),
     }
 
 

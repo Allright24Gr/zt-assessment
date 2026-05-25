@@ -42,6 +42,8 @@ export interface ChecklistItemResult {
   tool: string;
   result: AssessmentResult;
   score: number;
+  /** 세부 질문 (xlsx '세부 질문' 컬럼) — UI 카드 메인 텍스트 */
+  question?: string;
   evidence: string;
   criteria: string;
   fields: string;
@@ -50,6 +52,11 @@ export interface ChecklistItemResult {
   recommendation: string;
   evidence_summary?: EvidenceSummary;
   related_improvement_ids?: string[];
+  /** 평가불가 사유 코드 (tool_not_connected / tool_unreachable / collector_error
+   *  / audit_policy_disabled / sysmon_not_deployed / ot_segment_excluded 등) */
+  unevaluable_reason_code?: string;
+  /** 사람이 읽을 사유 라벨 — Reporting 툴팁/리포트에 노출 */
+  unevaluable_reason_label?: string;
 }
 
 export interface AssessmentSession {
@@ -204,13 +211,71 @@ export interface ManualEvidenceUploadResponse {
   uploaded_at: string;
 }
 
-// 4 오픈소스 도구만 운영 — 학생 프로젝트
-export type IdpType = "keycloak" | "none";
-export type SiemType = "wazuh" | "none";
+// 자동 진단은 4 오픈소스 도구만 — 그 외 값은 backend가 수동 폴백으로 처리.
+// (SKT T-Markov 등 SaaS형 평가 대비: Google/Entra/Okta/Splunk/Elastic 등도 선택만 가능)
+export type IdpType =
+  | "keycloak"
+  | "google_workspace"
+  | "entra"
+  | "okta"
+  | "ldap_ad"
+  | "none";
+export type SiemType =
+  | "wazuh"
+  | "splunk"
+  | "elastic"
+  | "none";
+// SKT XDR 명세 §6 흡수 — emit 자체가 안 되면 수집 불가이므로 사전 입력.
+export type YesNoUnknown = "yes" | "no" | "unknown";
 
 export interface ProfileSelect {
   idp_type: IdpType;
   siem_type: SiemType;
+  /** Windows Audit Policy / GPO 활성 여부 — Security 채널 4688/4697/4720 emit 조건 */
+  windows_audit_policy_enabled?: YesNoUnknown;
+  /** Sysmon 설치 여부 — EID 1·3·10·22·25 등 정밀 행위 탐지 룰 측정 가능 여부 */
+  sysmon_deployed?: YesNoUnknown;
+  /** 기 운영 EDR 제품명 (없으면 빈문자열) — 신원·기기 Pillar 가산 지표 */
+  edr_product?: string;
+  /** OT 세그먼트 존재 여부 — 'yes' 면 OT 트랙 분리 */
+  ot_segment_present?: YesNoUnknown;
+}
+
+/** 외부 스캔 승인 메타데이터 (SKT 가이드 §3·§4 요구).
+ *  Reporting/PDF 머리에 "어떤 권한으로, 언제, 어디까지 스캔했는가" 를 표기하기 위함. */
+export interface ScanConsent {
+  approver?: string;            // 승인자(이름/직위)
+  scheduled_window?: string;    // 시간대 (예: "2026-05-25 22:00~24:00 KST")
+  intensity?: "light" | "standard"; // 스캔 강도
+  exclude_paths?: string;       // 제외 경로/자산
+  emergency_contact?: string;   // 비상 연락처
+}
+
+/** SKT 가이드 §3 평가 착수 전 확정사항 4종. */
+export interface EvaluationVersion {
+  frontend_deployment?: string; // 예: "Vercel dpl_abc123"
+  backend_deployment?: string;  // 예: "Railway xyz"
+  git_commit?: string;          // 예: "a156b40"
+  version_label?: string;       // 예: "2026-05-22 배포본"
+}
+
+export interface ScopeAsset {
+  name: string;       // 예: "Frontend URL", "Supabase project"
+  value: string;      // 자유 입력 (URL/ID/경로)
+  included: boolean;  // 포함/제외
+}
+
+export interface DataClassification {
+  name: string;                       // 예: "영업 고객명"
+  sensitivity: "낮음" | "중간" | "높음";
+  storage_location?: string;          // 예: "Supabase / Notion"
+}
+
+export interface Reviewers {
+  app_owner?: string;
+  backend_owner?: string;
+  cloud_owner?: string;
+  security_reviewer?: string;
 }
 
 export interface AssessmentRunRequest {
@@ -233,6 +298,15 @@ export interface AssessmentRunRequest {
   profile_select?: ProfileSelect;
   /** "demo" | "live" — NewAssessment 토글. demo면 backend가 collector 실호출 없이 fake 결과 생성 */
   scan_mode?: "demo" | "live";
+  /** live 모드에서 Nmap/Trivy 같은 외부 스캔 시 승인 메타. 보고서 머리에 표기. */
+  scan_consent?: ScanConsent;
+  /** SKT 가이드 §3 평가 착수 전 확정사항 — 보고서 첫 장 고정값. */
+  evaluation_version?: EvaluationVersion;
+  evaluation_scope_assets?: ScopeAsset[];
+  data_classifications?: DataClassification[];
+  reviewers?: Reviewers;
+  /** true 면 세션만 만들고 collector 호출 안 함. 양식 미리 받기 흐름용. */
+  skip_collector?: boolean;
 }
 
 export interface AssessmentRunResponse {
@@ -240,6 +314,30 @@ export interface AssessmentRunResponse {
   status: AssessmentStatus;
   message?: string;
   started_at?: string;
+}
+
+/** SKT 가이드 §3 §4 §7 §9 — Reporting/PDF 머리에 표기할 평가 메타.
+ *  backend build_evaluation_meta() 결과를 그대로 전달. */
+export interface EvaluationMeta {
+  scan_mode: "demo" | "live" | string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  selected_tools: string[];
+  excluded_tools: string[];
+  profile_select: {
+    idp_type: string;
+    siem_type: string;
+  };
+  scan_targets?: {
+    nmap?: string;
+    trivy?: string;
+  };
+  scan_consent?: ScanConsent;
+  // SKT 가이드 §3 평가 착수 전 확정사항
+  evaluation_version?: EvaluationVersion;
+  evaluation_scope_assets?: ScopeAsset[];
+  data_classifications?: DataClassification[];
+  reviewers?: Reviewers;
 }
 
 export interface AssessmentResultResponse {
@@ -256,6 +354,8 @@ export interface AssessmentResultResponse {
   evaluable_items?: number;
   unevaluable_items?: number;
   confidence?: number;
+  // SKT 가이드 §3 §4 §7 §9 — Reporting 상단·PDF 표지 표기용
+  evaluation_meta?: EvaluationMeta;
 }
 
 export interface AssessmentHistoryResponse {

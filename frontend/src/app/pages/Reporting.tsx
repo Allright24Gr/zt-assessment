@@ -4,6 +4,8 @@ import { toast } from "sonner";
 import {
   createAssessmentShare,
   downloadReportPdf,
+  downloadEvidenceRegister,
+  downloadDecisionLog,
   listAssessmentShares,
   revokeAssessmentShare,
   getOcsfEvents,
@@ -25,10 +27,10 @@ import { useAuth } from "../context/AuthContext";
 import { sessions as mockSessions, improvements as mockImprovements } from "../data/mockData";
 import type { ChecklistDetail, Improvement, Session } from "../data/mockData";
 import { PILLARS } from "../data/constants";
-import { getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
+import { getMaturityLevel, getScoreColor, maturityLabel, getMaturityColor } from "../lib/maturity";
 import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
-import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem } from "../../types/api";
+import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem, EvaluationMeta } from "../../types/api";
 
 import { getStoredTargetScores } from "../lib/settingsStore";
 
@@ -63,6 +65,8 @@ function adaptChecklistResult(item: ChecklistItemResult): ChecklistDetail & { ra
     recommendation: item.recommendation,
     evidenceSummary: item.evidence_summary,
     relatedImprovementIds: item.related_improvement_ids,
+    unevaluableReasonCode:  item.unevaluable_reason_code,
+    unevaluableReasonLabel: item.unevaluable_reason_label,
     rawResult: item.result,
   };
 }
@@ -91,7 +95,7 @@ function _pillarKeyOf(pillar?: string): string {
 }
 
 function formatGap(value: number) {
-  return value > 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
+  return value > 0 ? `+${value.toFixed(2)}` : value.toFixed(2);
 }
 
 function getDemoFinding(detail: {
@@ -111,7 +115,7 @@ function getDemoFinding(detail: {
   if (detail.evidenceSummary) return detail.evidenceSummary;
 
   const isFailed = detail.result === "미흡" || detail.result === "부분충족" || detail.result === "미충족";
-  const impact = isFailed ? Number(Math.max(0.1, 4 - detail.score).toFixed(1)) : 0;
+  const impact = isFailed ? Number(Math.max(0.1, 4 - detail.score).toFixed(2)) : 0;
 
   if (detail.tool.includes("Keycloak")) {
     return {
@@ -231,7 +235,12 @@ function getRoadmapMeta(task: {
   };
 }
 
-const TERM_LABELS: Record<string, string> = { 단기: "단기 (0–6개월)", 중기: "중기 (6–18개월)", 장기: "장기 (18개월+)" };
+// SKT 가이드 §8 30/60/90일 개선 로드맵 톤에 맞춤. 각 단계에 권장 활동 안내.
+const TERM_LABELS: Record<string, string> = {
+  단기: "단기 (30일 — quick win)",
+  중기: "중기 (60일 — 정착)",
+  장기: "장기 (90일 — 운영)",
+};
 const TERM_COLORS: Record<string, string> = {
   단기: "border-red-200 bg-red-50",
   중기: "border-yellow-200 bg-yellow-50",
@@ -241,6 +250,27 @@ const TERM_HEADER: Record<string, string> = {
   단기: "text-red-700",
   중기: "text-yellow-700",
   장기: "text-blue-700",
+};
+// SKT 가이드 §8 — 각 단계별 권장 활동 + 완료 증거.
+const TERM_GUIDE_ACTIVITIES: Record<string, { activities: string; evidence: string }> = {
+  단기: {
+    activities:
+      "평가 범위 확정 · 데모/운영 데이터 분리 · 관리자 MFA 강제 · " +
+      "Vercel·Railway·Supabase·Notion·Drive 권한 목록 정리 · CORS·보안 헤더 검토",
+    evidence: "권한 표, 설정 캡처, deployment id, 보안 헤더 diff",
+  },
+  중기: {
+    activities:
+      "API 인증/인가 점검 · Supabase RLS 검증 · Drive/Notion 공유 최소화 · " +
+      "secret rotation · dependency/Trivy 스캔 정례화",
+    evidence: "테스트 결과, rotation 로그, Trivy/SCA 리포트",
+  },
+  장기: {
+    activities:
+      "audit log·보관 기간 정책 확정 · LLM 데이터 처리 정책 문서화 · " +
+      "incident runbook 작성 · Readyz-T 재평가 수행",
+    evidence: "정책 문서, 로그 샘플, 재평가 점수 비교표",
+  },
 };
 
 export function Reporting() {
@@ -281,6 +311,8 @@ export function Reporting() {
   const [backendConfidence, setBackendConfidence] = useState<number | null>(null);
   const [backendEvaluableCount, setBackendEvaluableCount] = useState<number | null>(null);
   const [backendUnevaluableCount, setBackendUnevaluableCount] = useState<number | null>(null);
+  // SKT 가이드 §3 §4 §7 §9 — 평가 메타 (스캔 모드/도구 범위/승인 기록)
+  const [evalMeta, setEvalMeta] = useState<EvaluationMeta | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -343,6 +375,7 @@ export function Reporting() {
             ? Number((data as AssessmentResultResponse).unevaluable_items)
             : null,
         );
+        setEvalMeta((data as AssessmentResultResponse).evaluation_meta ?? null);
       })
       .catch((err) => {
         console.warn("[reporting] result fetch failed:", err);
@@ -466,7 +499,7 @@ export function Reporting() {
       score: currentScores[i],
       target: TARGET_SCORES[i],
       level: isUnmeasurable ? "평가불가" : getMaturityLevel(currentScores[i]),
-      gap: parseFloat((currentScores[i] - TARGET_SCORES[i]).toFixed(1)),
+      gap: parseFloat((currentScores[i] - TARGET_SCORES[i]).toFixed(2)),
       unevaluable: unevalCount,
       unmeasurable: isUnmeasurable,
     };
@@ -515,9 +548,14 @@ export function Reporting() {
     [],
   );
 
+  // 위험도 정렬 — Critical > High > Medium > Low (그 외는 맨 뒤).
+  const PRIORITY_RANK: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+  const sortByPriority = (a: Improvement, b: Improvement) =>
+    (PRIORITY_RANK[a.priority] ?? 99) - (PRIORITY_RANK[b.priority] ?? 99);
+
   const byTerm = ["단기", "중기", "장기"].map((term) => ({
     term,
-    tasks: improvements.filter((t) => t.term === term),
+    tasks: improvements.filter((t) => t.term === term).slice().sort(sortByPriority),
   }));
 
   // 자동/자가 비율 — checklistDetails 의 tool / rawResult 를 source 별로 카운트
@@ -596,14 +634,227 @@ export function Reporting() {
         </div>
       </div>
 
-      {/* 이 진단 결과의 출처 — 자동/자가 비율 배지 */}
+      {/* SKT 가이드 §9 — 평가 목적 안내 */}
+      {evalMeta && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 px-4 py-3 text-xs leading-relaxed text-emerald-900">
+          <span className="font-semibold">진단 목적</span> — 이번 진단은
+          KISA 제로트러스트 가이드라인 2.0 기준으로 6대 Pillar × 4단계 성숙도를 평가한 결과입니다.
+          자동 수집 가능한 통제는 외부 도구로 점검하고, 정책·운영 이력은 수동 증적을 통해 함께
+          판정했습니다. 점수와 함께 Pillar별 강·약점 / 30·60·90일 개선 로드맵을 확인하세요.
+        </div>
+      )}
+
+      {/* SKT 가이드 §3 §4 §7 §9 — 평가 메타 (스캔 모드 · 도구 범위 · 승인 기록) */}
+      {evalMeta && (
+        <div className={`rounded-xl border p-4 ${
+          evalMeta.scan_mode === "live"
+            ? "border-red-200 bg-red-50/40"
+            : "border-blue-200 bg-blue-50/40"
+        }`}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-gray-800">평가 기준 시점 · 범위</p>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                  evalMeta.scan_mode === "live"
+                    ? "bg-red-600 text-white"
+                    : "bg-blue-600 text-white"
+                }`}>
+                  {evalMeta.scan_mode === "live" ? "실 스캔" : "데모"}
+                </span>
+              </div>
+              <p className="text-xs text-gray-600 mt-0.5">
+                보고서 PDF 첫 장에 동일하게 표기됩니다.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(evalMeta.selected_tools || []).map((t) => (
+                <span
+                  key={`sel-${t}`}
+                  className="px-2 py-0.5 text-[11px] rounded bg-green-100 text-green-800 border border-green-200"
+                  title="이번 진단에서 수행된 자동 도구"
+                >
+                  ✓ {t}
+                </span>
+              ))}
+              {(evalMeta.excluded_tools || []).map((t) => (
+                <span
+                  key={`exc-${t}`}
+                  className="px-2 py-0.5 text-[11px] rounded bg-gray-100 text-gray-500 border border-gray-200 line-through"
+                  title="이번 진단에서 제외된 도구 (수동 폴백 대상)"
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-1.5 text-xs">
+            <div>
+              <span className="text-gray-500">IdP</span>
+              <span className="ml-1.5 font-medium text-gray-800">
+                {evalMeta.profile_select?.idp_type || "none"}
+              </span>
+            </div>
+            <div>
+              <span className="text-gray-500">SIEM</span>
+              <span className="ml-1.5 font-medium text-gray-800">
+                {evalMeta.profile_select?.siem_type || "none"}
+              </span>
+            </div>
+            {evalMeta.scan_targets?.nmap && (
+              <div className="col-span-1 sm:col-span-2">
+                <span className="text-gray-500">Nmap 대상</span>
+                <span className="ml-1.5 font-mono text-gray-800 break-all">
+                  {evalMeta.scan_targets.nmap}
+                </span>
+              </div>
+            )}
+            {evalMeta.scan_targets?.trivy && (
+              <div className="col-span-1 sm:col-span-2">
+                <span className="text-gray-500">Trivy 대상</span>
+                <span className="ml-1.5 font-mono text-gray-800 break-all">
+                  {evalMeta.scan_targets.trivy}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* 외부 스캔 승인 기록 — 실 스캔이고 메타가 있을 때만 */}
+          {evalMeta.scan_mode === "live" && evalMeta.scan_consent &&
+           Object.keys(evalMeta.scan_consent).length > 0 && (
+            <div className="mt-3 p-3 rounded-lg border border-yellow-300 bg-yellow-50">
+              <p className="text-xs font-semibold text-gray-800 mb-1.5">
+                외부 스캔 승인 기록
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                {evalMeta.scan_consent.approver && (
+                  <div>
+                    <span className="text-gray-500">승인자</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.approver}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.emergency_contact && (
+                  <div>
+                    <span className="text-gray-500">비상 연락처</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.emergency_contact}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.scheduled_window && (
+                  <div>
+                    <span className="text-gray-500">시간대</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.scheduled_window}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.intensity && (
+                  <div>
+                    <span className="text-gray-500">강도</span>
+                    <span className="ml-1.5 text-gray-800">{evalMeta.scan_consent.intensity}</span>
+                  </div>
+                )}
+                {evalMeta.scan_consent.exclude_paths && (
+                  <div className="sm:col-span-2">
+                    <span className="text-gray-500">제외 경로</span>
+                    <span className="ml-1.5 text-gray-800 break-all">{evalMeta.scan_consent.exclude_paths}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* SKT 가이드 §3 평가 착수 전 확정사항 — 버전 / 자산 / 데이터 등급 / 판정자 */}
+          {(
+            (evalMeta.evaluation_version && Object.keys(evalMeta.evaluation_version).length > 0) ||
+            (evalMeta.evaluation_scope_assets && evalMeta.evaluation_scope_assets.length > 0) ||
+            (evalMeta.data_classifications && evalMeta.data_classifications.length > 0) ||
+            (evalMeta.reviewers && Object.keys(evalMeta.reviewers).length > 0)
+          ) && (
+            <details className="mt-3 rounded-lg border border-gray-200 bg-white">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50">
+                평가 착수 전 확정사항
+              </summary>
+              <div className="px-3 pb-3 pt-1 space-y-3 text-xs">
+                {evalMeta.evaluation_version && Object.keys(evalMeta.evaluation_version).length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">평가 대상 버전</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5 text-gray-700">
+                      {evalMeta.evaluation_version.version_label && (
+                        <div><span className="text-gray-500">라벨</span> <span className="ml-1">{evalMeta.evaluation_version.version_label}</span></div>
+                      )}
+                      {evalMeta.evaluation_version.git_commit && (
+                        <div><span className="text-gray-500">commit</span> <span className="ml-1 font-mono">{evalMeta.evaluation_version.git_commit}</span></div>
+                      )}
+                      {evalMeta.evaluation_version.frontend_deployment && (
+                        <div><span className="text-gray-500">frontend</span> <span className="ml-1">{evalMeta.evaluation_version.frontend_deployment}</span></div>
+                      )}
+                      {evalMeta.evaluation_version.backend_deployment && (
+                        <div><span className="text-gray-500">backend</span> <span className="ml-1">{evalMeta.evaluation_version.backend_deployment}</span></div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {evalMeta.evaluation_scope_assets && evalMeta.evaluation_scope_assets.length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">평가 범위 자산 목록</p>
+                    <ul className="space-y-0.5 text-gray-700">
+                      {evalMeta.evaluation_scope_assets.map((a, i) => (
+                        <li key={i} className="flex items-baseline gap-1.5">
+                          <span className={`inline-block w-12 text-[10px] font-semibold ${a.included ? "text-emerald-700" : "text-gray-400 line-through"}`}>
+                            {a.included ? "포함" : "제외"}
+                          </span>
+                          <span className="text-gray-600">{a.name}</span>
+                          <span className="ml-1 font-mono text-gray-800 break-all">{a.value}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {evalMeta.data_classifications && evalMeta.data_classifications.length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">데이터 등급 분류</p>
+                    <ul className="space-y-0.5 text-gray-700">
+                      {evalMeta.data_classifications.map((d, i) => (
+                        <li key={i} className="flex items-baseline gap-1.5">
+                          <span className={`inline-block w-12 text-[10px] font-semibold ${
+                            d.sensitivity === "높음" ? "text-red-700" :
+                            d.sensitivity === "중간" ? "text-amber-700" : "text-gray-500"
+                          }`}>
+                            {d.sensitivity}
+                          </span>
+                          <span className="text-gray-700">{d.name}</span>
+                          {d.storage_location && (
+                            <span className="ml-1 text-gray-500">— {d.storage_location}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {evalMeta.reviewers && Object.keys(evalMeta.reviewers).length > 0 && (
+                  <div>
+                    <p className="font-semibold text-gray-700 mb-1">판정자</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5 text-gray-700">
+                      {evalMeta.reviewers.app_owner && <div><span className="text-gray-500">App owner</span> <span className="ml-1">{evalMeta.reviewers.app_owner}</span></div>}
+                      {evalMeta.reviewers.backend_owner && <div><span className="text-gray-500">Backend</span> <span className="ml-1">{evalMeta.reviewers.backend_owner}</span></div>}
+                      {evalMeta.reviewers.cloud_owner && <div><span className="text-gray-500">Cloud</span> <span className="ml-1">{evalMeta.reviewers.cloud_owner}</span></div>}
+                      {evalMeta.reviewers.security_reviewer && <div><span className="text-gray-500">Security</span> <span className="ml-1">{evalMeta.reviewers.security_reviewer}</span></div>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* 진단 출처별 분포 — 자동·수동·미진단 비율 배지 */}
       {totalSourceCount > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-semibold text-gray-800">이 진단 결과의 출처</p>
+              <p className="text-sm font-semibold text-gray-800">진단 출처별 분포</p>
               <p className="text-xs text-gray-500 mt-0.5">
-                총 {totalSourceCount}개 체크리스트 — 자동/자가/미진단 비율
+                총 {totalSourceCount}개 체크리스트 — 자동·수동·미진단 비율
               </p>
               {/* B-3: 데이터 신뢰도 mini-graph */}
               <div className="mt-2 flex items-center gap-2 max-w-xs">
@@ -624,21 +875,21 @@ export function Reporting() {
                 title="Nmap, Trivy 등 외부 자동 스캔으로 수집한 항목"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                자동 외부 스캔: {sourceBreakdown.autoExternal}건
+                외부 스캔: {sourceBreakdown.autoExternal}건
               </span>
               <span
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200"
-                title="Keycloak, Wazuh, Entra 등 도구 API로 수집한 항목"
+                title="Keycloak, Wazuh 등 도구 API로 수집한 항목"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-green-600" />
-                자동 API 진단: {sourceBreakdown.autoApi}건
+                API 진단: {sourceBreakdown.autoApi}건
               </span>
               <span
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-200"
                 title="담당자가 직접 답변·증적을 제출한 항목"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
-                수동 진단: {sourceBreakdown.manual}건
+                수동: {sourceBreakdown.manual}건
               </span>
               {sourceBreakdown.unscored > 0 && (
                 <span
@@ -690,7 +941,9 @@ export function Reporting() {
                 <h2 className="text-red-900">위험 영역</h2>
               </div>
               <div className="space-y-2">
-                {session.errors.map((error, i) => (
+                {[...session.errors]
+                  .sort((a, b) => (PRIORITY_RANK[a.severity ?? ""] ?? 99) - (PRIORITY_RANK[b.severity ?? ""] ?? 99))
+                  .map((error, i) => (
                   <div key={i} className="flex items-center justify-between p-3 bg-white rounded-lg border border-red-100">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -770,7 +1023,7 @@ export function Reporting() {
               <div>
                 <p className="text-blue-200 text-sm mb-1">종합 성숙도 등급</p>
                 <h1 className="text-6xl font-bold mb-2">
-                  {session.score !== null ? session.score : "-"}
+                  {typeof session.score === "number" ? session.score.toFixed(2) : "-"}
                   <span className="ml-2 text-2xl font-semibold text-blue-200">/ 4.0</span>
                 </h1>
                 <p className="text-blue-200">
@@ -865,7 +1118,7 @@ export function Reporting() {
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors.badge}`}>{maturityLabel(pillar.level)}</span>
                   </div>
                   <div className="flex items-baseline gap-1 mb-3">
-                    <span className={`text-3xl font-bold ${colors.text}`}>{pillar.score.toFixed(1)}</span>
+                    <span className={`text-3xl font-bold ${colors.text}`}>{pillar.score.toFixed(2)}</span>
                     <span className="text-gray-400 text-sm">/ 4.0</span>
                     {pillar.unevaluable > 0 && (
                       <span
@@ -886,7 +1139,7 @@ export function Reporting() {
                     />
                   </div>
                   <div className="flex justify-between text-xs text-gray-500">
-                    <span>현재 {pillar.score.toFixed(1)}</span>
+                    <span>현재 {pillar.score.toFixed(2)}</span>
                     <span className={pillar.gap < 0 ? "text-red-600" : "text-emerald-600"}>
                       목표 {pillar.target} ({formatGap(pillar.gap)})
                     </span>
@@ -987,116 +1240,187 @@ export function Reporting() {
                 </div>
 
                 <div className="space-y-3">
-                  {items.map((detail) => {
-                    const scoreColors = getScoreColor(detail.score);
-                    const finding = getDemoFinding(detail);
-                    const raw = (detail as ChecklistDetail & { rawResult?: string }).rawResult ?? detail.result;
-                    const resultCardClass = raw === "충족"
-                      ? "border-green-200 bg-green-50 open:border-green-300 open:bg-green-100/60"
-                      : raw === "미충족"
-                      ? "border-rose-200 bg-rose-50 open:border-rose-300 open:bg-rose-100/60"
-                      : raw === "부분충족"
-                      ? "border-amber-200 bg-amber-50 open:border-amber-300 open:bg-amber-100/60"
-                      : "border-gray-200 bg-white open:border-blue-200 open:bg-blue-50/30";
-
-                    return (
-                      <details
-                        key={detail.id}
-                        className={`group rounded-xl border p-4 transition-colors ${resultCardClass}`}
-                      >
-                        <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
-                          <div className="min-w-0">
-                            <div className="mb-2 flex flex-wrap items-center gap-2">
-                              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-                                {detail.category}
-                              </span>
-                              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                raw === "충족"
-                                  ? "bg-green-100 text-green-700"
-                                  : raw === "미충족"
-                                  ? "bg-red-100 text-red-700"
-                                  : raw === "부분충족"
-                                  ? "bg-amber-100 text-amber-700"
-                                  : "bg-gray-100 text-gray-500"
-                              }`}>
-                                {raw}
-                              </span>
-                              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${scoreColors.badge}`}>
-                                {maturityLabel(getMaturityLevel(detail.score))}
-                              </span>
-                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                                {detail.diagnosisType} / {detail.tool}
-                              </span>
-                            </div>
-                            <p className="mb-1 text-xs font-semibold text-gray-500">{detail.item} · {maturityLabel(detail.maturity)}</p>
-                            <p className="font-medium text-gray-900">{detail.question}</p>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-4">
-                            <div className="text-right">
-                              <p className="text-lg font-bold text-blue-600">{detail.score.toFixed(1)}</p>
-                              <p className="text-xs text-gray-500">/ 4.0</p>
-                            </div>
-                            <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180" />
-                          </div>
-                        </summary>
-
-                        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <p className="text-xs font-semibold text-slate-500">진단 근거 스냅샷</p>
-                              <p className="mt-1 text-sm font-semibold text-slate-900">{finding.source}</p>
-                            </div>
-                            <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                              finding.impact > 0 ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
-                            }`}>
-                              점수 영향 {finding.impact > 0 ? `-${finding.impact}` : "없음"}
-                            </span>
-                          </div>
-                          <div className="grid gap-3 md:grid-cols-3">
-                            <div className="rounded-lg bg-slate-50 p-3">
-                              <p className="mb-1 text-xs font-semibold text-slate-500">수집값</p>
-                              <p className="text-sm leading-relaxed text-slate-700">{finding.observed}</p>
-                            </div>
-                            <div className="rounded-lg bg-slate-50 p-3">
-                              <p className="mb-1 text-xs font-semibold text-slate-500">발견 위치</p>
-                              <p className="text-sm leading-relaxed text-slate-700">{finding.location}</p>
-                            </div>
-                            <div className="rounded-lg bg-slate-50 p-3">
-                              <p className="mb-1 text-xs font-semibold text-slate-500">판정 이유</p>
-                              <p className="text-sm leading-relaxed text-slate-700">{finding.reason}</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">증적</p>
-                            <p className="text-sm leading-relaxed text-gray-700">{detail.evidence}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">판정 기준</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.criteria}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">추출 필드</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.fields}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">처리 로직</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.logic}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">예외 처리</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.exceptions}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">개선 권고</p>
-                            <p className="text-sm leading-relaxed text-gray-700">{detail.recommendation}</p>
-                          </div>
-                        </div>
-                      </details>
+                  {/* 카테고리 (예: "1.2.1 다중인증") 단위로 묶고, 안에 4단계 (기존/초기/향상/최적화) row 표시 */}
+                  {(() => {
+                    const MATURITY_ORDER: Record<string, number> = { 기존: 1, 초기: 2, 향상: 3, 최적화: 4 };
+                    // 도구명 표시 라벨 — 자동/수동 메타 없이 도구 이름만 노출.
+                    const TOOL_DISPLAY: Record<string, string> = {
+                      keycloak: "Keycloak", wazuh: "Wazuh", nmap: "Nmap", trivy: "Trivy",
+                      "수동": "수동",
+                    };
+                    const toolLabel = (t?: string) => {
+                      const key = (t || "").trim().toLowerCase();
+                      if (!key) return "";
+                      if (key === "수동" || t === "수동") return "수동";
+                      return TOOL_DISPLAY[key] ?? (t || "");
+                    };
+                    const byCategory = items.reduce<Record<string, typeof items>>((acc, d) => {
+                      const key = d.category;
+                      if (!acc[key]) acc[key] = [];
+                      acc[key].push(d);
+                      return acc;
+                    }, {});
+                    const sortedCategories = Object.entries(byCategory).sort(
+                      ([a], [b]) => a.localeCompare(b, "ko")
                     );
-                  })}
+
+                    return sortedCategories.map(([category, levels]) => {
+                      const sortedLevels = [...levels].sort(
+                        (a, b) =>
+                          (MATURITY_ORDER[a.maturity as string] ?? 5) -
+                          (MATURITY_ORDER[b.maturity as string] ?? 5)
+                      );
+                      // 대표 단계 = 충족된 최고 단계 (없으면 가장 높은 maturity)
+                      const passedLevels = sortedLevels.filter((l) => l.result === "충족");
+                      const repLevel = passedLevels.length > 0
+                        ? passedLevels[passedLevels.length - 1]
+                        : sortedLevels[sortedLevels.length - 1];
+                      const repColor = getMaturityColor(repLevel.maturity as string);
+                      const passCount = passedLevels.length;
+                      // 카테고리 안 4단계의 도구 set — 수동 있으면 포함, "자동" 메타 없이 도구 이름만.
+                      const categoryTools = Array.from(new Set(
+                        sortedLevels.map((l) => toolLabel(l.tool)).filter(Boolean)
+                      ));
+                      // 자동 도구 먼저, 수동을 마지막에 두기 (시각적 그룹화)
+                      const sortedCategoryTools = [
+                        ...categoryTools.filter((t) => t !== "수동"),
+                        ...categoryTools.filter((t) => t === "수동"),
+                      ];
+
+                      return (
+                        <details
+                          key={category}
+                          className="group rounded-xl border border-gray-200 bg-white p-4 transition-colors hover:border-blue-200"
+                        >
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
+                            <div className="min-w-0 flex-1">
+                              <div className="mb-1 flex flex-wrap items-center gap-2">
+                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${repColor.badge}`}>
+                                  현재 {repLevel.maturity}
+                                </span>
+                                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+                                  {passCount}/{sortedLevels.length} 단계 충족
+                                </span>
+                                {sortedCategoryTools.map((t) => (
+                                  <span
+                                    key={t}
+                                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                                      t === "수동"
+                                        ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
+                                        : "bg-slate-100 text-slate-700 border border-slate-200"
+                                    }`}
+                                  >
+                                    {t}
+                                  </span>
+                                ))}
+                              </div>
+                              <p className="font-semibold text-gray-900">{category}</p>
+                            </div>
+                            <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180 shrink-0" />
+                          </summary>
+
+                          {/* 4단계 row */}
+                          <div className="mt-4 space-y-2">
+                            {sortedLevels.map((level) => {
+                              const raw = (level as ChecklistDetail & { rawResult?: string }).rawResult ?? level.result;
+                              const mc = getMaturityColor(level.maturity as string);
+                              const finding = getDemoFinding(level);
+                              const resultBg = raw === "충족"
+                                ? "bg-green-50 border-green-200"
+                                : raw === "부분충족"
+                                ? "bg-amber-50 border-amber-200"
+                                : raw === "미충족"
+                                ? "bg-rose-50 border-rose-200"
+                                : "bg-gray-50 border-gray-200";
+
+                              return (
+                                <details
+                                  key={level.id}
+                                  className={`rounded-lg border ${resultBg} p-3`}
+                                >
+                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${mc.badge}`}>
+                                          {level.maturity}
+                                        </span>
+                                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                          raw === "충족"      ? "bg-green-100 text-green-700"
+                                          : raw === "부분충족" ? "bg-amber-100 text-amber-700"
+                                          : raw === "미충족"   ? "bg-red-100 text-red-700"
+                                                              : "bg-gray-100 text-gray-500"
+                                        }`}>
+                                          {raw}
+                                        </span>
+                                        {toolLabel(level.tool) && (
+                                          <span
+                                            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                              toolLabel(level.tool) === "수동"
+                                                ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
+                                                : "bg-slate-100 text-slate-700 border border-slate-200"
+                                            }`}
+                                          >
+                                            {toolLabel(level.tool)}
+                                          </span>
+                                        )}
+                                        {raw === "평가불가" && (level.unevaluableReasonLabel || level.unevaluableReasonCode) && (
+                                          <span
+                                            className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200"
+                                            title={level.unevaluableReasonLabel ?? level.unevaluableReasonCode}
+                                          >
+                                            사유: {level.unevaluableReasonLabel ?? level.unevaluableReasonCode}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-sm text-gray-800 leading-snug">{level.question}</p>
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-2">
+                                      <span className={`text-sm font-bold ${mc.text}`}>{level.score.toFixed(2)}</span>
+                                      <ChevronDown size={14} className="text-gray-400" />
+                                    </div>
+                                  </summary>
+
+                                  {/* 진단 근거 + 세부 메타 */}
+                                  <div className="mt-3 rounded-md border border-gray-200 bg-white p-3 text-xs">
+                                    <p className="font-semibold text-slate-500 mb-1">진단 근거</p>
+                                    <p className="text-slate-700 mb-2">{finding.source}</p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+                                      <div className="bg-slate-50 rounded p-2">
+                                        <p className="font-semibold text-slate-500 mb-0.5">수집값</p>
+                                        <p className="text-slate-700">{finding.observed}</p>
+                                      </div>
+                                      <div className="bg-slate-50 rounded p-2">
+                                        <p className="font-semibold text-slate-500 mb-0.5">발견 위치</p>
+                                        <p className="text-slate-700">{finding.location}</p>
+                                      </div>
+                                      <div className="bg-slate-50 rounded p-2">
+                                        <p className="font-semibold text-slate-500 mb-0.5">판정 이유</p>
+                                        <p className="text-slate-700">{finding.reason}</p>
+                                      </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                      {level.criteria && (
+                                        <div className="bg-white border border-gray-100 rounded p-2">
+                                          <p className="font-semibold text-gray-500 mb-0.5">판정 기준</p>
+                                          <p className="text-gray-700 whitespace-pre-line">{level.criteria}</p>
+                                        </div>
+                                      )}
+                                      {level.recommendation && (
+                                        <div className="bg-white border border-gray-100 rounded p-2">
+                                          <p className="font-semibold text-gray-500 mb-0.5">개선 권고</p>
+                                          <p className="text-gray-700">{level.recommendation}</p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </details>
+                              );
+                            })}
+                          </div>
+                        </details>
+                      );
+                    });
+                  })()}
                 </div>
               </section>
             ))}
@@ -1129,9 +1453,21 @@ export function Reporting() {
 
           {/* 칸반 보드 */}
           <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
-            {byTerm.map(({ term, tasks }) => (
+            {byTerm.map(({ term, tasks }) => {
+              const guide = TERM_GUIDE_ACTIVITIES[term];
+              return (
               <div key={term} className={`rounded-xl border p-4 ${TERM_COLORS[term]}`}>
-                <h3 className={`text-sm font-bold mb-3 ${TERM_HEADER[term]}`}>{TERM_LABELS[term]}</h3>
+                <h3 className={`text-sm font-bold mb-2 ${TERM_HEADER[term]}`}>{TERM_LABELS[term]}</h3>
+                {/* SKT 가이드 §8 — 각 단계별 권장 활동 안내 */}
+                {guide && (
+                  <div className="mb-3 rounded-lg border border-white/60 bg-white/70 p-2.5 text-[11px] leading-relaxed">
+                    <p className="font-semibold text-gray-700 mb-0.5">권장 활동</p>
+                    <p className="text-gray-600">{guide.activities}</p>
+                    <p className="mt-1 text-gray-500">
+                      <span className="font-medium">완료 증거:</span> {guide.evidence}
+                    </p>
+                  </div>
+                )}
                 <div className="space-y-3">
                   {tasks.length === 0 ? (
                     <p className="text-xs text-gray-500 text-center py-4">과제 없음</p>
@@ -1231,7 +1567,8 @@ export function Reporting() {
                   })}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -1398,7 +1735,7 @@ export function Reporting() {
             <h2 className="mb-2">보고서 PDF 내보내기</h2>
             <p className="text-gray-500 mb-2">진단 결과 전체를 PDF 문서로 다운로드합니다.</p>
             <p className="text-sm text-gray-500 mb-8">
-              표지 · 필러별 점수 · 체크리스트 세부항목 · 개선 권고 순으로 구성됩니다.
+              표지(평가 메타·승인 기록) · 필러별 점수 · 체크리스트 세부항목 · 개선 권고 순으로 구성됩니다.
             </p>
             <div className="flex justify-center">
               <button
@@ -1428,6 +1765,82 @@ export function Reporting() {
               >
                 <Download size={18} />
                 {pdfDownloading ? "생성 중..." : "PDF 다운로드"}
+              </button>
+            </div>
+          </div>
+
+          {/* 증적 목록 xlsx — 가이드 §7 산출물 evidence_register.xlsx */}
+          <div className="bg-white rounded-xl border border-gray-200 p-8">
+            <div className="flex items-start gap-4">
+              <FileText className="text-emerald-500 shrink-0 mt-1" size={36} />
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-semibold text-gray-800">증적 목록 (Excel)</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  자동 수집(CollectedData) + 수동 등록 증적(Evidence) 을 한 xlsx 로 정리.
+                  항목별 결과 · 출처 · 파일명 · 위치 · 관찰 내용 · 수집 시각 18개 컬럼.
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  산출물 패키지 — <code>evidence_register.xlsx</code>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!sessionId) return;
+                  try {
+                    await downloadEvidenceRegister(sessionId);
+                    toast.success("증적 목록 다운로드가 시작되었습니다.");
+                  } catch (err) {
+                    const status = err instanceof ApiError ? err.status : 0;
+                    if (status === 401) toast.error("로그인이 필요합니다.");
+                    else if (status === 403) toast.error("다운로드 권한이 없습니다.");
+                    else if (status === 404) toast.error("세션을 찾을 수 없습니다.");
+                    else toast.error("증적 목록 생성에 실패했습니다.");
+                  }
+                }}
+                disabled={!sessionId}
+                className="shrink-0 px-5 py-2.5 rounded-lg flex items-center gap-2 text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                <Download size={16} />
+                xlsx 다운로드
+              </button>
+            </div>
+          </div>
+
+          {/* 판정 로그 markdown — 가이드 §7 산출물 decision_log.md */}
+          <div className="bg-white rounded-xl border border-gray-200 p-8">
+            <div className="flex items-start gap-4">
+              <FileText className="text-purple-500 shrink-0 mt-1" size={36} />
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-semibold text-gray-800">판정 로그 (Markdown)</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  부분충족·평가불가 항목의 판정 근거(자동 지표·평가불가 사유·관찰 내용)와
+                  리뷰어 의견 빈 칸을 묶은 검토용 문서. PR/Notion 첨부에 적합한 .md 형식.
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  산출물 패키지 — <code>decision_log.md</code>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!sessionId) return;
+                  try {
+                    await downloadDecisionLog(sessionId);
+                    toast.success("판정 로그 다운로드가 시작되었습니다.");
+                  } catch (err) {
+                    const status = err instanceof ApiError ? err.status : 0;
+                    if (status === 401) toast.error("로그인이 필요합니다.");
+                    else if (status === 403) toast.error("다운로드 권한이 없습니다.");
+                    else if (status === 404) toast.error("세션을 찾을 수 없습니다.");
+                    else toast.error("판정 로그 생성에 실패했습니다.");
+                  }
+                }}
+                disabled={!sessionId}
+                className="shrink-0 px-5 py-2.5 rounded-lg flex items-center gap-2 text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                <Download size={16} />
+                md 다운로드
               </button>
             </div>
           </div>

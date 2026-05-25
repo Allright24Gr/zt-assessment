@@ -40,7 +40,7 @@ COL = {
     "pillar": 0,
     "category": 1,
     "maturity": 2,
-    # '세부 질문' (index 3) → 저장하지 않음
+    "question": 3,
     "diagnosis_type": 4,
     "tool": 5,
     "evidence": 6,
@@ -119,6 +119,7 @@ def load_rows(xlsx_path: Path) -> list:
             "weight": MATURITY_WEIGHT[maturity],
             "diagnosis_type": _cell(raw, COL["diagnosis_type"]) or "수동",
             "tool": tool,
+            "question": _cell(raw, COL["question"]) or None,
             "evidence": _cell(raw, COL["evidence"]) or None,
             "criteria": _cell(raw, COL["criteria"]) or None,
             "fields": _cell(raw, COL["fields"]) or None,

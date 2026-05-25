@@ -1,27 +1,70 @@
 import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint } from "lucide-react";
+import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint, BookOpenCheck, Tag, Database as DatabaseIcon, Users as UsersIcon, GitCommit } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
-import { runAssessment } from "../../config/api";
+import {
+  runAssessment, prepareAssessment, startPreparedAssessment,
+  downloadSessionManualTemplate, uploadManualExcel,
+} from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
-  IdpType, SiemType,
+  IdpType, SiemType, YesNoUnknown, ProfileSelect, ScanConsent,
+  EvaluationVersion, ScopeAsset, DataClassification, Reviewers,
+  AssessmentRunRequest,
 } from "../../types/api";
 
-const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
-const INFRA_TYPES = ["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "하이브리드"];
+// SKT 가이드 §3 — 평가 범위 자산 8개 기본 항목.
+const DEFAULT_SCOPE_ASSETS: ScopeAsset[] = [
+  { name: "Frontend URL",     value: "", included: true },
+  { name: "Backend API",      value: "", included: true },
+  { name: "Supabase project", value: "", included: true },
+  { name: "Notion DB",        value: "", included: true },
+  { name: "Drive folder",     value: "", included: true },
+  { name: "GitHub repo",      value: "", included: true },
+  { name: "CI/CD",            value: "", included: true },
+  { name: "운영자 계정",       value: "", included: true },
+];
 
-// 사전 프로파일링 — 4 오픈소스 도구만 지원 (학생 프로젝트, 라이선스 비용 0)
+// SKT 가이드 §3 — 데이터 등급 7개 기본 항목.
+const DEFAULT_DATA_CLASSIFICATIONS: DataClassification[] = [
+  { name: "영업 고객명",        sensitivity: "높음", storage_location: "" },
+  { name: "산업군",             sensitivity: "낮음", storage_location: "" },
+  { name: "제안서",             sensitivity: "중간", storage_location: "" },
+  { name: "사용 로그",          sensitivity: "중간", storage_location: "" },
+  { name: "LLM prompt/response", sensitivity: "높음", storage_location: "" },
+  { name: "OAuth token",        sensitivity: "높음", storage_location: "" },
+  { name: "API key",            sensitivity: "높음", storage_location: "" },
+];
+
+const ORG_TYPES = ["기업", "공공기관", "금융기관", "의료기관"];
+const INFRA_TYPES = [
+  "온프레미스",
+  "클라우드 (AWS)",
+  "클라우드 (Azure)",
+  "클라우드 (GCP)",
+  "SaaS형 (Vercel·Railway·Supabase 등)",
+  "하이브리드",
+];
+
+// 사전 프로파일링.
+// supported=true 한 도구만 자동 진단 — 그 외(상용 SaaS 등)는 선택 가능하지만
+// backend가 자동 항목을 수동 폴백으로 돌린다(manual.py /items 가 노출).
 const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported: boolean }> = [
-  { key: "keycloak", label: "Keycloak",          desc: "오픈소스 IAM/SSO",   supported: true  },
-  { key: "none",     label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백", supported: false },
+  { key: "keycloak",         label: "Keycloak",          desc: "오픈소스 IAM/SSO",        supported: true  },
+  { key: "google_workspace", label: "Google Workspace",  desc: "Google OAuth 기반",       supported: false },
+  { key: "entra",            label: "MS Entra ID",       desc: "Microsoft 365 / Azure AD", supported: false },
+  { key: "okta",             label: "Okta",              desc: "Okta Workforce Identity",  supported: false },
+  { key: "ldap_ad",          label: "자체 LDAP / AD",    desc: "온프레미스 디렉터리",       supported: false },
+  { key: "none",             label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백",        supported: false },
 ];
 
 const SIEM_OPTIONS: Array<{ key: SiemType; label: string; desc: string; supported: boolean }> = [
-  { key: "wazuh", label: "Wazuh",             desc: "오픈소스 SIEM/HIDS", supported: true  },
-  { key: "none",  label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백", supported: false },
+  { key: "wazuh",   label: "Wazuh",             desc: "오픈소스 SIEM/HIDS",      supported: true  },
+  { key: "splunk",  label: "Splunk",            desc: "Splunk Enterprise/Cloud", supported: false },
+  { key: "elastic", label: "Elastic SIEM",      desc: "Elastic Security",         supported: false },
+  { key: "none",    label: "사용 안 함 / 기타", desc: "수동 진단으로 폴백",        supported: false },
 ];
 
 export function NewAssessment() {
@@ -36,8 +79,8 @@ export function NewAssessment() {
     department: "",
     email: "",
     contact: "",
-    orgType: "기업",
-    infraType: "온프레미스",
+    orgType: "",
+    infraType: "",
     employees: "",
     servers: "",
     applications: "",
@@ -55,14 +98,20 @@ export function NewAssessment() {
     if (drafted) return;
 
     const p = user.profile || {};
+    // backend 가 email 비워두면 `{login_id}@local` placeholder 를 만드는데,
+    // 우리 이메일 정규식 fail 이라 빈 칸으로 두어 사용자가 직접 입력하게.
+    const userEmail = user.email ?? "";
+    const isLocalPlaceholder = userEmail.endsWith("@local") || /@local$/.test(userEmail);
+    // 미입력 필드는 임의 기본값(예: "기업"·"온프레미스") 채우지 말고 빈 칸 유지.
+    // 사용자가 직접 입력하기 전엔 select 의 첫 옵션이 보이긴 하지만 payload 에는 빈 값.
     const next = {
       orgName:      p.org_name      ?? user.orgName ?? "",
       manager:      user.username   ?? "",
       department:   p.department    ?? "",
-      email:        user.email      ?? "",
+      email:        isLocalPlaceholder ? "" : userEmail,
       contact:      p.contact       ?? "",
-      orgType:      p.org_type      ?? "기업",
-      infraType:    p.infra_type    ?? "온프레미스",
+      orgType:      p.org_type      ?? "",
+      infraType:    p.infra_type    ?? "",
       employees:    p.employees     != null ? String(p.employees)    : "",
       servers:      p.servers       != null ? String(p.servers)      : "",
       applications: p.applications  != null ? String(p.applications) : "",
@@ -77,10 +126,14 @@ export function NewAssessment() {
   const [pillarScope, setPillarScope] = useState<Record<string, boolean>>(
     Object.fromEntries(PILLARS.map((p) => [p.key, true]))
   );
-  // 사전 프로파일링 선택 — 4 오픈소스 도구만
-  const [profileSelect, setProfileSelect] = useState<{ idp_type: IdpType; siem_type: SiemType }>({
+  // 사전 프로파일링 선택 — 4 오픈소스 도구 + SKT XDR 명세 §6 흡수 4종
+  const [profileSelect, setProfileSelect] = useState<ProfileSelect>({
     idp_type: "keycloak",
     siem_type: "wazuh",
+    windows_audit_policy_enabled: "unknown",
+    sysmon_deployed: "unknown",
+    edr_product: "",
+    ot_segment_present: "unknown",
   });
   // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy
   const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean }>({
@@ -100,8 +153,47 @@ export function NewAssessment() {
 
   // 데모/실 스캔 모드: 기본은 데모(외부 시스템 미접근).
   const [scanMode, setScanMode] = useState<"demo" | "live">("demo");
+  // user1(박기웅) 은 시연 안전을 위해 *데모 모드만 허용* — 실 스캔 비활성.
+  const isDemoOnlyUser = (user?.id ?? "") === "user1";
+  // user1 이 어쩌다 live 였더라도 강제로 demo 로 되돌림.
+  useEffect(() => {
+    if (isDemoOnlyUser && scanMode !== "demo") setScanMode("demo");
+  }, [isDemoOnlyUser, scanMode]);
   // 외부 스캔 동의 체크박스 (작업 C)
   const [consentExternalScan, setConsentExternalScan] = useState(false);
+  // 외부 스캔 승인 메타 (SKT 가이드 §3·§4 — 승인자/시간/강도/제외/비상연락처)
+  const [scanConsent, setScanConsent] = useState<ScanConsent>({
+    approver: "",
+    scheduled_window: "",
+    intensity: "standard",
+    exclude_paths: "",
+    emergency_contact: "",
+  });
+  // SKT 가이드 §3 평가 착수 전 확정사항 4종
+  const [evaluationVersion, setEvaluationVersion] = useState<EvaluationVersion>({
+    frontend_deployment: "",
+    backend_deployment: "",
+    git_commit: "",
+    version_label: "",
+  });
+  const [scopeAssets, setScopeAssets] = useState<ScopeAsset[]>(DEFAULT_SCOPE_ASSETS);
+  const [dataClassifications, setDataClassifications] = useState<DataClassification[]>(
+    DEFAULT_DATA_CLASSIFICATIONS,
+  );
+  const [reviewers, setReviewers] = useState<Reviewers>({
+    app_owner: "",
+    backend_owner: "",
+    cloud_owner: "",
+    security_reviewer: "",
+  });
+  // Step 2 — 수동 양식 미리 작성 (선택). prepareAssessment 로 미리 세션 생성.
+  const [preparedSessionId, setPreparedSessionId] = useState<number | string | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [manualUploading, setManualUploading] = useState(false);
+  const [manualUploadResult, setManualUploadResult] = useState<
+    { parsed: number; skipped: number; unmatched: number } | null
+  >(null);
+  const manualFileInputRef = useRef<HTMLInputElement>(null);
   // Keycloak 연결 카드 입력값 (작업 E-fe)
   const [keycloakCreds, setKeycloakCreds] = useState<{ url: string; admin_user: string; admin_pass: string }>({
     url: "", admin_user: "", admin_pass: "",
@@ -152,16 +244,16 @@ export function NewAssessment() {
     (toolScope.nmap && scanTargets.nmap.trim()) ||
     (toolScope.trivy && scanTargets.trivy.trim())
   );
-  const submitDisabled = !!liveScanIntent && !consentExternalScan;
+  // 승인 메타 필수값(승인자 + 비상연락처) — 외부 스캔 시 책임 추적을 위해 보고서에 기록.
+  const consentMetaMissing = !!liveScanIntent && (
+    !scanConsent.approver?.trim() ||
+    !scanConsent.emergency_contact?.trim()
+  );
+  const submitDisabled =
+    !!liveScanIntent && (!consentExternalScan || consentMetaMissing);
 
-  const handleSubmit = () => {
-    const excludedTools = Object.entries(toolScope)
-      .filter(([, enabled]) => !enabled)
-      .map(([tool]) => tool)
-      .join(",");
-
-    // 데모 모드: 외부 시스템 정보를 일절 전송하지 않는다.
-    // 실 스캔 모드: 입력된 외부 시스템 정보만 선택적으로 전송한다.
+  // payload 빌더 — runAssessment / prepareAssessment 둘 다 사용.
+  const buildRunPayload = (): AssessmentRunRequest => {
     const nmapTarget = scanTargets.nmap.trim();
     const trivyTarget = scanTargets.trivy.trim();
     const scanTargetsPayload: ScanTargets = {};
@@ -169,7 +261,6 @@ export function NewAssessment() {
     if (isLive && toolScope.trivy && trivyTarget) scanTargetsPayload.trivy = trivyTarget;
     const hasScanTargets = Object.keys(scanTargetsPayload).length > 0;
 
-    // Keycloak/Wazuh 연결 정보 — 실 스캔 모드 + 도구 선택 시에만, 그리고 입력값이 있을 때만 전송
     const kcPayload: KeycloakCreds = {};
     if (isLive && toolScope.keycloak) {
       if (keycloakCreds.url.trim())        kcPayload.url        = keycloakCreds.url.trim();
@@ -186,7 +277,47 @@ export function NewAssessment() {
     }
     const hasWz = Object.keys(wzPayload).length > 0;
 
-    runAssessment({
+    const consentPayload: ScanConsent = {};
+    if (liveScanIntent) {
+      const approver = (scanConsent.approver || "").trim();
+      const window_  = (scanConsent.scheduled_window || "").trim();
+      const exclude  = (scanConsent.exclude_paths || "").trim();
+      const contact  = (scanConsent.emergency_contact || "").trim();
+      if (approver) consentPayload.approver = approver;
+      if (window_)  consentPayload.scheduled_window = window_;
+      if (scanConsent.intensity) consentPayload.intensity = scanConsent.intensity;
+      if (exclude)  consentPayload.exclude_paths = exclude;
+      if (contact)  consentPayload.emergency_contact = contact;
+    }
+    const hasConsent = Object.keys(consentPayload).length > 0;
+
+    const evalVersionPayload: EvaluationVersion = {};
+    (["frontend_deployment", "backend_deployment", "git_commit", "version_label"] as const).forEach((k) => {
+      const v = (evaluationVersion[k] || "").trim();
+      if (v) evalVersionPayload[k] = v;
+    });
+    const hasEvalVersion = Object.keys(evalVersionPayload).length > 0;
+
+    const scopeAssetsPayload = scopeAssets
+      .filter((a) => a.name.trim() && a.value.trim())
+      .map((a) => ({ name: a.name.trim(), value: a.value.trim(), included: a.included }));
+
+    const dcPayload = dataClassifications
+      .filter((d) => d.name.trim())
+      .map((d) => ({
+        name: d.name.trim(),
+        sensitivity: d.sensitivity,
+        storage_location: (d.storage_location || "").trim(),
+      }));
+
+    const reviewersPayload: Reviewers = {};
+    (["app_owner", "backend_owner", "cloud_owner", "security_reviewer"] as const).forEach((k) => {
+      const v = (reviewers[k] || "").trim();
+      if (v) reviewersPayload[k] = v;
+    });
+    const hasReviewers = Object.keys(reviewersPayload).length > 0;
+
+    return {
       org_name: formData.orgName,
       manager: formData.manager,
       department: formData.department,
@@ -205,16 +336,94 @@ export function NewAssessment() {
       ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),
-    })
-      .then((res) =>
-        navigate(`/in-progress/${res.session_id}`, {
-          state: {
-            excludedTools,
-            orgName: formData.orgName,
-            manager: formData.manager,
-          },
-        })
-      )
+      ...(hasConsent ? { scan_consent: consentPayload } : {}),
+      ...(hasEvalVersion ? { evaluation_version: evalVersionPayload } : {}),
+      ...(scopeAssetsPayload.length > 0 ? { evaluation_scope_assets: scopeAssetsPayload } : {}),
+      ...(dcPayload.length > 0 ? { data_classifications: dcPayload } : {}),
+      ...(hasReviewers ? { reviewers: reviewersPayload } : {}),
+    };
+  };
+
+  const excludedToolsStr = Object.entries(toolScope)
+    .filter(([, enabled]) => !enabled)
+    .map(([tool]) => tool)
+    .join(",");
+
+  // 미리 세션 만들기 (skip_collector=true) — Step 2 양식 카드에서 호출.
+  const handlePrepareSession = async () => {
+    if (preparedSessionId || preparing) return;
+    setPreparing(true);
+    try {
+      const res = await prepareAssessment(buildRunPayload());
+      setPreparedSessionId(res.session_id);
+      toast.success("세션 준비 완료 — 양식을 다운로드받아 작성하세요.");
+    } catch (err) {
+      console.warn("[new-assessment] prepare failed:", err);
+      toast.error("세션 준비 실패: 입력값을 확인해주세요.");
+    } finally {
+      setPreparing(false);
+    }
+  };
+
+  // 양식 다운로드 (prepared session 기반).
+  const handleDownloadManualTemplate = async () => {
+    if (!preparedSessionId) {
+      toast.error("먼저 세션을 준비해주세요.");
+      return;
+    }
+    try {
+      await downloadSessionManualTemplate(preparedSessionId);
+    } catch (err) {
+      console.warn("[new-assessment] template download failed:", err);
+      toast.error("양식 다운로드에 실패했습니다.");
+    }
+  };
+
+  // 양식 업로드 (자동 채점).
+  const handleManualExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !preparedSessionId) return;
+    setManualUploading(true);
+    try {
+      const res = await uploadManualExcel(preparedSessionId, file);
+      setManualUploadResult({
+        parsed: res.parsed_count ?? 0,
+        skipped: res.skipped_count ?? 0,
+        unmatched: res.unmatched_count ?? 0,
+      });
+      toast.success(`양식 업로드 완료 — ${res.parsed_count ?? 0}건 채점됨`);
+    } catch (err) {
+      console.warn("[new-assessment] manual upload failed:", err);
+      toast.error("양식 업로드에 실패했습니다.");
+    } finally {
+      setManualUploading(false);
+      if (manualFileInputRef.current) manualFileInputRef.current.value = "";
+    }
+  };
+
+  const handleSubmit = () => {
+    // 이미 prepared session 있으면 startPreparedAssessment, 아니면 기존 runAssessment.
+    const navTo = (sid: number | string) =>
+      navigate(`/in-progress/${sid}`, {
+        state: {
+          excludedTools: excludedToolsStr,
+          orgName: formData.orgName,
+          manager: formData.manager,
+        },
+      });
+
+    if (preparedSessionId) {
+      startPreparedAssessment(preparedSessionId)
+        .then(() => navTo(preparedSessionId))
+        .catch((err) => {
+          console.warn("[new-assessment] startPrepared failed:", err);
+          toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
+        });
+      return;
+    }
+
+    runAssessment(buildRunPayload())
+      .then((res) => navTo(res.session_id))
       .catch((err) => {
         console.warn("[new-assessment] runAssessment failed:", err);
         toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
@@ -233,6 +442,7 @@ export function NewAssessment() {
           externalScanTools,
           scanTargets,
           scanMode,
+          scanConsent,
           keycloakCreds: { url: keycloakCreds.url, admin_user: keycloakCreds.admin_user },
           wazuhCreds:    { url: wazuhCreds.url,    api_user:   wazuhCreds.api_user   },
         }),
@@ -268,6 +478,24 @@ export function NewAssessment() {
             <div className="flex items-center gap-2 mb-6">
               <Building2 className="text-blue-600" size={24} />
               <h2>Step 1: 사전 프로파일링 + 기관 정보 입력</h2>
+            </div>
+
+            {/* SKT 가이드 §9 — 평가 목적 안내 */}
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50/60 p-5">
+              <div className="flex items-start gap-3">
+                <BookOpenCheck size={20} className="text-emerald-700 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-emerald-900 mb-1">진단 목적 안내</p>
+                  <p className="text-sm text-emerald-900 leading-relaxed">
+                    이번 진단은 <strong>KISA 제로트러스트 가이드라인 2.0</strong> 기준으로
+                    조직의 6대 Pillar (식별자·기기·네트워크·시스템·애플리케이션·데이터) ×
+                    4단계 성숙도 (기존·초기·향상·최적화) 를 평가합니다.
+                    자동 수집 가능한 통제는 외부 도구로 점검하고,
+                    정책·운영 이력처럼 외부 확인이 어려운 영역은 <strong>수동 증적</strong>을 첨부해 함께 판정합니다.
+                    결과로 현황 점수, Pillar별 강·약점, <strong>30/60/90일 개선 로드맵</strong>이 산출됩니다.
+                  </p>
+                </div>
+              </div>
             </div>
 
             {prefillNotice && (
@@ -322,15 +550,21 @@ export function NewAssessment() {
                   </div>
                 </label>
                 <label
-                  className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                    isLive ? "border-red-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  className={`flex items-start gap-3 p-3 border rounded-lg transition-colors ${
+                    isDemoOnlyUser
+                      ? "border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed"
+                      : isLive
+                      ? "border-red-500 bg-white shadow-sm cursor-pointer"
+                      : "border-gray-200 bg-white hover:bg-gray-50 cursor-pointer"
                   }`}
+                  title={isDemoOnlyUser ? "이 계정은 시연용 데모 계정이라 실 스캔이 비활성화되어 있습니다." : undefined}
                 >
                   <input
                     type="radio"
                     name="scanMode"
                     value="live"
                     checked={isLive}
+                    disabled={isDemoOnlyUser}
                     onChange={() => setScanMode("live")}
                     className="mt-1 w-4 h-4"
                   />
@@ -338,9 +572,16 @@ export function NewAssessment() {
                     <div className="flex items-center gap-1.5">
                       <Activity size={14} className="text-red-600" />
                       <p className="text-sm font-semibold text-gray-800">실 스캔 모드</p>
+                      {isDemoOnlyUser && (
+                        <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">
+                          데모 계정 비활성
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-gray-600 mt-0.5">
-                      입력한 외부 시스템을 실제로 스캔합니다. 권한 보유 자산만 대상으로 사용하세요.
+                      {isDemoOnlyUser
+                        ? "박기웅(user1)은 시연용 계정이라 외부 시스템에 실제로 스캔하지 않습니다."
+                        : "입력한 외부 시스템을 실제로 스캔합니다. 권한 보유 자산만 대상으로 사용하세요."}
                     </p>
                   </div>
                 </label>
@@ -361,7 +602,7 @@ export function NewAssessment() {
               {/* 신원 관리(IdP) */}
               <div className="mb-4">
                 <p className="mb-2 text-xs font-semibold text-gray-700">신원 관리 (IdP)</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2" role="radiogroup" aria-label="신원 관리 도구">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" role="radiogroup" aria-label="신원 관리 도구">
                   {IDP_OPTIONS.map((opt) => {
                     const checked = profileSelect.idp_type === opt.key;
                     return (
@@ -476,6 +717,90 @@ export function NewAssessment() {
                   </span>
                 </div>
               )}
+
+              {/* 엔드포인트 측정 가능성 — SKT XDR 명세 §6 흡수 4종 */}
+              <div className="mt-5 pt-4 border-t border-blue-100">
+                <p className="mb-1 text-xs font-semibold text-gray-700">엔드포인트 측정 가능성</p>
+                <p className="mb-3 text-[11px] text-gray-500">
+                  Windows Security 채널 / Sysmon 이벤트는 OS 측에서 emit 되지 않으면 수집할 수 없습니다.
+                  사전 입력이 없으면 일부 자동 항목은 "측정 전제 미충족"으로 평가불가 처리됩니다.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      Windows Audit Policy / GPO 활성
+                    </label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      value={profileSelect.windows_audit_policy_enabled || "unknown"}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, windows_audit_policy_enabled: e.target.value as YesNoUnknown,
+                      }))}
+                    >
+                      <option value="yes">활성 (Security 4688/4697/4720 emit)</option>
+                      <option value="no">비활성</option>
+                      <option value="unknown">모름</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      Sysmon 설치 여부
+                    </label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      value={profileSelect.sysmon_deployed || "unknown"}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, sysmon_deployed: e.target.value as YesNoUnknown,
+                      }))}
+                    >
+                      <option value="yes">설치됨 (EID 1·3·10·22·25 수집 가능)</option>
+                      <option value="no">미설치</option>
+                      <option value="unknown">모름</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      기 운영 EDR 제품 (선택)
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                      value={profileSelect.edr_product || ""}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, edr_product: e.target.value,
+                      }))}
+                      placeholder="예: CrowdStrike Falcon / 없음"
+                      maxLength={120}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      OT 세그먼트 존재
+                    </label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+                      value={profileSelect.ot_segment_present || "unknown"}
+                      onChange={(e) => setProfileSelect((p) => ({
+                        ...p, ot_segment_present: e.target.value as YesNoUnknown,
+                      }))}
+                    >
+                      <option value="yes">있음 (별도 트랙 분리)</option>
+                      <option value="no">없음</option>
+                      <option value="unknown">모름</option>
+                    </select>
+                  </div>
+                </div>
+                {(profileSelect.windows_audit_policy_enabled === "no"
+                  || profileSelect.sysmon_deployed === "no") && (
+                  <div className="mt-3 flex items-start gap-2 p-2.5 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                    <span>
+                      Audit Policy 비활성 또는 Sysmon 미설치 환경은 Windows 정밀 행위 탐지 항목이
+                      <strong> "측정 전제 미충족"</strong> 사유로 평가불가 처리됩니다.
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* 기관 정보 + 담당자 정보 — lg에선 좌우 배치 */}
@@ -500,6 +825,7 @@ export function NewAssessment() {
                       value={formData.orgType}
                       onChange={(e) => setFormData({ ...formData, orgType: e.target.value })}
                     >
+                      <option value="">선택 안 함</option>
                       {ORG_TYPES.map((t) => <option key={t}>{t}</option>)}
                     </select>
                   </div>
@@ -584,6 +910,7 @@ export function NewAssessment() {
                     value={formData.infraType}
                     onChange={(e) => setFormData({ ...formData, infraType: e.target.value })}
                   >
+                    <option value="">선택 안 함</option>
                     {INFRA_TYPES.map((t) => <option key={t}>{t}</option>)}
                   </select>
                 </div>
@@ -691,6 +1018,94 @@ export function NewAssessment() {
                         외부 스캔 수행으로 인한 모든 책임을 인지하고 진행합니다.
                       </span>
                     </label>
+
+                    {/* 외부 스캔 승인 메타 (SKT 가이드 §3·§4) — 보고서 머리에 표기 */}
+                    <div className="mt-3 p-3 bg-white border border-red-200 rounded-lg">
+                      <p className="text-xs font-semibold text-gray-800 mb-2">
+                        스캔 승인 기록
+                        <span className="ml-1 text-[11px] font-normal text-gray-500">
+                          (보고서 첫 장에 자동 기록됩니다)
+                        </span>
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">
+                            승인자 <span className="text-red-600">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.approver || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, approver: e.target.value })
+                            }
+                            placeholder="예: 최주용 팀장(SKT)"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">
+                            비상 연락처 <span className="text-red-600">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.emergency_contact || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, emergency_contact: e.target.value })
+                            }
+                            placeholder="예: 010-0000-0000 / oncall@example.com"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">스캔 시간대</label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.scheduled_window || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, scheduled_window: e.target.value })
+                            }
+                            placeholder="예: 2026-05-25 22:00~24:00 KST"
+                          />
+                        </div>
+                        <div>
+                          <label className="block mb-1 text-xs text-gray-700">스캔 강도</label>
+                          <select
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+                            value={scanConsent.intensity || "standard"}
+                            onChange={(e) =>
+                              setScanConsent({
+                                ...scanConsent,
+                                intensity: e.target.value as "light" | "standard",
+                              })
+                            }
+                          >
+                            <option value="light">light (최소 — top-100 포트 등)</option>
+                            <option value="standard">standard (기본 옵션)</option>
+                          </select>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block mb-1 text-xs text-gray-700">
+                            제외 경로 / 자산
+                            <span className="ml-1 text-[11px] text-gray-500">(쉼표로 구분)</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                            value={scanConsent.exclude_paths || ""}
+                            onChange={(e) =>
+                              setScanConsent({ ...scanConsent, exclude_paths: e.target.value })
+                            }
+                            placeholder="예: /admin/*, api.internal.example.com"
+                          />
+                        </div>
+                      </div>
+                      {consentMetaMissing && (
+                        <p className="mt-2 text-[11px] text-red-600">
+                          승인자와 비상 연락처는 필수입니다. (감사 추적 목적)
+                        </p>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
@@ -853,6 +1268,212 @@ export function NewAssessment() {
               )}
             </div>
 
+            {/* SKT 가이드 §3 평가 착수 전 확정사항 — 4 카드 */}
+            <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-5">
+              <div className="mb-4 flex items-center gap-2">
+                <FileText size={18} className="text-gray-700" />
+                <h3 className="text-sm font-semibold text-gray-800">
+                  평가 착수 전 확정사항
+                </h3>
+              </div>
+              <p className="text-xs text-gray-600 mb-4">
+                보고서 첫 장 · 판정 로그 · 증적 목록에 자동 표기됩니다. 비워두면 해당 항목은 표시되지 않습니다.
+              </p>
+
+              {/* Card A — 평가 대상 버전 */}
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <GitCommit size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">평가 대상 버전 (Deployment / Commit)</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Frontend deployment ID</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={evaluationVersion.frontend_deployment || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, frontend_deployment: e.target.value })}
+                      placeholder="예: Vercel dpl_abc123"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Backend deployment ID</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={evaluationVersion.backend_deployment || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, backend_deployment: e.target.value })}
+                      placeholder="예: Railway xyz789"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Git commit hash</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg font-mono"
+                      value={evaluationVersion.git_commit || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, git_commit: e.target.value })}
+                      placeholder="예: a156b40"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">버전 라벨 (자유 표기)</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={evaluationVersion.version_label || ""}
+                      onChange={(e) => setEvaluationVersion({ ...evaluationVersion, version_label: e.target.value })}
+                      placeholder="예: 2026-05-22 배포본"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Card B — 평가 범위 자산 목록 */}
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <Tag size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">평가 범위 자산 목록</p>
+                  <span className="ml-auto text-[11px] text-gray-500">포함/제외 표시</span>
+                </div>
+                <div className="space-y-2">
+                  {scopeAssets.map((asset, idx) => (
+                    <div key={asset.name} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-3 text-xs text-gray-700">{asset.name}</div>
+                      <div className="col-span-7">
+                        <input
+                          type="text"
+                          className="w-full px-2.5 py-1 text-sm border border-gray-300 rounded"
+                          value={asset.value}
+                          onChange={(e) => {
+                            const next = [...scopeAssets];
+                            next[idx] = { ...next[idx], value: e.target.value };
+                            setScopeAssets(next);
+                          }}
+                          placeholder={
+                            asset.name === "Frontend URL" ? "https://tmarkovframework.vercel.app" :
+                            asset.name === "Backend API" ? "https://api.tmarkov.example.com" :
+                            asset.name === "Supabase project" ? "프로젝트 ID 또는 URL" :
+                            asset.name === "GitHub repo" ? "owner/name" :
+                            "값 또는 URL"
+                          }
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="w-3.5 h-3.5"
+                            checked={asset.included}
+                            onChange={(e) => {
+                              const next = [...scopeAssets];
+                              next[idx] = { ...next[idx], included: e.target.checked };
+                              setScopeAssets(next);
+                            }}
+                          />
+                          포함
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Card C — 데이터 등급 분류 */}
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <DatabaseIcon size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">데이터 등급 분류 (민감도 · 보관 위치)</p>
+                </div>
+                <div className="space-y-2">
+                  {dataClassifications.map((dc, idx) => (
+                    <div key={dc.name} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-4 text-xs text-gray-700">{dc.name}</div>
+                      <div className="col-span-3">
+                        <select
+                          className="w-full px-2 py-1 text-xs border border-gray-300 rounded bg-white"
+                          value={dc.sensitivity}
+                          onChange={(e) => {
+                            const next = [...dataClassifications];
+                            next[idx] = { ...next[idx], sensitivity: e.target.value as DataClassification["sensitivity"] };
+                            setDataClassifications(next);
+                          }}
+                        >
+                          <option value="낮음">낮음</option>
+                          <option value="중간">중간</option>
+                          <option value="높음">높음</option>
+                        </select>
+                      </div>
+                      <div className="col-span-5">
+                        <input
+                          type="text"
+                          className="w-full px-2.5 py-1 text-sm border border-gray-300 rounded"
+                          value={dc.storage_location || ""}
+                          onChange={(e) => {
+                            const next = [...dataClassifications];
+                            next[idx] = { ...next[idx], storage_location: e.target.value };
+                            setDataClassifications(next);
+                          }}
+                          placeholder="예: Supabase / Notion / Drive"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Card D — 판정자 4역할 */}
+              <div className="rounded-lg border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <UsersIcon size={14} className="text-blue-600" />
+                  <p className="text-xs font-semibold text-gray-800">판정자 4역할 (수동 항목은 최소 2인 리뷰)</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">App owner</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.app_owner || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, app_owner: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Backend owner</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.backend_owner || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, backend_owner: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Cloud owner</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.cloud_owner || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, cloud_owner: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 text-xs text-gray-600">Security reviewer</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      value={reviewers.security_reviewer || ""}
+                      onChange={(e) => setReviewers({ ...reviewers, security_reviewer: e.target.value })}
+                      placeholder="이름"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="flex justify-between pt-4">
               <button
                 type="button"
@@ -904,6 +1525,78 @@ export function NewAssessment() {
                 </p>
               )}
             </div>
+
+            {/* 수동 양식 미리 작성 (선택) — 진단 시작 전 자동 채점 */}
+            <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <Upload size={18} className="text-blue-700" />
+                <h3 className="text-sm font-semibold text-gray-800">
+                  수동 진단 양식 미리 작성 (선택)
+                </h3>
+              </div>
+              <p className="text-xs text-gray-600 mb-3">
+                Step 1에서 선택한 IdP/SIEM 환경에 맞춰 자동 진단이 불가능한 항목만 모은 Excel 양식을
+                미리 받아 채울 수 있습니다. 업로드 시 자동 채점됩니다.
+                다음 단계 마지막에 [진단 시작]을 누르면 자동 수집과 합쳐져 최종 PDF가 만들어집니다.
+              </p>
+
+              {!preparedSessionId ? (
+                <button
+                  type="button"
+                  onClick={handlePrepareSession}
+                  disabled={preparing || selectedPillarCount === 0}
+                  className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg ${
+                    preparing || selectedPillarCount === 0
+                      ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                      : "bg-blue-600 text-white hover:bg-blue-700"
+                  }`}
+                >
+                  {preparing ? "준비 중..." : "환경 기반 양식 준비"}
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-emerald-700">
+                    ✅ 세션 준비 완료 (session #{preparedSessionId}). 양식 다운로드 → 작성 → 업로드.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDownloadManualTemplate}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 bg-white rounded-lg hover:bg-gray-50 text-gray-700"
+                    >
+                      <FileText size={15} />
+                      양식 다운로드 (.xlsx)
+                    </button>
+                    <label
+                      className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer ${
+                        manualUploading
+                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                          : "bg-blue-600 text-white hover:bg-blue-700"
+                      }`}
+                    >
+                      <Upload size={15} />
+                      {manualUploading ? "업로드 중..." : "작성한 양식 업로드"}
+                      <input
+                        ref={manualFileInputRef}
+                        type="file"
+                        accept=".xlsx"
+                        className="hidden"
+                        disabled={manualUploading}
+                        onChange={handleManualExcelUpload}
+                      />
+                    </label>
+                  </div>
+                  {manualUploadResult && (
+                    <div className="text-xs text-gray-700 bg-white rounded border border-gray-200 px-3 py-2">
+                      <span className="font-semibold text-emerald-700">자동 채점 완료:</span>{" "}
+                      <strong>{manualUploadResult.parsed}건</strong> 채점,
+                      건너뜀 {manualUploadResult.skipped}건, 매칭 실패 {manualUploadResult.unmatched}건.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="flex justify-between pt-4">
               <button onClick={() => setStep(1)} className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
                 이전
@@ -982,6 +1675,8 @@ export function NewAssessment() {
                     <p className="text-xs mt-1">
                       입력한 외부 시스템(Keycloak/Wazuh/Nmap/Trivy)을 실제로 스캔합니다.
                       {liveScanIntent && !consentExternalScan && " 외부 스캔 동의 체크가 필요합니다."}
+                      {liveScanIntent && consentExternalScan && consentMetaMissing &&
+                        " 승인자/비상연락처 입력이 필요합니다."}
                     </p>
                   </div>
                 </div>
@@ -999,7 +1694,13 @@ export function NewAssessment() {
               <button
                 onClick={handleSubmit}
                 disabled={submitDisabled}
-                title={submitDisabled ? "외부 스캔 동의 체크 후 진행 가능합니다." : undefined}
+                title={
+                  submitDisabled
+                    ? consentMetaMissing
+                      ? "승인자/비상연락처를 입력해야 외부 스캔을 시작할 수 있습니다."
+                      : "외부 스캔 동의 체크 후 진행 가능합니다."
+                    : undefined
+                }
                 className={`px-8 py-3 text-white rounded-lg ${
                   submitDisabled
                     ? "bg-gray-300 cursor-not-allowed"
