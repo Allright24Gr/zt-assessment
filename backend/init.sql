@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS Checklist (
   maturity_score INT          NOT NULL DEFAULT 0,
   diagnosis_type VARCHAR(20)  NOT NULL,
   tool           VARCHAR(100) NOT NULL,
+  question       TEXT         NULL,
   evidence       TEXT         NULL,
   criteria       TEXT         NULL,
   fields         TEXT         NULL,

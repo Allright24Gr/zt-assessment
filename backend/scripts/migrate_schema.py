@@ -22,6 +22,8 @@ MIGRATIONS = [
     ("Evidence",         "mime_type",         "VARCHAR(120) NULL"),
     ("Evidence",         "file_size",         "INT NULL"),
     ("Evidence",         "original_filename", "VARCHAR(255) NULL"),
+    # 세부 질문 텍스트 (xlsx '세부 질문' 컬럼) — 신규 볼륨 init.sql 누락 대응
+    ("Checklist",        "question",          "TEXT NULL"),
 ]
 
 
