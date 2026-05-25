@@ -637,10 +637,10 @@ export function Reporting() {
       {/* SKT 가이드 §9 — 평가 목적 안내 */}
       {evalMeta && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 px-4 py-3 text-xs leading-relaxed text-emerald-900">
-          <span className="font-semibold">평가 목적</span> — 이번 평가는 점수 산출이 아니라
-          실제 운영 구조에서 통제가 어디까지 증명되는지 확인하는 작업입니다.
-          자동수집 항목과 수동 증적이 분리되어 있고, 자동수집이 안 되는 항목은 평가불가가 아닌
-          수동 증적으로 판정되어야 합니다.
+          <span className="font-semibold">진단 목적</span> — 이번 진단은
+          KISA 제로트러스트 가이드라인 2.0 기준으로 6대 Pillar × 4단계 성숙도를 평가한 결과입니다.
+          자동 수집 가능한 통제는 외부 도구로 점검하고, 정책·운영 이력은 수동 증적을 통해 함께
+          판정했습니다. 점수와 함께 Pillar별 강·약점 / 30·60·90일 개선 로드맵을 확인하세요.
         </div>
       )}
 

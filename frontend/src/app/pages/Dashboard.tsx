@@ -184,11 +184,12 @@ export function Dashboard() {
         </div>
 
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5">
-          <p className="text-sm font-semibold text-emerald-900 mb-1">평가 목적</p>
+          <p className="text-sm font-semibold text-emerald-900 mb-1">진단 목적</p>
           <p className="text-sm text-emerald-900 leading-relaxed">
-            이번 평가는 제로트러스트 제품처럼 홍보하기 위한 점수 산출이 아니라,
-            실제 운영 구조에서 <strong>신원·네트워크·시스템·앱·데이터 통제가 어디까지 증명되는지</strong> 확인하는 작업입니다.
-            자동수집이 가능한 항목과 수동 증적이 필요한 항목을 명확히 나누어 진단합니다.
+            <strong>KISA 제로트러스트 가이드라인 2.0</strong> 기준으로
+            조직의 6대 Pillar (식별자·기기·네트워크·시스템·애플리케이션·데이터) ×
+            4단계 성숙도를 평가합니다. 자동 수집과 수동 증적을 결합해
+            현황 점수, Pillar별 강·약점, <strong>30/60/90일 개선 로드맵</strong>을 산출합니다.
           </p>
         </div>
 

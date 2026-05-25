@@ -483,13 +483,14 @@ export function NewAssessment() {
               <div className="flex items-start gap-3">
                 <BookOpenCheck size={20} className="text-emerald-700 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-sm font-semibold text-emerald-900 mb-1">평가 목적 안내</p>
+                  <p className="text-sm font-semibold text-emerald-900 mb-1">진단 목적 안내</p>
                   <p className="text-sm text-emerald-900 leading-relaxed">
-                    이번 평가는 제로트러스트 제품처럼 홍보하기 위한 점수 산출이 아니라,
-                    <strong> 실제 운영 구조에서 신원·네트워크·시스템·앱·데이터 통제가 어디까지 증명되는지 확인</strong>하는 작업입니다.
-                    자동수집이 되는 항목과 안 되는 항목을 명확히 나누어 쓰고,
-                    자동수집이 안 되는 항목은 평가불가로 방치하지 말고 <strong>수동 증적을 붙여 판정</strong>하세요.
-                    live scan은 승인된 범위에서만 진행합니다.
+                    이번 진단은 <strong>KISA 제로트러스트 가이드라인 2.0</strong> 기준으로
+                    조직의 6대 Pillar (식별자·기기·네트워크·시스템·애플리케이션·데이터) ×
+                    4단계 성숙도 (기존·초기·향상·최적화) 를 평가합니다.
+                    자동 수집 가능한 통제는 외부 도구로 점검하고,
+                    정책·운영 이력처럼 외부 확인이 어려운 영역은 <strong>수동 증적</strong>을 첨부해 함께 판정합니다.
+                    결과로 현황 점수, Pillar별 강·약점, <strong>30/60/90일 개선 로드맵</strong>이 산출됩니다.
                   </p>
                 </div>
               </div>
