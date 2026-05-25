@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router";
 import { useAuth } from "../context/AuthContext";
+import { useNotifications } from "../context/NotificationContext";
 import { Shield, AlertCircle, X, Mail, KeyRound } from "lucide-react";
 import { requestPasswordReset, ApiError } from "../../config/api";
 
@@ -22,6 +23,7 @@ export function Login() {
   const recoveryEmailInputRef = useRef<HTMLInputElement>(null);
   const recoveryCloseButtonRef = useRef<HTMLButtonElement>(null);
   const { user, login } = useAuth();
+  const { addNotification } = useNotifications();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -77,10 +79,11 @@ export function Login() {
 
     const ok = await login(username, password);
     if (ok) {
-      // 시드 계정(password === login_id) 감지 → Dashboard 배너 트리거 (작업 N)
+      // 시드 계정(password === login_id) 감지 → Dashboard 배너 + 알림 트리거.
       try {
         if (username && username === password) {
           sessionStorage.setItem("zt_seed_password_warning", "true");
+          addNotification("기본 비밀번호를 사용 중입니다. Settings에서 변경해주세요.", "warning");
         } else {
           sessionStorage.removeItem("zt_seed_password_warning");
         }

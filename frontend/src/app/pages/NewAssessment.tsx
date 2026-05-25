@@ -79,8 +79,8 @@ export function NewAssessment() {
     department: "",
     email: "",
     contact: "",
-    orgType: "기업",
-    infraType: "온프레미스",
+    orgType: "",
+    infraType: "",
     employees: "",
     servers: "",
     applications: "",
@@ -102,14 +102,16 @@ export function NewAssessment() {
     // 우리 이메일 정규식 fail 이라 빈 칸으로 두어 사용자가 직접 입력하게.
     const userEmail = user.email ?? "";
     const isLocalPlaceholder = userEmail.endsWith("@local") || /@local$/.test(userEmail);
+    // 미입력 필드는 임의 기본값(예: "기업"·"온프레미스") 채우지 말고 빈 칸 유지.
+    // 사용자가 직접 입력하기 전엔 select 의 첫 옵션이 보이긴 하지만 payload 에는 빈 값.
     const next = {
       orgName:      p.org_name      ?? user.orgName ?? "",
       manager:      user.username   ?? "",
       department:   p.department    ?? "",
       email:        isLocalPlaceholder ? "" : userEmail,
       contact:      p.contact       ?? "",
-      orgType:      p.org_type      ?? "기업",
-      infraType:    p.infra_type    ?? "온프레미스",
+      orgType:      p.org_type      ?? "",
+      infraType:    p.infra_type    ?? "",
       employees:    p.employees     != null ? String(p.employees)    : "",
       servers:      p.servers       != null ? String(p.servers)      : "",
       applications: p.applications  != null ? String(p.applications) : "",
@@ -823,6 +825,7 @@ export function NewAssessment() {
                       value={formData.orgType}
                       onChange={(e) => setFormData({ ...formData, orgType: e.target.value })}
                     >
+                      <option value="">선택 안 함</option>
                       {ORG_TYPES.map((t) => <option key={t}>{t}</option>)}
                     </select>
                   </div>
@@ -907,6 +910,7 @@ export function NewAssessment() {
                     value={formData.infraType}
                     onChange={(e) => setFormData({ ...formData, infraType: e.target.value })}
                   >
+                    <option value="">선택 안 함</option>
                     {INFRA_TYPES.map((t) => <option key={t}>{t}</option>)}
                   </select>
                 </div>

@@ -18,6 +18,7 @@ import {
   type AssessmentStatusResponse,
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
+import { useNotifications } from "../context/NotificationContext";
 import type { ManualItemDetail } from "../../types/api";
 
 const TOOL_NAMES = ["Keycloak", "Wazuh", "Nmap", "Trivy"] as const;
@@ -148,6 +149,7 @@ export function InProgress() {
   const navigate = useNavigate();
   const { sessionId } = useParams();
   const location = useLocation();
+  const { addNotification } = useNotifications();
   const { excludedTools = "", orgName = "", manager = "" } = (location.state ?? {}) as {
     excludedTools?: string; orgName?: string; manager?: string;
   };
@@ -427,6 +429,7 @@ export function InProgress() {
       .then(() => {
         setFinalized(true);
         toast.success("자동 진단이 완료되었습니다.");
+        addNotification(`진단 #${sid} 자동 수집이 완료되어 결과 페이지로 이동합니다.`, "success");
         finalizeNavTimerRef.current = setTimeout(() => navigate(`/reporting/${sid}`), 1500);
       })
       .catch((err) => {
@@ -444,6 +447,7 @@ export function InProgress() {
       await finalizeAssessment(sid);
       setFinalized(true);
       toast.success("결과 페이지로 이동합니다 (수동 항목은 나중에 보강 가능).");
+      addNotification(`진단 #${sid} 완료 (수동 항목 일부 미작성).`, "warning");
       navigate(`/reporting/${sid}`);
     } catch (err) {
       console.warn("[in-progress] skip-manual finalize:", err);

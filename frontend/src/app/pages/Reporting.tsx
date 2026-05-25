@@ -27,7 +27,7 @@ import { useAuth } from "../context/AuthContext";
 import { sessions as mockSessions, improvements as mockImprovements } from "../data/mockData";
 import type { ChecklistDetail, Improvement, Session } from "../data/mockData";
 import { PILLARS } from "../data/constants";
-import { getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
+import { getMaturityLevel, getScoreColor, maturityLabel, getMaturityColor } from "../lib/maturity";
 import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem, EvaluationMeta } from "../../types/api";
@@ -1240,129 +1240,149 @@ export function Reporting() {
                 </div>
 
                 <div className="space-y-3">
-                  {items.map((detail) => {
-                    const scoreColors = getScoreColor(detail.score);
-                    const finding = getDemoFinding(detail);
-                    const raw = (detail as ChecklistDetail & { rawResult?: string }).rawResult ?? detail.result;
-                    const resultCardClass = raw === "충족"
-                      ? "border-green-200 bg-green-50 open:border-green-300 open:bg-green-100/60"
-                      : raw === "미충족"
-                      ? "border-rose-200 bg-rose-50 open:border-rose-300 open:bg-rose-100/60"
-                      : raw === "부분충족"
-                      ? "border-amber-200 bg-amber-50 open:border-amber-300 open:bg-amber-100/60"
-                      : "border-gray-200 bg-white open:border-blue-200 open:bg-blue-50/30";
-
-                    return (
-                      <details
-                        key={detail.id}
-                        className={`group rounded-xl border p-4 transition-colors ${resultCardClass}`}
-                      >
-                        <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
-                          <div className="min-w-0">
-                            <div className="mb-2 flex flex-wrap items-center gap-2">
-                              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-                                {detail.category}
-                              </span>
-                              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                raw === "충족"
-                                  ? "bg-green-100 text-green-700"
-                                  : raw === "미충족"
-                                  ? "bg-red-100 text-red-700"
-                                  : raw === "부분충족"
-                                  ? "bg-amber-100 text-amber-700"
-                                  : "bg-gray-100 text-gray-500"
-                              }`}>
-                                {raw}
-                              </span>
-                              {/* 미충족/평가불가 항목엔 maturity 라벨 숨김 — 의미 없는 정보 노출 차단 */}
-                              {raw !== "미충족" && raw !== "평가불가" && (
-                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${scoreColors.badge}`}>
-                                  {maturityLabel(getMaturityLevel(detail.score))}
-                                </span>
-                              )}
-                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                                {detail.diagnosisType === detail.tool
-                                  ? detail.diagnosisType
-                                  : `${detail.diagnosisType} / ${detail.tool}`}
-                              </span>
-                              {raw === "평가불가" && (detail.unevaluableReasonLabel || detail.unevaluableReasonCode) && (
-                                <span
-                                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 border border-amber-200"
-                                  title={detail.unevaluableReasonLabel ?? detail.unevaluableReasonCode}
-                                >
-                                  사유: {detail.unevaluableReasonLabel ?? detail.unevaluableReasonCode}
-                                </span>
-                              )}
-                            </div>
-                            <p className="mb-1 text-xs font-semibold text-gray-500">{detail.item} · {maturityLabel(detail.maturity)}</p>
-                            <p className="font-medium text-gray-900">{detail.question}</p>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-4">
-                            <div className="text-right">
-                              <p className="text-lg font-bold text-blue-600">{detail.score.toFixed(2)}</p>
-                              <p className="text-xs text-gray-500">/ 4.0</p>
-                            </div>
-                            <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180" />
-                          </div>
-                        </summary>
-
-                        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <p className="text-xs font-semibold text-slate-500">진단 근거 스냅샷</p>
-                              <p className="mt-1 text-sm font-semibold text-slate-900">{finding.source}</p>
-                            </div>
-                            <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                              finding.impact > 0 ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"
-                            }`}>
-                              점수 영향 {finding.impact > 0 ? `-${finding.impact}` : "없음"}
-                            </span>
-                          </div>
-                          <div className="grid gap-3 md:grid-cols-3">
-                            <div className="rounded-lg bg-slate-50 p-3">
-                              <p className="mb-1 text-xs font-semibold text-slate-500">수집값</p>
-                              <p className="text-sm leading-relaxed text-slate-700">{finding.observed}</p>
-                            </div>
-                            <div className="rounded-lg bg-slate-50 p-3">
-                              <p className="mb-1 text-xs font-semibold text-slate-500">발견 위치</p>
-                              <p className="text-sm leading-relaxed text-slate-700">{finding.location}</p>
-                            </div>
-                            <div className="rounded-lg bg-slate-50 p-3">
-                              <p className="mb-1 text-xs font-semibold text-slate-500">판정 이유</p>
-                              <p className="text-sm leading-relaxed text-slate-700">{finding.reason}</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">증적</p>
-                            <p className="text-sm leading-relaxed text-gray-700">{detail.evidence}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">판정 기준</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.criteria}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">추출 필드</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.fields}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">처리 로직</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.logic}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">예외 처리</p>
-                            <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">{detail.exceptions}</p>
-                          </div>
-                          <div className="rounded-lg border border-gray-100 bg-white p-3">
-                            <p className="mb-1 text-xs font-semibold text-gray-500">개선 권고</p>
-                            <p className="text-sm leading-relaxed text-gray-700">{detail.recommendation}</p>
-                          </div>
-                        </div>
-                      </details>
+                  {/* 카테고리 (예: "1.2.1 다중인증") 단위로 묶고, 안에 4단계 (기존/초기/향상/최적화) row 표시 */}
+                  {(() => {
+                    const MATURITY_ORDER: Record<string, number> = { 기존: 1, 초기: 2, 향상: 3, 최적화: 4 };
+                    const byCategory = items.reduce<Record<string, typeof items>>((acc, d) => {
+                      const key = d.category;
+                      if (!acc[key]) acc[key] = [];
+                      acc[key].push(d);
+                      return acc;
+                    }, {});
+                    const sortedCategories = Object.entries(byCategory).sort(
+                      ([a], [b]) => a.localeCompare(b, "ko")
                     );
-                  })}
+
+                    return sortedCategories.map(([category, levels]) => {
+                      const sortedLevels = [...levels].sort(
+                        (a, b) =>
+                          (MATURITY_ORDER[a.maturity as string] ?? 5) -
+                          (MATURITY_ORDER[b.maturity as string] ?? 5)
+                      );
+                      // 대표 단계 = 충족된 최고 단계 (없으면 가장 높은 maturity)
+                      const passedLevels = sortedLevels.filter((l) => l.result === "충족");
+                      const repLevel = passedLevels.length > 0
+                        ? passedLevels[passedLevels.length - 1]
+                        : sortedLevels[sortedLevels.length - 1];
+                      const repColor = getMaturityColor(repLevel.maturity as string);
+                      const passCount = passedLevels.length;
+
+                      return (
+                        <details
+                          key={category}
+                          className="group rounded-xl border border-gray-200 bg-white p-4 transition-colors hover:border-blue-200"
+                        >
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
+                            <div className="min-w-0 flex-1">
+                              <div className="mb-1 flex flex-wrap items-center gap-2">
+                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${repColor.badge}`}>
+                                  현재 {repLevel.maturity}
+                                </span>
+                                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+                                  {passCount}/{sortedLevels.length} 단계 충족
+                                </span>
+                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                                  {repLevel.diagnosisType === repLevel.tool
+                                    ? repLevel.diagnosisType
+                                    : `${repLevel.diagnosisType} / ${repLevel.tool}`}
+                                </span>
+                              </div>
+                              <p className="font-semibold text-gray-900">{category}</p>
+                            </div>
+                            <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180 shrink-0" />
+                          </summary>
+
+                          {/* 4단계 row */}
+                          <div className="mt-4 space-y-2">
+                            {sortedLevels.map((level) => {
+                              const raw = (level as ChecklistDetail & { rawResult?: string }).rawResult ?? level.result;
+                              const mc = getMaturityColor(level.maturity as string);
+                              const finding = getDemoFinding(level);
+                              const resultBg = raw === "충족"
+                                ? "bg-green-50 border-green-200"
+                                : raw === "부분충족"
+                                ? "bg-amber-50 border-amber-200"
+                                : raw === "미충족"
+                                ? "bg-rose-50 border-rose-200"
+                                : "bg-gray-50 border-gray-200";
+
+                              return (
+                                <details
+                                  key={level.id}
+                                  className={`rounded-lg border ${resultBg} p-3`}
+                                >
+                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${mc.badge}`}>
+                                          {level.maturity}
+                                        </span>
+                                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                          raw === "충족"      ? "bg-green-100 text-green-700"
+                                          : raw === "부분충족" ? "bg-amber-100 text-amber-700"
+                                          : raw === "미충족"   ? "bg-red-100 text-red-700"
+                                                              : "bg-gray-100 text-gray-500"
+                                        }`}>
+                                          {raw}
+                                        </span>
+                                        {raw === "평가불가" && (level.unevaluableReasonLabel || level.unevaluableReasonCode) && (
+                                          <span
+                                            className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800 border border-amber-200"
+                                            title={level.unevaluableReasonLabel ?? level.unevaluableReasonCode}
+                                          >
+                                            사유: {level.unevaluableReasonLabel ?? level.unevaluableReasonCode}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-sm text-gray-800 leading-snug">{level.question}</p>
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-2">
+                                      <span className={`text-sm font-bold ${mc.text}`}>{level.score.toFixed(2)}</span>
+                                      <ChevronDown size={14} className="text-gray-400" />
+                                    </div>
+                                  </summary>
+
+                                  {/* 진단 근거 + 세부 메타 */}
+                                  <div className="mt-3 rounded-md border border-gray-200 bg-white p-3 text-xs">
+                                    <p className="font-semibold text-slate-500 mb-1">진단 근거</p>
+                                    <p className="text-slate-700 mb-2">{finding.source}</p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+                                      <div className="bg-slate-50 rounded p-2">
+                                        <p className="font-semibold text-slate-500 mb-0.5">수집값</p>
+                                        <p className="text-slate-700">{finding.observed}</p>
+                                      </div>
+                                      <div className="bg-slate-50 rounded p-2">
+                                        <p className="font-semibold text-slate-500 mb-0.5">발견 위치</p>
+                                        <p className="text-slate-700">{finding.location}</p>
+                                      </div>
+                                      <div className="bg-slate-50 rounded p-2">
+                                        <p className="font-semibold text-slate-500 mb-0.5">판정 이유</p>
+                                        <p className="text-slate-700">{finding.reason}</p>
+                                      </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                      {level.criteria && (
+                                        <div className="bg-white border border-gray-100 rounded p-2">
+                                          <p className="font-semibold text-gray-500 mb-0.5">판정 기준</p>
+                                          <p className="text-gray-700 whitespace-pre-line">{level.criteria}</p>
+                                        </div>
+                                      )}
+                                      {level.recommendation && (
+                                        <div className="bg-white border border-gray-100 rounded p-2">
+                                          <p className="font-semibold text-gray-500 mb-0.5">개선 권고</p>
+                                          <p className="text-gray-700">{level.recommendation}</p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </details>
+                              );
+                            })}
+                          </div>
+                        </details>
+                      );
+                    });
+                  })()}
                 </div>
               </section>
             ))}

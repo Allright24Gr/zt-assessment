@@ -48,11 +48,12 @@ interface ProfileFormState {
 }
 
 function profileFromUser(p?: ProfileFields | null): ProfileFormState {
+  // 미입력 필드는 임의 기본값 채우지 말고 빈 칸 유지.
   return {
     department:   p?.department    ?? "",
     contact:      p?.contact       ?? "",
-    org_type:     p?.org_type      ?? "기업",
-    infra_type:   p?.infra_type    ?? "온프레미스",
+    org_type:     p?.org_type      ?? "",
+    infra_type:   p?.infra_type    ?? "",
     employees:    p?.employees    != null ? String(p.employees)    : "",
     servers:      p?.servers      != null ? String(p.servers)      : "",
     applications: p?.applications != null ? String(p.applications) : "",
@@ -636,6 +637,7 @@ export function Settings() {
                 onChange={(e) => setProfileForm({ ...profileForm, org_type: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg"
               >
+                <option value="">선택 안 함</option>
                 {["기업", "공공기관", "금융기관", "의료기관"].map((t) => <option key={t}>{t}</option>)}
               </select>
             </div>
@@ -646,6 +648,7 @@ export function Settings() {
                 onChange={(e) => setProfileForm({ ...profileForm, infra_type: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg"
               >
+                <option value="">선택 안 함</option>
                 {["온프레미스", "클라우드 (AWS)", "클라우드 (Azure)", "클라우드 (GCP)", "SaaS형 (Vercel·Railway·Supabase 등)", "하이브리드"].map((t) => <option key={t}>{t}</option>)}
               </select>
             </div>
