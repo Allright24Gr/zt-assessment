@@ -125,6 +125,26 @@ function _getLoginIdFromStorage(): string | null {
   }
 }
 
+// 다운로드 파일명 규칙 통일 — Readyz-T_<사용자명>_<날짜>_<용도>.<ext>
+function _getUserNameFromStorage(): string {
+  try {
+    const raw = localStorage.getItem("zt_user");
+    if (!raw) return "guest";
+    const parsed = JSON.parse(raw) as { name?: string; username?: string; login_id?: string };
+    const name = (parsed?.name ?? parsed?.username ?? parsed?.login_id ?? "guest").trim();
+    // 파일명 안전 문자만 (한글 허용)
+    return name.replace(/[^\w\d가-힣-]/g, "_") || "guest";
+  } catch {
+    return "guest";
+  }
+}
+
+export function makeDownloadFilename(purpose: string, ext: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const user = _getUserNameFromStorage();
+  return `Readyz-T_${user}_${today}_${purpose}.${ext}`;
+}
+
 function _getTokensFromStorage(): TokenPair | null {
   try {
     const raw = localStorage.getItem(TOKENS_STORAGE_KEY);
@@ -370,7 +390,7 @@ export async function downloadOcsfJson(sessionId: number | string): Promise<void
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
-  a.download = `zt-ocsf-${sessionId}.json`;
+  a.download = makeDownloadFilename("OCSF", "json");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -397,7 +417,7 @@ export async function downloadReportPdf(sessionId: number | string): Promise<voi
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
-  a.download = `zt-report-${sessionId}.pdf`;
+  a.download = makeDownloadFilename("결과보고서", "pdf");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -431,8 +451,7 @@ export async function downloadDecisionLog(sessionId: number | string): Promise<v
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
-  const today = new Date().toISOString().slice(0, 10);
-  a.download = `decision-log-${sessionId}-${today}.md`;
+  a.download = makeDownloadFilename("판정로그", "md");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -459,8 +478,7 @@ export async function downloadEvidenceRegister(sessionId: number | string): Prom
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
-  const today = new Date().toISOString().slice(0, 10);
-  a.download = `evidence-register-${sessionId}-${today}.xlsx`;
+  a.download = makeDownloadFilename("증적목록", "xlsx");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -488,7 +506,7 @@ export async function downloadSessionManualTemplate(sessionId: number | string):
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
-  a.download = `manual-checklist-session-${sessionId}.xlsx`;
+  a.download = makeDownloadFilename("수동진단양식", "xlsx");
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
