@@ -397,7 +397,7 @@ export function NewAssessment() {
               <div className="flex items-start gap-3">
                 <BookOpenCheck size={20} className="text-emerald-700 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-sm font-semibold text-emerald-900 mb-1">평가 목적 안내 (SKT 가이드 §9)</p>
+                  <p className="text-sm font-semibold text-emerald-900 mb-1">평가 목적 안내</p>
                   <p className="text-sm text-emerald-900 leading-relaxed">
                     이번 평가는 제로트러스트 제품처럼 홍보하기 위한 점수 산출이 아니라,
                     <strong> 실제 운영 구조에서 신원·네트워크·시스템·앱·데이터 통제가 어디까지 증명되는지 확인</strong>하는 작업입니다.
@@ -1169,7 +1169,7 @@ export function NewAssessment() {
               <div className="mb-4 flex items-center gap-2">
                 <FileText size={18} className="text-gray-700" />
                 <h3 className="text-sm font-semibold text-gray-800">
-                  평가 착수 전 확정사항 (SKT 가이드 §3)
+                  평가 착수 전 확정사항
                 </h3>
               </div>
               <p className="text-xs text-gray-600 mb-4">

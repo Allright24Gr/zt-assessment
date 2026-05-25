@@ -632,7 +632,7 @@ export function Reporting() {
       {/* SKT 가이드 §9 — 평가 목적 안내 */}
       {evalMeta && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 px-4 py-3 text-xs leading-relaxed text-emerald-900">
-          <span className="font-semibold">평가 목적 (SKT 가이드 §9)</span> — 이번 평가는 점수 산출이 아니라
+          <span className="font-semibold">평가 목적</span> — 이번 평가는 점수 산출이 아니라
           실제 운영 구조에서 통제가 어디까지 증명되는지 확인하는 작업입니다.
           자동수집 항목과 수동 증적이 분리되어 있고, 자동수집이 안 되는 항목은 평가불가가 아닌
           수동 증적으로 판정되어야 합니다.
@@ -766,7 +766,7 @@ export function Reporting() {
           ) && (
             <details className="mt-3 rounded-lg border border-gray-200 bg-white">
               <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50">
-                평가 착수 전 확정사항 (SKT 가이드 §3)
+                평가 착수 전 확정사항
               </summary>
               <div className="px-3 pb-3 pt-1 space-y-3 text-xs">
                 {evalMeta.evaluation_version && Object.keys(evalMeta.evaluation_version).length > 0 && (
@@ -1391,7 +1391,7 @@ export function Reporting() {
                 {/* SKT 가이드 §8 — 각 단계별 권장 활동 안내 */}
                 {guide && (
                   <div className="mb-3 rounded-lg border border-white/60 bg-white/70 p-2.5 text-[11px] leading-relaxed">
-                    <p className="font-semibold text-gray-700 mb-0.5">SKT 가이드 §8 권장 활동</p>
+                    <p className="font-semibold text-gray-700 mb-0.5">권장 활동</p>
                     <p className="text-gray-600">{guide.activities}</p>
                     <p className="mt-1 text-gray-500">
                       <span className="font-medium">완료 증거:</span> {guide.evidence}
@@ -1710,7 +1710,7 @@ export function Reporting() {
                   항목별 결과 · 출처 · 파일명 · 위치 · 관찰 내용 · 수집 시각 18개 컬럼.
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  SKT 가이드 §7 산출물 패키지 — <code>evidence_register.xlsx</code>
+                  산출물 패키지 — <code>evidence_register.xlsx</code>
                 </p>
               </div>
               <button
@@ -1748,7 +1748,7 @@ export function Reporting() {
                   리뷰어 의견 빈 칸을 묶은 검토용 문서. PR/Notion 첨부에 적합한 .md 형식.
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  SKT 가이드 §7 산출물 패키지 — <code>decision_log.md</code>
+                  산출물 패키지 — <code>decision_log.md</code>
                 </p>
               </div>
               <button

@@ -340,7 +340,7 @@ def _make_pdf(data: dict) -> bytes:
 
     if eval_ver:
         story += [Spacer(1, 0.4*cm)]
-        story.append(Paragraph("평가 대상 버전 (가이드 §3)", h3))
+        story.append(Paragraph("평가 대상 버전", h3))
         ver_rows = [
             _kv("버전 라벨",          eval_ver.get("version_label")),
             _kv("Git commit",         eval_ver.get("git_commit")),
@@ -416,7 +416,7 @@ def _make_pdf(data: dict) -> bytes:
 
     if reviewers:
         story += [Spacer(1, 0.3*cm)]
-        story.append(Paragraph("판정자 (가이드 §3)", h3))
+        story.append(Paragraph("판정자", h3))
         rv_rows = [
             _kv("App owner",       reviewers.get("app_owner")),
             _kv("Backend owner",   reviewers.get("backend_owner")),
@@ -611,7 +611,7 @@ def _make_pdf(data: dict) -> bytes:
             if guide_act:
                 guide_rows = [[
                     Paragraph(
-                        f"<b>SKT 가이드 §8</b><br/>{guide_act}<br/><font color='#6b7280'>{guide_ev}</font>",
+                        f"<b>권장 활동</b><br/>{guide_act}<br/><font color='#6b7280'>{guide_ev}</font>",
                         guide_box_sty,
                     )
                 ]]
@@ -1089,7 +1089,7 @@ def _build_decision_log_md(session_id: int, db: Session) -> str:
     # ── 헤더 ──
     lines.append(f"# 판정 로그 — {org.name if org else '(미상)'}")
     lines.append("")
-    lines.append(f"> SKT 가이드 §7 산출물 `decision_log.md`")
+    lines.append(f"> 산출물 패키지 — `decision_log.md`")
     lines.append(f"> 논쟁 가능 항목(부분충족·평가불가)의 판단 근거와 리뷰어 의견을 기록합니다.")
     lines.append("")
     lines.append("## 1. 기본 정보")
@@ -1267,7 +1267,7 @@ def _build_decision_log_md(session_id: int, db: Session) -> str:
     # ── 리뷰어 ──
     lines.append("## 6. 리뷰어 서명")
     lines.append("")
-    lines.append("> SKT 가이드 §3 — 수동 항목은 최소 2인 리뷰.")
+    lines.append("> 수동 항목은 최소 2인 리뷰.")
     lines.append("")
     lines.append("| 역할 | 이름 | 검토 일자 | 서명 |")
     lines.append("|---|---|---|---|")

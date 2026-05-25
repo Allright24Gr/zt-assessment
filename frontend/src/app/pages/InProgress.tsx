@@ -743,7 +743,7 @@ export function InProgress() {
           >
             <span className="text-sm font-semibold text-gray-800 flex items-center gap-2">
               <FileText size={15} />
-              증적 준비표 — Pillar별로 어떤 증적을 준비해야 하는지 (SKT 가이드 §5)
+              증적 준비표 — Pillar별로 어떤 증적을 준비해야 하는지
             </span>
             <ChevronDown
               size={16}
