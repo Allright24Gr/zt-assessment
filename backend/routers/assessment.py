@@ -329,6 +329,9 @@ class AssessmentRunRequest(BaseModel):
     data_classifications: Optional[list] = None
     # 예: {"app_owner": "홍길동", "backend_owner": "...", "cloud_owner": "...", "security_reviewer": "..."}
     reviewers: Optional[dict] = None
+    # 진단 시작 전 *수동 양식 미리 받기* 흐름용. True 면 세션만 만들고 collector 호출 안 함
+    # (status='준비중'). 이후 POST /start/{id} 로 collector 실행 가능.
+    skip_collector: Optional[bool] = False
 
 
 # 4 오픈소스 도구만 운영. 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑.
@@ -570,10 +573,13 @@ def run_assessment(
         "reviewers":               rv_meta,
     }
 
+    # skip_collector=True 면 세션만 만들고 collector 안 돌림. 사용자가 양식 미리 받아
+    # 채워서 업로드한 뒤 POST /start/{session_id} 로 진단 시작.
+    initial_status = "준비중" if req.skip_collector else "진행 중"
     session = DiagnosisSession(
         org_id=org.org_id,
         user_id=user.user_id,
-        status="진행 중",
+        status=initial_status,
         started_at=datetime.now(timezone.utc),
         selected_tools={t: True for t in selected_tools},
         extra=extra,
@@ -585,7 +591,59 @@ def run_assessment(
     # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
     _store_session_secrets(session.session_id, kc_in, wz_in)
 
-    # Shuffle 경로 우선, 미설정 시 직접 collector 실행
+    if not req.skip_collector:
+        # Shuffle 경로 우선, 미설정 시 직접 collector 실행
+        has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
+        if has_shuffle:
+            background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)
+        elif selected_tools:
+            background.add_task(_run_collectors, session.session_id, list(selected_tools))
+        message = "진단이 시작되었습니다."
+    else:
+        message = "세션이 준비되었습니다. 양식 작성 후 진단을 시작하세요."
+
+    return {
+        "session_id":   session.session_id,
+        "status":       initial_status,
+        "message":      message,
+        "started_at":   session.started_at.isoformat(),
+        "selected_tools": selected_tools,
+    }
+
+
+@router.post("/start/{session_id}")
+def start_prepared_assessment(
+    session_id: int,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """준비중 세션의 자동 collector 를 시작한다.
+
+    POST /run + skip_collector=True 로 미리 만들어둔 세션에 대해 호출.
+    수동 양식 채워 업로드 후 [진단 시작] 누르면 frontend 가 이걸 호출.
+    """
+    session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
+
+    if session.status not in ("준비중", "진행 중"):
+        # 완료/실패 세션은 재시작 불가
+        raise HTTPException(status_code=400, detail=f"세션이 시작 가능한 상태가 아닙니다 (현재: {session.status})")
+
+    # 이미 진행 중이면 멱등 — 같은 응답
+    if session.status == "진행 중":
+        return {
+            "session_id":   session.session_id,
+            "status":       "진행 중",
+            "message":      "이미 진단이 시작되어 있습니다.",
+            "started_at":   session.started_at.isoformat() if session.started_at else None,
+        }
+
+    session.status = "진행 중"
+    session.started_at = datetime.now(timezone.utc)
+    db.commit()
+
+    selected_tools = sorted(_selected_tools_set(session))
     has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
     if has_shuffle:
         background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)

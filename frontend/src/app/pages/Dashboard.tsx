@@ -171,6 +171,61 @@ export function Dashboard() {
     return points.length > 0 ? points : [{ date: "현재", level: avgScore }];
   }, [trendPoints, apiSessions, avgScore]);
 
+  // 신규 회원 — 진단 기록 0건이면 환영 화면. mockData 디폴트 점수 노출 차단.
+  const isNewUser = user?.role !== "admin" && apiSessions !== null && apiSessions.length === 0;
+  if (isNewUser) {
+    return (
+      <div className="max-w-screen-md mx-auto space-y-6 pt-12">
+        <div className="text-center space-y-3">
+          <h1>환영합니다, {user?.name ?? "사용자"}님</h1>
+          <p className="text-gray-600">
+            아직 진단 기록이 없습니다. 첫 번째 제로트러스트 성숙도 진단을 시작해보세요.
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5">
+          <p className="text-sm font-semibold text-emerald-900 mb-1">평가 목적</p>
+          <p className="text-sm text-emerald-900 leading-relaxed">
+            이번 평가는 제로트러스트 제품처럼 홍보하기 위한 점수 산출이 아니라,
+            실제 운영 구조에서 <strong>신원·네트워크·시스템·앱·데이터 통제가 어디까지 증명되는지</strong> 확인하는 작업입니다.
+            자동수집이 가능한 항목과 수동 증적이 필요한 항목을 명확히 나누어 진단합니다.
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-gray-200 bg-white p-6 space-y-4">
+          <div className="flex items-start gap-3">
+            <FileCheck size={22} className="text-blue-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-semibold text-gray-800">진단 1회 소요</p>
+              <p className="text-sm text-gray-600 mt-0.5">
+                자동 수집 5~10분 + 수동 양식 작성 (Pillar별 분담 1~2시간)
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <Target size={22} className="text-blue-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-semibold text-gray-800">결과 산출물 5종</p>
+              <p className="text-sm text-gray-600 mt-0.5">
+                범위 선언서 (PDF 표지) · 결과 PDF · 증적 목록 xlsx · 30/60/90 로드맵 · 판정 로그 markdown
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-center">
+          <Link
+            to="/new-assessment"
+            className="inline-flex items-center gap-2 px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+          >
+            <FileCheck size={18} />
+            첫 진단 시작하기
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-screen-2xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
@@ -265,7 +320,7 @@ export function Dashboard() {
           </div>
           <p className="text-lg font-bold text-red-700 mb-1">{weakestPillar.label}</p>
           <p className="text-3xl font-bold text-red-600 mb-3">
-            {weakestPillar.score.toFixed(1)} <span className="text-sm font-normal text-red-400">/ 4.0</span>
+            {weakestPillar.score.toFixed(2)} <span className="text-sm font-normal text-red-400">/ 4.0</span>
           </p>
           <div className="w-full bg-red-100 rounded-full h-2">
             <div className="bg-red-500 h-2 rounded-full" style={{ width: `${(weakestPillar.score / 4) * 100}%` }} />
@@ -330,7 +385,7 @@ export function Dashboard() {
                   <span className="text-sm text-gray-700">{p.label}</span>
                   <div className="flex items-center gap-2">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${colors.badge}`}>{maturityLabel(getMaturityLevel(score))}</span>
-                    <span className={`text-sm font-semibold ${colors.text}`}>{score.toFixed(1)}</span>
+                    <span className={`text-sm font-semibold ${colors.text}`}>{score.toFixed(2)}</span>
                   </div>
                 </div>
                 <div className="w-full bg-gray-100 rounded-full h-2">
@@ -376,7 +431,7 @@ export function Dashboard() {
             {PILLARS.map((pillar, index) => {
               const current = pillarScores[index];
               const target = TARGET_SCORES[index];
-              const gap = Number((current - target).toFixed(1));
+              const gap = Number((current - target).toFixed(2));
               const colors = getScoreColor(current);
 
               return (
@@ -384,15 +439,15 @@ export function Dashboard() {
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-gray-700">{pillar.label}</span>
                   <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${gap < 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
-                    GAP {gap > 0 ? `+${gap.toFixed(1)}` : gap.toFixed(1)}
+                    GAP {gap > 0 ? `+${gap.toFixed(2)}` : gap.toFixed(2)}
                   </span>
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
                   <div className={`${colors.bar} h-2 rounded-full transition-all`} style={{ width: `${(current / 4) * 100}%` }} />
                 </div>
                 <div className="flex justify-between text-[11px] text-gray-500">
-                  <span>현재 {current.toFixed(1)}</span>
-                  <span className="font-semibold text-emerald-600">목표 {target.toFixed(1)}</span>
+                  <span>현재 {current.toFixed(2)}</span>
+                  <span className="font-semibold text-emerald-600">목표 {target.toFixed(2)}</span>
                 </div>
               </div>
               );

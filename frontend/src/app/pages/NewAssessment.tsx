@@ -3,12 +3,16 @@ import { useNavigate } from "react-router";
 import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint, BookOpenCheck, Tag, Database as DatabaseIcon, Users as UsersIcon, GitCommit } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
-import { runAssessment } from "../../config/api";
+import {
+  runAssessment, prepareAssessment, startPreparedAssessment,
+  downloadSessionManualTemplate, uploadManualExcel,
+} from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
   IdpType, SiemType, YesNoUnknown, ProfileSelect, ScanConsent,
   EvaluationVersion, ScopeAsset, DataClassification, Reviewers,
+  AssessmentRunRequest,
 } from "../../types/api";
 
 // SKT 가이드 §3 — 평가 범위 자산 8개 기본 항목.
@@ -170,6 +174,14 @@ export function NewAssessment() {
     cloud_owner: "",
     security_reviewer: "",
   });
+  // Step 2 — 수동 양식 미리 작성 (선택). prepareAssessment 로 미리 세션 생성.
+  const [preparedSessionId, setPreparedSessionId] = useState<number | string | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [manualUploading, setManualUploading] = useState(false);
+  const [manualUploadResult, setManualUploadResult] = useState<
+    { parsed: number; skipped: number; unmatched: number } | null
+  >(null);
+  const manualFileInputRef = useRef<HTMLInputElement>(null);
   // Keycloak 연결 카드 입력값 (작업 E-fe)
   const [keycloakCreds, setKeycloakCreds] = useState<{ url: string; admin_user: string; admin_pass: string }>({
     url: "", admin_user: "", admin_pass: "",
@@ -228,14 +240,8 @@ export function NewAssessment() {
   const submitDisabled =
     !!liveScanIntent && (!consentExternalScan || consentMetaMissing);
 
-  const handleSubmit = () => {
-    const excludedTools = Object.entries(toolScope)
-      .filter(([, enabled]) => !enabled)
-      .map(([tool]) => tool)
-      .join(",");
-
-    // 데모 모드: 외부 시스템 정보를 일절 전송하지 않는다.
-    // 실 스캔 모드: 입력된 외부 시스템 정보만 선택적으로 전송한다.
+  // payload 빌더 — runAssessment / prepareAssessment 둘 다 사용.
+  const buildRunPayload = (): AssessmentRunRequest => {
     const nmapTarget = scanTargets.nmap.trim();
     const trivyTarget = scanTargets.trivy.trim();
     const scanTargetsPayload: ScanTargets = {};
@@ -243,7 +249,6 @@ export function NewAssessment() {
     if (isLive && toolScope.trivy && trivyTarget) scanTargetsPayload.trivy = trivyTarget;
     const hasScanTargets = Object.keys(scanTargetsPayload).length > 0;
 
-    // Keycloak/Wazuh 연결 정보 — 실 스캔 모드 + 도구 선택 시에만, 그리고 입력값이 있을 때만 전송
     const kcPayload: KeycloakCreds = {};
     if (isLive && toolScope.keycloak) {
       if (keycloakCreds.url.trim())        kcPayload.url        = keycloakCreds.url.trim();
@@ -260,7 +265,6 @@ export function NewAssessment() {
     }
     const hasWz = Object.keys(wzPayload).length > 0;
 
-    // 외부 스캔 승인 메타 — live + 스캔 타겟 있을 때만 전송 (빈 필드 제거).
     const consentPayload: ScanConsent = {};
     if (liveScanIntent) {
       const approver = (scanConsent.approver || "").trim();
@@ -275,7 +279,6 @@ export function NewAssessment() {
     }
     const hasConsent = Object.keys(consentPayload).length > 0;
 
-    // SKT 가이드 §3 — 빈 값 제거.
     const evalVersionPayload: EvaluationVersion = {};
     (["frontend_deployment", "backend_deployment", "git_commit", "version_label"] as const).forEach((k) => {
       const v = (evaluationVersion[k] || "").trim();
@@ -302,7 +305,7 @@ export function NewAssessment() {
     });
     const hasReviewers = Object.keys(reviewersPayload).length > 0;
 
-    runAssessment({
+    return {
       org_name: formData.orgName,
       manager: formData.manager,
       department: formData.department,
@@ -326,16 +329,89 @@ export function NewAssessment() {
       ...(scopeAssetsPayload.length > 0 ? { evaluation_scope_assets: scopeAssetsPayload } : {}),
       ...(dcPayload.length > 0 ? { data_classifications: dcPayload } : {}),
       ...(hasReviewers ? { reviewers: reviewersPayload } : {}),
-    })
-      .then((res) =>
-        navigate(`/in-progress/${res.session_id}`, {
-          state: {
-            excludedTools,
-            orgName: formData.orgName,
-            manager: formData.manager,
-          },
-        })
-      )
+    };
+  };
+
+  const excludedToolsStr = Object.entries(toolScope)
+    .filter(([, enabled]) => !enabled)
+    .map(([tool]) => tool)
+    .join(",");
+
+  // 미리 세션 만들기 (skip_collector=true) — Step 2 양식 카드에서 호출.
+  const handlePrepareSession = async () => {
+    if (preparedSessionId || preparing) return;
+    setPreparing(true);
+    try {
+      const res = await prepareAssessment(buildRunPayload());
+      setPreparedSessionId(res.session_id);
+      toast.success("세션 준비 완료 — 양식을 다운로드받아 작성하세요.");
+    } catch (err) {
+      console.warn("[new-assessment] prepare failed:", err);
+      toast.error("세션 준비 실패: 입력값을 확인해주세요.");
+    } finally {
+      setPreparing(false);
+    }
+  };
+
+  // 양식 다운로드 (prepared session 기반).
+  const handleDownloadManualTemplate = async () => {
+    if (!preparedSessionId) {
+      toast.error("먼저 세션을 준비해주세요.");
+      return;
+    }
+    try {
+      await downloadSessionManualTemplate(preparedSessionId);
+    } catch (err) {
+      console.warn("[new-assessment] template download failed:", err);
+      toast.error("양식 다운로드에 실패했습니다.");
+    }
+  };
+
+  // 양식 업로드 (자동 채점).
+  const handleManualExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !preparedSessionId) return;
+    setManualUploading(true);
+    try {
+      const res = await uploadManualExcel(preparedSessionId, file);
+      setManualUploadResult({
+        parsed: res.parsed_count ?? 0,
+        skipped: res.skipped_count ?? 0,
+        unmatched: res.unmatched_count ?? 0,
+      });
+      toast.success(`양식 업로드 완료 — ${res.parsed_count ?? 0}건 채점됨`);
+    } catch (err) {
+      console.warn("[new-assessment] manual upload failed:", err);
+      toast.error("양식 업로드에 실패했습니다.");
+    } finally {
+      setManualUploading(false);
+      if (manualFileInputRef.current) manualFileInputRef.current.value = "";
+    }
+  };
+
+  const handleSubmit = () => {
+    // 이미 prepared session 있으면 startPreparedAssessment, 아니면 기존 runAssessment.
+    const navTo = (sid: number | string) =>
+      navigate(`/in-progress/${sid}`, {
+        state: {
+          excludedTools: excludedToolsStr,
+          orgName: formData.orgName,
+          manager: formData.manager,
+        },
+      });
+
+    if (preparedSessionId) {
+      startPreparedAssessment(preparedSessionId)
+        .then(() => navTo(preparedSessionId))
+        .catch((err) => {
+          console.warn("[new-assessment] startPrepared failed:", err);
+          toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
+        });
+      return;
+    }
+
+    runAssessment(buildRunPayload())
+      .then((res) => navTo(res.session_id))
       .catch((err) => {
         console.warn("[new-assessment] runAssessment failed:", err);
         toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
@@ -1421,6 +1497,78 @@ export function NewAssessment() {
                 </p>
               )}
             </div>
+
+            {/* 수동 양식 미리 작성 (선택) — 진단 시작 전 자동 채점 */}
+            <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-5">
+              <div className="flex items-center gap-2 mb-2">
+                <Upload size={18} className="text-blue-700" />
+                <h3 className="text-sm font-semibold text-gray-800">
+                  수동 진단 양식 미리 작성 (선택)
+                </h3>
+              </div>
+              <p className="text-xs text-gray-600 mb-3">
+                Step 1에서 선택한 IdP/SIEM 환경에 맞춰 자동 진단이 불가능한 항목만 모은 Excel 양식을
+                미리 받아 채울 수 있습니다. 업로드 시 자동 채점됩니다.
+                다음 단계 마지막에 [진단 시작]을 누르면 자동 수집과 합쳐져 최종 PDF가 만들어집니다.
+              </p>
+
+              {!preparedSessionId ? (
+                <button
+                  type="button"
+                  onClick={handlePrepareSession}
+                  disabled={preparing || selectedPillarCount === 0}
+                  className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg ${
+                    preparing || selectedPillarCount === 0
+                      ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                      : "bg-blue-600 text-white hover:bg-blue-700"
+                  }`}
+                >
+                  {preparing ? "준비 중..." : "환경 기반 양식 준비"}
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-emerald-700">
+                    ✅ 세션 준비 완료 (session #{preparedSessionId}). 양식 다운로드 → 작성 → 업로드.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDownloadManualTemplate}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 bg-white rounded-lg hover:bg-gray-50 text-gray-700"
+                    >
+                      <FileText size={15} />
+                      양식 다운로드 (.xlsx)
+                    </button>
+                    <label
+                      className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer ${
+                        manualUploading
+                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                          : "bg-blue-600 text-white hover:bg-blue-700"
+                      }`}
+                    >
+                      <Upload size={15} />
+                      {manualUploading ? "업로드 중..." : "작성한 양식 업로드"}
+                      <input
+                        ref={manualFileInputRef}
+                        type="file"
+                        accept=".xlsx"
+                        className="hidden"
+                        disabled={manualUploading}
+                        onChange={handleManualExcelUpload}
+                      />
+                    </label>
+                  </div>
+                  {manualUploadResult && (
+                    <div className="text-xs text-gray-700 bg-white rounded border border-gray-200 px-3 py-2">
+                      <span className="font-semibold text-emerald-700">자동 채점 완료:</span>{" "}
+                      <strong>{manualUploadResult.parsed}건</strong> 채점,
+                      건너뜀 {manualUploadResult.skipped}건, 매칭 실패 {manualUploadResult.unmatched}건.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="flex justify-between pt-4">
               <button onClick={() => setStep(1)} className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
                 이전

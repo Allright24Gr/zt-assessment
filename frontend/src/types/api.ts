@@ -303,6 +303,8 @@ export interface AssessmentRunRequest {
   evaluation_scope_assets?: ScopeAsset[];
   data_classifications?: DataClassification[];
   reviewers?: Reviewers;
+  /** true 면 세션만 만들고 collector 호출 안 함. 양식 미리 받기 흐름용. */
+  skip_collector?: boolean;
 }
 
 export interface AssessmentRunResponse {

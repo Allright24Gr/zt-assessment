@@ -473,7 +473,7 @@ export function InProgress() {
 
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
-    score: Number(((pillars[i]?.progress / 100) * 4).toFixed(1)),
+    score: Number(((pillars[i]?.progress / 100) * 4).toFixed(2)),
   }));
 
   const activeStepIndex = Math.min(

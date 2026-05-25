@@ -482,7 +482,7 @@ export function Settings() {
             <div key={pillar.key}>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-sm font-medium text-gray-700">{pillar.label}</span>
-                <span className="text-sm font-semibold text-emerald-600">{targetScores[index].toFixed(1)} / 4.0</span>
+                <span className="text-sm font-semibold text-emerald-600">{targetScores[index].toFixed(2)} / 4.0</span>
               </div>
               <input
                 type="range"

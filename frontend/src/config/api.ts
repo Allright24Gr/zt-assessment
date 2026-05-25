@@ -243,6 +243,22 @@ export function runAssessment(payload?: AssessmentRunRequest) {
   });
 }
 
+// 진단 시작 *전* 에 세션만 만들어 양식을 미리 받고 채우기 위한 헬퍼.
+// skip_collector=true 로 호출 → status='준비중' 세션 생성, collector 미실행.
+export function prepareAssessment(payload?: AssessmentRunRequest) {
+  return apiFetch<AssessmentRunResponse>(API_ENDPOINTS.ASSESSMENT_RUN, {
+    method: "POST",
+    body: JSON.stringify({ ...(payload ?? {}), skip_collector: true }),
+  });
+}
+
+// 준비중 세션의 collector 시작 (양식 미리 받기 흐름 마무리).
+export function startPreparedAssessment(sessionId: number | string) {
+  return apiFetch<AssessmentRunResponse>(`/api/assessment/start/${sessionId}`, {
+    method: "POST",
+  });
+}
+
 export function getAssessmentResult(sessionId?: number | string) {
   return apiFetch<AssessmentResultResponse>(API_ENDPOINTS.ASSESSMENT_RESULT, {
     params: { session_id: sessionId },
@@ -505,10 +521,13 @@ export function uploadManualExcel(sessionId: number | string, file: File) {
   const form = new FormData();
   form.append("session_id", String(sessionId));
   form.append("file", file);
-  return apiFetch<{ status: string; session_id: number; parsed_count: number }>(
-    API_ENDPOINTS.MANUAL_UPLOAD,
-    { method: "POST", body: form },
-  );
+  return apiFetch<{
+    status: string;
+    session_id: number;
+    parsed_count: number;
+    skipped_count?: number;
+    unmatched_count?: number;
+  }>(API_ENDPOINTS.MANUAL_UPLOAD, { method: "POST", body: form });
 }
 
 // ─── Evidence 업로드 (P1-7) ───────────────────────────────────────────────────
