@@ -70,6 +70,15 @@ def seed():
             if not item_id or item_id == "항목ID":
                 continue
 
+            # xlsx item_id 형식 "1.1.1_2_1" → DB Checklist.item_id 형식 "1.1.1.2_1"
+            # (첫 번째 "_" 를 "." 로) — 형식 불일치로 check_id 전부 NULL이 되던 버그.
+            raw_id = str(item_id).strip()
+            parts = raw_id.split("_", 1)
+            if len(parts) == 2:
+                item_id = f"{parts[0]}.{parts[1]}"
+            else:
+                item_id = raw_id
+
             has_guide = str(row[11]).strip() if row[11] else ""
             if has_guide != "있음":
                 skipped += 1
