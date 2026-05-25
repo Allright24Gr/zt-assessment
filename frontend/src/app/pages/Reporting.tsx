@@ -847,14 +847,14 @@ export function Reporting() {
         </div>
       )}
 
-      {/* 이 진단 결과의 출처 — 자동/자가 비율 배지 */}
+      {/* 진단 출처별 분포 — 자동·수동·미진단 비율 배지 */}
       {totalSourceCount > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-semibold text-gray-800">이 진단 결과의 출처</p>
+              <p className="text-sm font-semibold text-gray-800">진단 출처별 분포</p>
               <p className="text-xs text-gray-500 mt-0.5">
-                총 {totalSourceCount}개 체크리스트 — 자동/자가/미진단 비율
+                총 {totalSourceCount}개 체크리스트 — 자동·수동·미진단 비율
               </p>
               {/* B-3: 데이터 신뢰도 mini-graph */}
               <div className="mt-2 flex items-center gap-2 max-w-xs">
@@ -875,21 +875,21 @@ export function Reporting() {
                 title="Nmap, Trivy 등 외부 자동 스캔으로 수집한 항목"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                자동 외부 스캔: {sourceBreakdown.autoExternal}건
+                외부 스캔: {sourceBreakdown.autoExternal}건
               </span>
               <span
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200"
-                title="Keycloak, Wazuh, Entra 등 도구 API로 수집한 항목"
+                title="Keycloak, Wazuh 등 도구 API로 수집한 항목"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-green-600" />
-                자동 API 진단: {sourceBreakdown.autoApi}건
+                API 진단: {sourceBreakdown.autoApi}건
               </span>
               <span
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-200"
                 title="담당자가 직접 답변·증적을 제출한 항목"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
-                수동 진단: {sourceBreakdown.manual}건
+                수동: {sourceBreakdown.manual}건
               </span>
               {sourceBreakdown.unscored > 0 && (
                 <span
