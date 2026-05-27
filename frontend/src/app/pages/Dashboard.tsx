@@ -33,7 +33,8 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { improvements, sessions } from "../data/mockData";
 import { PILLARS } from "../data/constants";
-import { MATURITY_STEPS, getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
+import { MATURITY_STEPS, getMaturityLevel, getScoreColor, maturityLabel, MATURITY_COLOR } from "../lib/maturity";
+import { formatSessionDate } from "../lib/datetime";
 import {
   getAssessmentHistory,
   getImprovement,
@@ -298,16 +299,28 @@ export function Dashboard() {
           </div>
         </div>
 
+        {/* 노션 2번 피드백 C-1: 단계별 색상 통일 — 현재 단계는 그 단계의 고유 색(빨/노/파/초) 으로 강조. */}
         <div className="bg-white border border-gray-200 rounded-xl p-5">
           <p className="text-gray-500 text-sm mb-3">성숙도 단계</p>
-          <p className="text-2xl font-bold text-gray-900 mb-4">{maturityLabel(getMaturityLevel(avgScore))}</p>
+          {(() => {
+            const cur = getMaturityLevel(avgScore);
+            const curColor = MATURITY_COLOR[cur];
+            return (
+              <p className={`text-2xl font-bold mb-4 ${curColor?.text ?? "text-gray-900"}`}>
+                {maturityLabel(cur)}
+              </p>
+            );
+          })()}
           <div className="space-y-1.5">
             {MATURITY_STEPS.map((step) => {
               const current = getMaturityLevel(avgScore) === step;
+              const stepColor = MATURITY_COLOR[step];
               return (
-                <div key={step} className={`flex items-center gap-2 px-2 py-1 rounded ${current ? "bg-blue-50" : ""}`}>
-                  <div className={`w-2 h-2 rounded-full ${current ? "bg-blue-500" : "bg-gray-200"}`} />
-                  <span className={`text-xs ${current ? "text-blue-700 font-semibold" : "text-gray-400"}`}>{maturityLabel(step)}</span>
+                <div key={step} className={`flex items-center gap-2 px-2 py-1 rounded ${current ? "bg-gray-50" : ""}`}>
+                  <div className={`w-2 h-2 rounded-full ${current ? stepColor.bar : "bg-gray-200"}`} />
+                  <span className={`text-xs ${current ? `${stepColor.text} font-semibold` : "text-gray-400"}`}>
+                    {maturityLabel(step)}
+                  </span>
                 </div>
               );
             })}
@@ -399,6 +412,7 @@ export function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {/* 노션 2번 피드백 C-2: 레이더 차트 — 꼭짓점 hover 시 점수 tooltip + 우측 필러별 점수 테이블 + 차트 패딩(시스템 글자 겹침 해소). */}
         <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -410,30 +424,64 @@ export function Dashboard() {
               목표 평균 {targetAvg}
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={420}>
-            <RadarChart data={radarData}>
-              <PolarGrid stroke="#e5e7eb" />
-              <PolarAngleAxis dataKey="pillar" stroke="#6b7280" tick={{ fontSize: 12 }} />
-              <PolarRadiusAxis angle={90} domain={[0, 4]} tick={false} axisLine={false} />
-              <Radar name="현재" dataKey="current" stroke="#2563eb" fill="#3b82f6" fillOpacity={0.4} strokeWidth={2} />
-              <Radar name="목표" dataKey="target" stroke="#10b981" fill="#10b981" fillOpacity={0.16} strokeDasharray="5 4" strokeWidth={2} />
-              <Legend />
-            </RadarChart>
-          </ResponsiveContainer>
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(180px,240px)] gap-4 items-center">
+            <div className="px-2">
+              <ResponsiveContainer width="100%" height={360}>
+                <RadarChart data={radarData} margin={{ top: 24, right: 28, bottom: 16, left: 28 }}>
+                  <PolarGrid stroke="#e5e7eb" />
+                  <PolarAngleAxis dataKey="pillar" stroke="#6b7280" tick={{ fontSize: 12 }} />
+                  <PolarRadiusAxis angle={90} domain={[0, 4]} tick={false} axisLine={false} />
+                  <Radar name="현재" dataKey="current" stroke="#2563eb" fill="#3b82f6" fillOpacity={0.4} strokeWidth={2} />
+                  <Radar name="목표" dataKey="target" stroke="#10b981" fill="#10b981" fillOpacity={0.16} strokeDasharray="5 4" strokeWidth={2} />
+                  <Tooltip
+                    formatter={(v: number, name: string) => [`${Number(v).toFixed(2)} / 4.00`, name]}
+                    contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 12 }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-gray-50 text-gray-500">
+                    <th className="text-left px-3 py-2 font-medium">필러</th>
+                    <th className="text-right px-3 py-2 font-medium">현재</th>
+                    <th className="text-right px-3 py-2 font-medium">목표</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {PILLARS.map((p, i) => (
+                    <tr key={p.key} className="border-t border-gray-100">
+                      <td className="px-3 py-1.5 text-gray-700">{p.shortLabel}</td>
+                      <td className="px-3 py-1.5 text-right font-semibold text-blue-600 tabular-nums">{pillarScores[i].toFixed(2)}</td>
+                      <td className="px-3 py-1.5 text-right text-emerald-600 tabular-nums">{TARGET_SCORES[i].toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
+        {/* 노션 2번 피드백 C-3: 제목 옆 마커 파란색 + 설명 문구 변경 + 막대 baseline=4.0, 목표 마커 표시(목표 초과 시 ≥target 영역 강조). */}
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <div className="flex items-center gap-2 mb-2">
-            <Target className="text-emerald-600" size={20} />
+            <Target className="text-blue-600" size={20} />
             <h2>필러별 목표 대비 현황</h2>
           </div>
-          <p className="text-sm text-gray-500 mb-5">현재 점수와 목표 점수의 차이를 필러별로 확인합니다. 목표값 변경은 설정에서 관리합니다.</p>
+          <p className="text-sm text-gray-500 mb-5">
+            현재 점수와 목표 점수의 차이를 필러별로 확인합니다. 목표값은 설정에서 변경할 수 있습니다.
+          </p>
           <div className="space-y-3">
             {PILLARS.map((pillar, index) => {
               const current = pillarScores[index];
               const target = TARGET_SCORES[index];
               const gap = Number((current - target).toFixed(2));
               const colors = getScoreColor(current);
+              const currentPct = (Math.min(current, 4) / 4) * 100;
+              const targetPct = (Math.min(target, 4) / 4) * 100;
+              const reachedTarget = current >= target;
 
               return (
               <div key={pillar.key} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
@@ -443,12 +491,24 @@ export function Dashboard() {
                     GAP {gap > 0 ? `+${gap.toFixed(2)}` : gap.toFixed(2)}
                   </span>
                 </div>
-                <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
-                  <div className={`${colors.bar} h-2 rounded-full transition-all`} style={{ width: `${(current / 4) * 100}%` }} />
+                {/* 전체 막대 = baseline 4.0. 현재 점수(파랑) + 목표 마커(emerald 세로선). */}
+                <div className="relative w-full bg-gray-200 rounded-full h-3 mb-2 overflow-visible">
+                  <div
+                    className={`${colors.bar} h-3 rounded-full transition-all`}
+                    style={{ width: `${currentPct}%` }}
+                  />
+                  {/* 목표 마커 — 4.0 기준 위치 */}
+                  <div
+                    className="absolute top-1/2 -translate-y-1/2 w-0.5 h-5 bg-emerald-500 rounded"
+                    style={{ left: `calc(${targetPct}% - 1px)` }}
+                    title={`목표 ${target.toFixed(2)}`}
+                  />
                 </div>
                 <div className="flex justify-between text-[11px] text-gray-500">
-                  <span>현재 {current.toFixed(2)}</span>
-                  <span className="font-semibold text-emerald-600">목표 {target.toFixed(2)}</span>
+                  <span>현재 {current.toFixed(2)} <span className="text-gray-400">/ 4.00</span></span>
+                  <span className={`font-semibold ${reachedTarget ? "text-emerald-600" : "text-gray-500"}`}>
+                    목표 {target.toFixed(2)}{reachedTarget && " 달성"}
+                  </span>
                 </div>
               </div>
               );
@@ -468,9 +528,10 @@ export function Dashboard() {
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
               <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 12 }} />
               <YAxis domain={[0, 4]} stroke="#6b7280" tick={{ fontSize: 12 }} />
+              {/* 노션 2번 피드백 C-4: 소수점 둘째 자리 통일 */}
               <Tooltip
                 contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb" }}
-                formatter={(v: number) => [`${v}`, "성숙도 점수"]}
+                formatter={(v: number) => [`${Number(v).toFixed(2)}`, "성숙도 점수"]}
               />
               <Line type="monotone" dataKey="level" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 5, fill: "#2563eb" }} />
             </LineChart>
@@ -509,12 +570,19 @@ export function Dashboard() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-gray-600">{session.manager}</td>
-                    <td className="py-3 px-4 text-gray-600">{session.date}</td>
+                    {/* 노션 2번 피드백 C-5: ISO 날짜의 T 제거 + 성숙도 옆에 점수 표시 */}
+                    <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{formatSessionDate(session.date)}</td>
                     <td className="py-3 px-4">
                       {session.score !== null ? (
-                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getScoreColor(session.score ?? 0).badge}`}>
-                          {maturityLabel(getMaturityLevel(session.score ?? 0))}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getScoreColor(session.score ?? 0).badge}`}>
+                            {maturityLabel(getMaturityLevel(session.score ?? 0))}
+                          </span>
+                          <span className="text-xs font-semibold text-gray-700 tabular-nums">
+                            {Number(session.score).toFixed(2)}
+                            <span className="text-gray-400"> / 4.0</span>
+                          </span>
+                        </div>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-sm text-blue-600">
                           <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />

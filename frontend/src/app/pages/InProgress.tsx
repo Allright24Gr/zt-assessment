@@ -441,8 +441,8 @@ export function InProgress() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [logs]);
 
-  // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만 자동 이동)
-  // 수동 항목 있으면 [수동 건너뛰고 결과 보기] 버튼으로 사용자가 명시적으로 트리거.
+  // 노션 2번 피드백 E-1: 100% 완료 후 자동 이동 X — finalize 만 자동 호출하고,
+  // 사용자가 [결과 보러가기] 버튼을 직접 눌러서 이동하도록 변경.
   useEffect(() => {
     if (!sid || !collectionDone || progress < 100 || finalized || finalizing || manualCount > 0) return;
     setFinalizing(true);
@@ -450,15 +450,14 @@ export function InProgress() {
       .then(() => {
         setFinalized(true);
         toast.success("자동 진단이 완료되었습니다.");
-        addNotification(`진단 #${sid} 자동 수집이 완료되어 결과 페이지로 이동합니다.`, "success");
-        finalizeNavTimerRef.current = setTimeout(() => navigate(`/reporting/${sid}`), 1500);
+        addNotification(`진단 #${sid} 자동 수집이 완료되었습니다. 결과 페이지에서 확인하세요.`, "success");
       })
       .catch((err) => {
         console.warn("[in-progress] finalize:", err);
         toast.error("결과 확정 중 오류가 발생했습니다.");
       })
       .finally(() => setFinalizing(false));
-  }, [sid, collectionDone, progress, manualCount, finalized, finalizing, navigate]);
+  }, [sid, collectionDone, progress, manualCount, finalized, finalizing]);
 
   // 사용자가 명시적으로 *수동 건너뛰고 결과 보기* — 진행률 100% + 수동 미작성 시 노출.
   const handleSkipManualAndFinalize = async () => {
@@ -987,15 +986,32 @@ export function InProgress() {
         </div>
       )}
 
-      {/* 자동 진단만 사용 + 완료 시 안내 */}
+      {/* 노션 2번 피드백 E-1: 자동 이동 대신 [결과 보러가기] 버튼 노출 — 사용자가 명시적으로 트리거. */}
       {manualCount === 0 && collectionDone && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-6 text-center">
           <CheckCircle size={40} className="mx-auto text-green-500 mb-3" />
           <p className="font-semibold text-gray-700">자동 진단 완료</p>
           <p className="text-sm text-gray-500 mt-1 mb-4">
-            결과 페이지로 자동 이동합니다...
-            {finalizing && <Loader2 size={14} className="inline animate-spin ml-2" />}
+            {finalizing ? (
+              <><Loader2 size={14} className="inline animate-spin mr-1" /> 결과 확정 중...</>
+            ) : finalized ? (
+              "결과 페이지에서 진단 결과를 확인하세요."
+            ) : (
+              "결과를 확정하고 있습니다..."
+            )}
           </p>
+          <button
+            type="button"
+            onClick={() => sid && navigate(`/reporting/${sid}`)}
+            disabled={!sid || (!finalized && finalizing)}
+            className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-medium ${
+              !sid || (!finalized && finalizing)
+                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                : "bg-green-600 text-white hover:bg-green-700"
+            }`}
+          >
+            결과 보러가기
+          </button>
         </div>
       )}
     </div>

@@ -28,6 +28,7 @@ import { sessions as mockSessions, improvements as mockImprovements } from "../d
 import type { ChecklistDetail, Improvement, Session } from "../data/mockData";
 import { PILLARS } from "../data/constants";
 import { getMaturityLevel, getScoreColor, maturityLabel, getMaturityColor } from "../lib/maturity";
+import { formatSessionDate } from "../lib/datetime";
 import { toolLabel as sharedToolLabel } from "../lib/toolLabel";
 import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
@@ -663,15 +664,53 @@ export function Reporting() {
         </div>
       </div>
 
-      {/* SKT 가이드 §9 — 평가 목적 안내 */}
-      {evalMeta && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 px-4 py-3 text-xs leading-relaxed text-emerald-900">
-          <span className="font-semibold">진단 목적</span> — 이번 진단은
-          KISA 제로트러스트 가이드라인 2.0 기준으로 6대 Pillar × 4단계 성숙도를 평가한 결과입니다.
-          자동 수집 가능한 통제는 외부 도구로 점검하고, 정책·운영 이력은 수동 증적을 통해 함께
-          판정했습니다. 점수와 함께 Pillar별 강·약점 / 30·60·90일 개선 로드맵을 확인하세요.
-        </div>
-      )}
+      {/* 노션 2번 피드백 B-1: 진단 목적 안내 삭제 → 진단 기관 / 일시 / 담당자를 크게 노출.
+          시작·종료 시각이 있으면 소요시간도 계산해 함께 노출. */}
+      {evalMeta && (() => {
+        const startStr = formatSessionDate(evalMeta.started_at);
+        const endStr = formatSessionDate(evalMeta.completed_at);
+        let durationStr = "";
+        if (evalMeta.started_at && evalMeta.completed_at) {
+          const ms = new Date(evalMeta.completed_at).getTime() - new Date(evalMeta.started_at).getTime();
+          if (ms > 0) {
+            const totalMin = Math.round(ms / 60000);
+            durationStr = totalMin >= 60
+              ? `${Math.floor(totalMin / 60)}시간 ${totalMin % 60}분`
+              : `${totalMin}분`;
+          }
+        }
+        return (
+          <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <p className="text-xs font-semibold text-gray-500 mb-1">진단 기관</p>
+                <p className="text-lg font-bold text-gray-900">{session.org}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 mb-1">진단 일시</p>
+                {evalMeta.started_at && evalMeta.completed_at ? (
+                  <>
+                    <p className="text-sm font-semibold text-gray-900 leading-tight">
+                      {startStr}
+                      <span className="text-gray-400 mx-1">→</span>
+                      {endStr}
+                    </p>
+                    {durationStr && (
+                      <p className="text-xs text-blue-700 font-medium mt-0.5">소요시간 {durationStr}</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-lg font-bold text-gray-900">{formatSessionDate(session.date)}</p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 mb-1">담당자</p>
+                <p className="text-lg font-bold text-gray-900">{session.manager || "-"}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* SKT 가이드 §3 §4 §7 §9 — 평가 메타 (스캔 모드 · 도구 범위 · 승인 기록) */}
       {evalMeta && (
@@ -884,63 +923,61 @@ export function Reporting() {
         </div>
       )}
 
-      {/* 진단 출처별 분포 — 자동·수동·미진단 비율 배지 */}
-      {totalSourceCount > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
+      {/* 노션 2번 피드백 B-2: 우측 멀리 떨어져있던 출처 배지를 시각적 분포 그래프(스택 막대)로 교체.
+          신뢰도 mini-bar 는 큰 신뢰도 카드(아래)와 중복이라 제거. */}
+      {totalSourceCount > 0 && (() => {
+        const segs = [
+          { key: "ext",  label: "외부 스캔",  count: sourceBreakdown.autoExternal, color: "#16a34a", title: "Nmap/Trivy/Web Probe 등 외부 자동 스캔" },
+          { key: "api",  label: "API 진단",   count: sourceBreakdown.autoApi,      color: "#0ea5e9", title: "Keycloak/Wazuh 등 도구 API 호출" },
+          { key: "man",  label: "수동",       count: sourceBreakdown.manual,       color: "#9ca3af", title: "담당자가 직접 답변·증적 제출" },
+          { key: "none", label: "미진단",     count: sourceBreakdown.unscored,     color: "#ef4444", title: "도구 미설정 또는 평가불가" },
+        ];
+        return (
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <div className="mb-3">
               <p className="text-sm font-semibold text-gray-800">진단 출처별 분포</p>
               <p className="text-xs text-gray-500 mt-0.5">
-                총 {totalSourceCount}개 체크리스트 — 자동·수동·미진단 비율
+                총 {totalSourceCount}개 체크리스트 — 외부 스캔·API·수동·미진단 비율
               </p>
-              {/* B-3: 데이터 신뢰도 mini-graph */}
-              <div className="mt-2 flex items-center gap-2 max-w-xs">
-                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden" title="진단 가능 항목 비율">
-                  <div
-                    className={`h-full rounded-full ${confidenceColor.bar}`}
-                    style={{ width: `${confidencePct}%` }}
-                  />
-                </div>
-                <span className={`text-[11px] font-semibold ${confidenceColor.text} tabular-nums`}>
-                  신뢰도 {confidencePct}%
-                </span>
-              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200"
-                title="Nmap, Trivy 등 외부 자동 스캔으로 수집한 항목"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                외부 스캔: {sourceBreakdown.autoExternal}건
-              </span>
-              <span
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200"
-                title="Keycloak, Wazuh 등 도구 API로 수집한 항목"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-green-600" />
-                API 진단: {sourceBreakdown.autoApi}건
-              </span>
-              <span
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-200"
-                title="담당자가 직접 답변·증적을 제출한 항목"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
-                수동: {sourceBreakdown.manual}건
-              </span>
-              {sourceBreakdown.unscored > 0 && (
-                <span
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700 border border-red-200"
-                  title="도구 미설정 또는 평가불가로 점수에 반영되지 않은 항목"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                  미진단: {sourceBreakdown.unscored}건
-                </span>
-              )}
+            {/* 스택 막대 */}
+            <div className="flex w-full h-4 rounded-full overflow-hidden border border-gray-200">
+              {segs.map((s) => {
+                if (s.count === 0) return null;
+                const pct = (s.count / totalSourceCount) * 100;
+                return (
+                  <div
+                    key={s.key}
+                    title={`${s.label} ${s.count}건 (${pct.toFixed(1)}%) — ${s.title}`}
+                    style={{ width: `${pct}%`, backgroundColor: s.color }}
+                  />
+                );
+              })}
+            </div>
+            {/* 레전드 + 카운트 */}
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
+              {segs.map((s) => {
+                const pct = totalSourceCount > 0 ? (s.count / totalSourceCount) * 100 : 0;
+                return (
+                  <div
+                    key={s.key}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded border border-gray-200 bg-gray-50/60"
+                    title={s.title}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: s.color }} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium text-gray-700 truncate">{s.label}</p>
+                      <p className="text-[11px] text-gray-500 tabular-nums">
+                        {s.count}건 · {pct.toFixed(1)}%
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Tabs */}
       <div className="border-b border-gray-200">
@@ -1264,16 +1301,29 @@ export function Reporting() {
           })()}
 
           <div className="space-y-6">
-            {checklistGroups.map(({ pillar, items }) => (
+            {checklistGroups.map(({ pillar, items }) => {
+              // 노션 1번 피드백: 필러 헤더에 영역 점수(0~4 스케일) 1회 노출.
+              const pillarIdx = PILLARS.findIndex((pp) => pp.key === pillar.key);
+              const pillarScore = pillarIdx >= 0 ? currentScores[pillarIdx] : null;
+              const pillarColors = pillarScore != null ? getScoreColor(pillarScore) : null;
+              return (
               <section key={pillar.key} className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
                 <div className="mb-3 flex items-center justify-between">
                   <div>
                     <h3 className="font-semibold text-gray-900">{pillar.label}</h3>
                     <p className="text-xs text-gray-500">{pillar.shortLabel} 필러 체크리스트</p>
                   </div>
-                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-blue-700 shadow-sm">
-                    {items.length}개 항목
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {pillarScore != null && pillarColors && (
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${pillarColors.badge}`}
+                        title="이 필러의 종합 성숙도 점수 (0~4)">
+                        영역 점수 {pillarScore.toFixed(2)} / 4.0
+                      </span>
+                    )}
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-blue-700 shadow-sm">
+                      {items.length}개 항목
+                    </span>
+                  </div>
                 </div>
 
                 <div className="space-y-3">
@@ -1316,6 +1366,8 @@ export function Reporting() {
                         ...categoryTools.filter((t) => t === "수동"),
                       ];
 
+                      // 노션 2번 B-4: 수동/web_probe 등 모든 도구 배지는 회색 톤으로 통일 — 충족도/성숙도 색과 겹치지 않도록.
+                      // 노션 1번: 카테고리 헤더에 충족 단계 수 표시 (점수 대신).
                       return (
                         <details
                           key={category}
@@ -1324,20 +1376,17 @@ export function Reporting() {
                           <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
                             <div className="min-w-0 flex-1">
                               <div className="mb-1 flex flex-wrap items-center gap-2">
+                                {/* 노션 2번 B-5: "현재" 텍스트 제거 — maturity 이름만 노출 */}
                                 <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${repColor.badge}`}>
-                                  현재 {repLevel.maturity}
+                                  {repLevel.maturity}
                                 </span>
-                                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+                                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
                                   {passCount}/{sortedLevels.length} 단계 충족
                                 </span>
                                 {sortedCategoryTools.map((t) => (
                                   <span
                                     key={t}
-                                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                                      t === "수동"
-                                        ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
-                                        : "bg-slate-100 text-slate-700 border border-slate-200"
-                                    }`}
+                                    className="rounded-full px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200"
                                   >
                                     {t}
                                   </span>
@@ -1352,7 +1401,6 @@ export function Reporting() {
                           <div className="mt-4 space-y-2">
                             {sortedLevels.map((level) => {
                               const raw = (level as ChecklistDetail & { rawResult?: string }).rawResult ?? level.result;
-                              const mc = getMaturityColor(level.maturity as string);
                               const finding = getDemoFinding(level);
                               const resultBg = raw === "충족"
                                 ? "bg-green-50 border-green-200"
@@ -1362,6 +1410,9 @@ export function Reporting() {
                                 ? "bg-rose-50 border-rose-200"
                                 : "bg-gray-50 border-gray-200";
 
+                              // 노션 1번 피드백: 세부 항목 옆 점수 (가중치×충족도) 제거 — 충족 칩만 노출.
+                              // 노션 2번 B-3: maturity 단계 색상 배지 제거 → 충족도 칩 색상으로 통일.
+                              // 노션 2번 B-4: 도구 배지(수동/web_probe 포함)는 회색 통일.
                               return (
                                 <details
                                   key={level.id}
@@ -1370,25 +1421,21 @@ export function Reporting() {
                                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
                                     <div className="min-w-0 flex-1">
                                       <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${mc.badge}`}>
+                                        {/* 단계 배지 — 색상 없는 회색 톤으로(단계 이름만 정보 전달) */}
+                                        <span className="rounded-full px-2 py-0.5 text-[11px] font-medium bg-gray-100 text-gray-700 border border-gray-200">
                                           {level.maturity}
                                         </span>
+                                        {/* 충족도 칩 — 핵심 색상 */}
                                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                                          raw === "충족"      ? "bg-green-100 text-green-700"
-                                          : raw === "부분충족" ? "bg-amber-100 text-amber-700"
-                                          : raw === "미충족"   ? "bg-red-100 text-red-700"
-                                                              : "bg-gray-100 text-gray-500"
+                                          raw === "충족"      ? "bg-green-100 text-green-700 border border-green-200"
+                                          : raw === "부분충족" ? "bg-amber-100 text-amber-700 border border-amber-200"
+                                          : raw === "미충족"   ? "bg-red-100 text-red-700 border border-red-200"
+                                                              : "bg-gray-100 text-gray-500 border border-gray-200"
                                         }`}>
                                           {raw}
                                         </span>
                                         {toolLabel(level.tool) && (
-                                          <span
-                                            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                                              toolLabel(level.tool) === "수동"
-                                                ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
-                                                : "bg-slate-100 text-slate-700 border border-slate-200"
-                                            }`}
-                                          >
+                                          <span className="rounded-full px-2 py-0.5 text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
                                             {toolLabel(level.tool)}
                                           </span>
                                         )}
@@ -1403,10 +1450,7 @@ export function Reporting() {
                                       </div>
                                       <p className="text-sm text-gray-800 leading-snug">{level.question}</p>
                                     </div>
-                                    <div className="flex shrink-0 items-center gap-2">
-                                      <span className={`text-sm font-bold ${mc.text}`}>{level.score.toFixed(2)}</span>
-                                      <ChevronDown size={14} className="text-gray-400" />
-                                    </div>
+                                    <ChevronDown size={14} className="text-gray-400 shrink-0" />
                                   </summary>
 
                                   {/* 진단 근거 + 세부 메타 */}
@@ -1452,7 +1496,8 @@ export function Reporting() {
                   })()}
                 </div>
               </section>
-            ))}
+              );
+            })}
             {filteredChecklistDetails.length === 0 && (
               <div className="rounded-xl border border-dashed border-gray-200 p-10 text-center text-sm text-gray-500">
                 검색 조건에 맞는 체크리스트가 없습니다.

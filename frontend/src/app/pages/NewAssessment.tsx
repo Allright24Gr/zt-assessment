@@ -486,22 +486,10 @@ export function NewAssessment() {
               <h2>Step 1: 사전 프로파일링 + 기관 정보 입력</h2>
             </div>
 
-            {/* SKT 가이드 §9 — 평가 목적 안내 */}
-            <div className="rounded-xl border border-emerald-300 bg-emerald-50/60 p-5">
-              <div className="flex items-start gap-3">
-                <BookOpenCheck size={20} className="text-emerald-700 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-semibold text-emerald-900 mb-1">진단 목적 안내</p>
-                  <p className="text-sm text-emerald-900 leading-relaxed">
-                    이번 진단은 <strong>KISA 제로트러스트 가이드라인 2.0</strong> 기준으로
-                    조직의 6대 Pillar (식별자·기기·네트워크·시스템·애플리케이션·데이터) ×
-                    4단계 성숙도 (기존·초기·향상·최적화) 를 평가합니다.
-                    자동 수집 가능한 통제는 외부 도구로 점검하고,
-                    정책·운영 이력처럼 외부 확인이 어려운 영역은 <strong>수동 증적</strong>을 첨부해 함께 판정합니다.
-                    결과로 현황 점수, Pillar별 강·약점, <strong>30/60/90일 개선 로드맵</strong>이 산출됩니다.
-                  </p>
-                </div>
-              </div>
+            {/* 노션 2번 피드백 D-1: 진단 목적 안내 박스 축소 — 한 줄 inline 안내로 변경. */}
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50/50 text-xs text-emerald-900">
+              <BookOpenCheck size={14} className="text-emerald-700 shrink-0" />
+              <span>KISA 제로트러스트 가이드라인 2.0 기준 — 6 Pillar × 4단계 성숙도 평가.</span>
             </div>
 
             {prefillNotice && (
@@ -762,7 +750,7 @@ export function NewAssessment() {
                     >
                       <option value="yes">활성 (Security 4688/4697/4720 emit)</option>
                       <option value="no">비활성</option>
-                      <option value="unknown">모름</option>
+                      <option value="unknown">미확인</option>
                     </select>
                   </div>
                   <div>
@@ -778,7 +766,7 @@ export function NewAssessment() {
                     >
                       <option value="yes">설치됨 (EID 1·3·10·22·25 수집 가능)</option>
                       <option value="no">미설치</option>
-                      <option value="unknown">모름</option>
+                      <option value="unknown">미확인</option>
                     </select>
                   </div>
                   <div>
@@ -809,7 +797,7 @@ export function NewAssessment() {
                     >
                       <option value="yes">있음 (별도 트랙 분리)</option>
                       <option value="no">없음</option>
-                      <option value="unknown">모름</option>
+                      <option value="unknown">미확인</option>
                     </select>
                   </div>
                 </div>
@@ -1547,30 +1535,41 @@ export function NewAssessment() {
             <p className="text-sm text-gray-500">
               선택하신 필러와 도구 기반으로 진단이 진행됩니다. 다음 단계에서 최종 확인 후 진단을 시작하세요.
             </p>
-            <div className="space-y-3">
-              {PILLARS.filter((p) => pillarScope[p.key]).map((pillar) => {
-                const autoTools = Object.entries(toolScope).filter(([, on]) => on).map(([k]) => k);
+            {/* 노션 2번 피드백 D-3, D-4: 우측 "진단 대상 필러" 라벨 삭제(정보 중복), 카드 하나로 통합. */}
+            {(() => {
+              const selectedPillars = PILLARS.filter((p) => pillarScope[p.key]);
+              const autoTools = Object.entries(toolScope).filter(([, on]) => on).map(([k]) => k);
+              if (selectedPillars.length === 0) {
                 return (
-                  <div key={pillar.key} className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-gray-800">{pillar.label}</h3>
-                      <span className="text-xs text-gray-400">진단 대상 필러</span>
-                    </div>
-                    <p className="mt-2 text-xs text-gray-500">
-                      자동 수집 도구: {autoTools.length > 0 ? autoTools.join(", ") : "없음 (전체 수동 진단)"}
-                    </p>
-                    <p className="mt-1 text-xs text-gray-400">
-                      세부 체크리스트 답변은 진단 시작 후 자동 수집과 병행하여 진행됩니다.
-                    </p>
-                  </div>
+                  <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                    선택된 필러가 없습니다. 이전 단계에서 진단 범위를 선택해주세요.
+                  </p>
                 );
-              })}
-              {Object.values(pillarScope).every((v) => !v) && (
-                <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                  선택된 필러가 없습니다. 이전 단계에서 진단 범위를 선택해주세요.
-                </p>
-              )}
-            </div>
+              }
+              return (
+                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                  <div className="flex items-center gap-2 mb-3">
+                    <h3 className="font-semibold text-gray-800">진단 대상 필러 ({selectedPillars.length}개)</h3>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {selectedPillars.map((p) => (
+                      <span
+                        key={p.key}
+                        className="inline-block px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700 border border-blue-200"
+                      >
+                        {p.label}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-600">
+                    자동 수집 도구: {autoTools.length > 0 ? autoTools.join(", ") : "없음 (전체 수동 진단)"}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    세부 체크리스트 답변은 진단 시작 후 자동 수집과 병행하여 진행됩니다.
+                  </p>
+                </div>
+              );
+            })()}
 
             {/* 수동 양식 미리 작성 (선택) — 진단 시작 전 자동 채점 */}
             <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-5">

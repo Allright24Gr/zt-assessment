@@ -23,6 +23,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 ROOT = Path(__file__).resolve().parent.parent
 XLSX = ROOT / "manual-checklist.xlsx"
 BAK  = ROOT / "manual-checklist.xlsx.bak"
+MASTER_XLSX = ROOT / "zt-checklist.xlsx"  # 자동/수동 마스터
 
 CHOICE_OPTIONS = ["O", "△", "X", "평가불가"]
 CHOICE_TO_VERDICT = {
@@ -44,10 +45,76 @@ def main() -> int:
     else:
         print(f"[skip] 백업 이미 존재: {BAK.name}")
 
+    # ── master(zt-checklist.xlsx) 에서 "오직 자동만"인 (prefix, maturity) 키 추출 ──
+    # 자동/수동 마이그레이션이 일어난 뒤 정적 양식에 남은 자동 항목을 정리하기 위함.
+    # (mixed 키 — 같은 prefix·maturity에 자동+수동 양쪽 존재 — 는 manual 에 유지)
+    auto_only_keys: set[tuple[str, str]] = set()
+    if MASTER_XLSX.exists():
+        from collections import defaultdict
+        m_wb = openpyxl.load_workbook(MASTER_XLSX, data_only=True)
+        m_ws = m_wb.active
+        by_key: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for r in range(2, m_ws.max_row + 1):
+            item_no  = str(m_ws.cell(r, 2).value or "").strip()
+            maturity = str(m_ws.cell(r, 3).value or "").strip()
+            diag     = str(m_ws.cell(r, 5).value or "").strip()
+            if item_no and maturity and diag:
+                prefix = item_no.split()[0]
+                by_key[(prefix, maturity)].add(diag)
+        auto_only_keys = {k for k, v in by_key.items() if v == {"자동"}}
+        print(f"[ok] master 자동-only 키: {len(auto_only_keys)} (manual 에서 제거 대상)")
+
     wb = openpyxl.load_workbook(XLSX)
 
     # ── 1) manual_diagnosis ──────────────────────────────────────────────
     ws_diag = wb["manual_diagnosis"]
+
+    # 자동 마이그레이션된 항목 행 제거 (auto-only 키만).
+    # 카테고리 구분행은 일단 유지 — 마지막에 비어버린 카테고리는 별도 정리.
+    removed_rows: list[int] = []
+    for r in range(4, ws_diag.max_row + 1):
+        mid = ws_diag.cell(r, 1).value
+        if not mid or not str(mid).startswith("M"):
+            continue
+        item_no  = str(ws_diag.cell(r, 3).value or "").strip()
+        maturity = str(ws_diag.cell(r, 4).value or "").strip()
+        prefix   = item_no.split()[0] if item_no else ""
+        if (prefix, maturity) in auto_only_keys:
+            removed_rows.append(r)
+
+    # 아래에서부터 삭제해야 행 번호 안 꼬임
+    for r in reversed(removed_rows):
+        ws_diag.delete_rows(r, 1)
+    print(f"[ok] manual_diagnosis: {len(removed_rows)} 자동 마이그레이션 행 제거")
+
+    # 빈 카테고리 구분행 정리: 바로 다음 행이 또 카테고리 구분행이거나 끝이면 제거.
+    r = 4
+    cleaned_cats = 0
+    while r <= ws_diag.max_row:
+        v = ws_diag.cell(r, 1).value
+        is_cat = isinstance(v, str) and v.startswith("▸")
+        if is_cat:
+            nxt = ws_diag.cell(r + 1, 1).value if r + 1 <= ws_diag.max_row else None
+            next_is_cat_or_end = (
+                nxt is None
+                or (isinstance(nxt, str) and nxt.startswith("▸"))
+            )
+            if next_is_cat_or_end:
+                ws_diag.delete_rows(r, 1)
+                cleaned_cats += 1
+                continue
+        r += 1
+    if cleaned_cats:
+        print(f"[ok] manual_diagnosis: {cleaned_cats} 빈 카테고리 구분행 정리")
+
+    # M_id 재번호 (M001 ~ 순서대로)
+    new_idx = 1
+    for r in range(4, ws_diag.max_row + 1):
+        mid = ws_diag.cell(r, 1).value
+        if mid and str(mid).startswith("M"):
+            ws_diag.cell(r, 1).value = f"M{new_idx:03d}"
+            new_idx += 1
+    print(f"[ok] manual_diagnosis: M_id 재번호 ({new_idx - 1} 개)")
 
     ws_diag.cell(2, 1).value = (
         "★ 담당자 선택(G열)에서 각 항목 질문에 대한 평가 결과를 선택하세요. "
