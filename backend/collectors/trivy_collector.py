@@ -1,6 +1,10 @@
 """
-trivy_collector.py — Trivy 래퍼 기반 수집 모듈 (11개 함수)
-엔드포인트: POST /scan/image, /scan/fs, /scan/sbom
+trivy_collector.py — Trivy 래퍼 기반 수집 모듈
+엔드포인트: POST /scan/image, /scan/fs, /scan/sbom, /scan/repo, /scan/config, /scan/secret
+
+target 자동 판별 (set_session_target 으로 주입):
+  - 이미지 참조 (예: nginx:1.25)  → image / fs / sbom 호출
+  - GitHub repo URL 또는 owner/repo → repo / config / secret 호출
 """
 from datetime import datetime, timezone
 import os
@@ -86,6 +90,56 @@ def _scan_sbom(payload: dict, timeout: int = 330) -> tuple[dict, str | None]:
         return data, None
     except Exception as e:
         return {}, str(e)
+
+
+def _scan_repo(payload: dict, timeout: int = 330) -> tuple[dict, str | None]:
+    try:
+        resp = httpx.post(f"{TRIVY_WRAPPER_URL}/scan/repo", json=payload, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("error"):
+            return data, data["error"]
+        return data, None
+    except Exception as e:
+        return {}, str(e)
+
+
+def _scan_config(payload: dict, timeout: int = 330) -> tuple[dict, str | None]:
+    try:
+        resp = httpx.post(f"{TRIVY_WRAPPER_URL}/scan/config", json=payload, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("error"):
+            return data, data["error"]
+        return data, None
+    except Exception as e:
+        return {}, str(e)
+
+
+def _scan_secret(payload: dict, timeout: int = 330) -> tuple[dict, str | None]:
+    try:
+        resp = httpx.post(f"{TRIVY_WRAPPER_URL}/scan/secret", json=payload, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("error"):
+            return data, data["error"]
+        return data, None
+    except Exception as e:
+        return {}, str(e)
+
+
+# ─── Target 형식 판별 ────────────────────────────────────────────────────────
+
+def _is_repo_target(target: str) -> bool:
+    """target이 GitHub repo 형식인지 판별. owner/repo 단축형 또는 github URL."""
+    t = (target or "").strip()
+    if not t:
+        return False
+    if "github.com" in t.lower():
+        return True
+    if "://" in t or ":" in t or "@" in t:
+        return False  # 이미지 참조(:tag, @digest)
+    return t.count("/") == 1
 
 
 # ─── 11 Collector Functions ───────────────────────────────────────────────────
@@ -255,3 +309,88 @@ def collect_supply_chain_scan() -> CollectedResult:
     count = float(data.get("sbom_scan_count", data.get("metric_value", 0)))
     result = "충족" if count >= thr else "미충족"
     return _ok(item_id, maturity, result, mk, count, thr, data)
+
+
+# ─── Repo / IaC / Secret 확장 (GitHub 소스 코드 대상) ─────────────────────────
+# target 이 GitHub repo 형식일 때만 실제 의미가 있는 항목.
+# 이미지 참조가 들어와도 안전하게 평가불가로 폴백한다.
+
+def collect_repo_vuln_scan() -> CollectedResult:
+    """5.4.1.1_1: GitHub repo 소스 코드 자동 취약점 스캔 — Critical+High = 0 → 충족"""
+    item_id, maturity = "5.4.1.1_1", "기존"
+    MK, TH = "repo_critical_high_count", 0.0
+    target = _get_target()
+    if not _is_repo_target(target):
+        return _err(item_id, maturity, MK, TH,
+                    f"repo 형식 target 필요 (현재: {target!r})", {})
+    data, error = _scan_repo({"repo_url": target, "item_id": item_id}, timeout=330)
+    if error:
+        return _err(item_id, maturity, MK, TH, error, data)
+    count = float(data.get("metric_value", 0))
+    if count == 0:
+        result = "충족"
+    elif count <= 5:
+        result = "부분충족"
+    else:
+        result = "미충족"
+    return _ok(item_id, maturity, result, MK, count, TH, data)
+
+
+def collect_source_secret_scan() -> CollectedResult:
+    """5.5.1.1_1: 소스 코드 내 노출 secret(비밀번호·API key·토큰) 자동 검출 — 0건 → 충족"""
+    item_id, maturity = "5.5.1.1_1", "기존"
+    MK, TH = "secret_count", 0.0
+    target = _get_target()
+    if not _is_repo_target(target):
+        return _err(item_id, maturity, MK, TH,
+                    f"repo 형식 target 필요 (현재: {target!r})", {})
+    data, error = _scan_secret({"target": target, "item_id": item_id}, timeout=330)
+    if error:
+        return _err(item_id, maturity, MK, TH, error, data)
+    count = float(data.get("metric_value", 0))
+    if count == 0:
+        result = "충족"
+    elif count <= 3:
+        result = "부분충족"
+    else:
+        result = "미충족"
+    return _ok(item_id, maturity, result, MK, count, TH, data)
+
+
+def collect_iac_misconfig_scan() -> CollectedResult:
+    """5.5.1.1_2: IaC(Dockerfile/k8s/Terraform) 정적 보안 분석 — High+Critical 0건 → 충족"""
+    item_id, maturity = "5.5.1.1_2", "기존"
+    MK, TH = "iac_high_critical_count", 0.0
+    target = _get_target()
+    if not _is_repo_target(target):
+        return _err(item_id, maturity, MK, TH,
+                    f"repo 형식 target 필요 (현재: {target!r})", {})
+    data, error = _scan_config({"target": target, "item_id": item_id}, timeout=330)
+    if error:
+        return _err(item_id, maturity, MK, TH, error, data)
+    count = float(data.get("metric_value", 0))
+    if count == 0:
+        result = "충족"
+    elif count <= 5:
+        result = "부분충족"
+    else:
+        result = "미충족"
+    return _ok(item_id, maturity, result, MK, count, TH, data)
+
+
+def collect_repo_risk_identification() -> CollectedResult:
+    """5.5.2.1_1: 소스 코드 위험 요소(취약점·의존성·secret) 자동 식별 — 스캔 수행 → 충족"""
+    item_id, maturity = "5.5.2.1_1", "기존"
+    MK, TH = "risk_scan_performed", 1.0
+    target = _get_target()
+    if not _is_repo_target(target):
+        return _err(item_id, maturity, MK, TH,
+                    f"repo 형식 target 필요 (현재: {target!r})", {})
+    data, error = _scan_repo({"repo_url": target, "item_id": item_id}, timeout=330)
+    if error:
+        return _err(item_id, maturity, MK, TH, error, data)
+    # 스캔 자체 수행 여부 = Results 또는 raw_json.results_count 존재
+    raw = data.get("raw_json", {}) if isinstance(data.get("raw_json"), dict) else {}
+    performed = 1.0 if (raw.get("results_count", 0) > 0 or "severity_counts" in raw) else 0.0
+    result = "충족" if performed >= TH else "미충족"
+    return _ok(item_id, maturity, result, MK, performed, TH, data)

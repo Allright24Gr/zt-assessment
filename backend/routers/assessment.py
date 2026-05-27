@@ -25,6 +25,7 @@ from routers.auth import (
 from routers.validators import (
     validate_nmap_target,
     validate_trivy_image,
+    validate_trivy_target,
     validate_https_url,
     validate_cred_field,
 )
@@ -410,7 +411,8 @@ def run_assessment(
         if "nmap" in scan_targets_in:
             scan_targets_in["nmap"] = validate_nmap_target(scan_targets_in.get("nmap") or "")
         if "trivy" in scan_targets_in:
-            scan_targets_in["trivy"] = validate_trivy_image(scan_targets_in.get("trivy") or "")
+            # image / github repo URL 둘 다 허용 (validate_trivy_target가 자동 판별)
+            scan_targets_in["trivy"] = validate_trivy_target(scan_targets_in.get("trivy") or "")
 
         kc_in = dict(req.keycloak_creds or {}) if req.keycloak_creds else {}
         if kc_in:

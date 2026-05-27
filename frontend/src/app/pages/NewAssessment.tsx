@@ -702,7 +702,7 @@ export function NewAssessment() {
                     />
                     <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
                       <p className="text-sm font-medium text-gray-800">Trivy</p>
-                      <p className="text-xs text-gray-500">컨테이너 이미지 스캔</p>
+                      <p className="text-xs text-gray-500">컨테이너 이미지 + GitHub repo 스캔 (의존성/IaC/Secret)</p>
                     </div>
                   </label>
                 </div>
@@ -986,16 +986,19 @@ export function NewAssessment() {
                   {toolScope.trivy && (
                     <div>
                       <label className="block mb-2 text-sm">
-                        컨테이너 이미지 (Trivy) <span className="text-gray-400 text-xs">(선택)</span>
+                        컨테이너 이미지 또는 GitHub repo (Trivy) <span className="text-gray-400 text-xs">(선택)</span>
                       </label>
                       <input
                         type="text"
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                         value={scanTargets.trivy}
                         onChange={(e) => setScanTargets({ ...scanTargets, trivy: e.target.value })}
-                        placeholder="예: nginx:1.25, alpine:latest"
+                        placeholder="예: nginx:1.25 또는 https://github.com/owner/repo"
                         disabled={!isLive}
                       />
+                      <p className="mt-1 text-xs text-gray-500">
+                        이미지 참조 또는 GitHub repo URL을 입력하세요. repo는 소스 코드 의존성·IaC·secret까지 스캔합니다.
+                      </p>
                     </div>
                   )}
                 </div>

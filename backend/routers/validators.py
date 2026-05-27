@@ -58,6 +58,47 @@ def validate_trivy_image(image: str) -> str:
     return image
 
 
+# trivy repo: GitHub URL 또는 owner/repo 단축형
+_TRIVY_REPO_RE = re.compile(
+    r"^(?:https://github\.com/)?"
+    r"[a-zA-Z0-9][a-zA-Z0-9._\-]{0,99}/[a-zA-Z0-9][a-zA-Z0-9._\-]{0,99}"
+    r"(?:\.git)?/?$"
+)
+
+
+def validate_trivy_repo(repo: str) -> str:
+    """GitHub repo URL 또는 owner/name 단축형. 공백/메타문자 차단."""
+    repo = (repo or "").strip()
+    if not repo:
+        return ""
+    if any(c in repo for c in _SHELL_METAS + " "):
+        raise ValueError("repo 입력에 허용되지 않은 문자가 포함되어 있습니다.")
+    if not _TRIVY_REPO_RE.match(repo):
+        raise ValueError(
+            f"유효하지 않은 trivy repo: {repo!r} "
+            f"(예: https://github.com/owner/repo 또는 owner/repo)"
+        )
+    return repo
+
+
+def _looks_like_repo_shorthand(target: str) -> bool:
+    if "://" in target:
+        return False
+    if ":" in target or "@" in target:
+        return False
+    return target.count("/") == 1
+
+
+def validate_trivy_target(target: str) -> str:
+    """이미지 또는 GitHub repo 두 형식 모두 허용. 형식 자동 판별."""
+    target = (target or "").strip()
+    if not target:
+        return ""
+    if "github.com" in target.lower() or _looks_like_repo_shorthand(target):
+        return validate_trivy_repo(target)
+    return validate_trivy_image(target)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Keycloak / Wazuh URL
 # ──────────────────────────────────────────────────────────────────────────────
