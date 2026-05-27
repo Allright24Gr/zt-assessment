@@ -65,6 +65,7 @@ zt-assessment/
 시드 계정 (`python backend/scripts/seed_demo_examples.py --force`)
 - `admin / admin` (role=admin, 시스템관리)
 - `user1 / user1` (박기웅, 세종대학교 — 완료 3건 + 진행중 1건)
+- `user2 / user2` (서진우, T-Markov Framework — 세션 없음)
 - 관리자 시점 예시 4건 (ABC 핀테크, XYZ 메디컬, 국가데이터센터, 스타트업 K)
 
 > 시드 비번은 정책 위반(4자) 상태. 로그인 시 Dashboard 노란 배너로 "기본 비번 사용 중 → 지금 변경" 안내.
