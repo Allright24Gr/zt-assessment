@@ -28,6 +28,7 @@ from routers.validators import (
     validate_trivy_target,
     validate_https_url,
     validate_cred_field,
+    validate_web_probe_target,
 )
 from services.ocsf_transformer import build_session_ocsf
 
@@ -56,6 +57,10 @@ ALL_TOOLS = (
     "wazuh",
     "nmap",
     "trivy",
+    # 도구 무관 외부 probe — IdP/SIEM 제품 종류와 관계없이 공개 도메인 하나로 측정.
+    # T-Markov(Google Workspace + Vercel + Railway, SIEM 없음) 같은 SaaS-only 환경에서도
+    # 자동 진단 항목을 늘리기 위해 추가. OIDC/DNS/HTTP/TLS/CT log 5영역 24개 항목.
+    "web_probe",
 )
 
 
@@ -413,6 +418,8 @@ def run_assessment(
         if "trivy" in scan_targets_in:
             # image / github repo URL 둘 다 허용 (validate_trivy_target가 자동 판별)
             scan_targets_in["trivy"] = validate_trivy_target(scan_targets_in.get("trivy") or "")
+        if "web_probe" in scan_targets_in:
+            scan_targets_in["web_probe"] = validate_web_probe_target(scan_targets_in.get("web_probe") or "")
 
         kc_in = dict(req.keycloak_creds or {}) if req.keycloak_creds else {}
         if kc_in:
@@ -476,10 +483,15 @@ def run_assessment(
     live_mode = (req.scan_mode or "demo").strip().lower() == "live"
     if live_mode:
         creds_required = {
-            "keycloak": bool(kc_in.get("url") and kc_in.get("admin_pass")),
-            "wazuh":    bool(wz_in.get("url") and wz_in.get("api_pass")),
-            "nmap":     bool((scan_targets_in.get("nmap") or "").strip()),
-            "trivy":    bool((scan_targets_in.get("trivy") or "").strip()),
+            "keycloak":  bool(kc_in.get("url") and kc_in.get("admin_pass")),
+            "wazuh":     bool(wz_in.get("url") and wz_in.get("api_pass")),
+            "nmap":      bool((scan_targets_in.get("nmap") or "").strip()),
+            "trivy":     bool((scan_targets_in.get("trivy") or "").strip()),
+            # web_probe 는 별도 target 또는 nmap target 으로 폴백 → 둘 중 하나면 OK.
+            "web_probe": bool(
+                (scan_targets_in.get("web_probe") or "").strip()
+                or (scan_targets_in.get("nmap") or "").strip()
+            ),
         }
         missing = [t for t in selected_tools if not creds_required.get(t, True)]
         if missing:
@@ -1370,6 +1382,12 @@ def _nm_mapping():
 
 
 
+def _wp_mapping():
+    """web_probe base mapping. 모든 함수는 docstring autodiscover 로 자동 등록되므로
+    base 는 빈 리스트로 두고 _autodiscover 가 collect_* 함수들을 찾아 추가한다."""
+    return []
+
+
 def _tr_mapping():
     from collectors.trivy_collector import (
         collect_image_scan, collect_cicd_scan_ratio, collect_integrity_check,
@@ -1447,18 +1465,20 @@ def _autodiscover(module_name: str, base: list) -> list:
 
 
 _TOOL_MODULE = {
-    "keycloak": "collectors.keycloak_collector",
-    "wazuh":    "collectors.wazuh_collector",
-    "nmap":     "collectors.nmap_collector",
-    "trivy":    "collectors.trivy_collector",
+    "keycloak":  "collectors.keycloak_collector",
+    "wazuh":     "collectors.wazuh_collector",
+    "nmap":      "collectors.nmap_collector",
+    "trivy":     "collectors.trivy_collector",
+    "web_probe": "collectors.web_probe_collector",
 }
 
-# 명시 매핑 함수 캐시(원본 함수) — 4 오픈소스 도구만
+# 명시 매핑 함수 캐시(원본 함수) — 4 오픈소스 도구 + web_probe
 _BASE_MAPPING_FNS = {
-    "keycloak": _kc_mapping,
-    "wazuh":    _wz_mapping,
-    "nmap":     _nm_mapping,
-    "trivy":    _tr_mapping,
+    "keycloak":  _kc_mapping,
+    "wazuh":     _wz_mapping,
+    "nmap":      _nm_mapping,
+    "trivy":     _tr_mapping,
+    "web_probe": _wp_mapping,
 }
 
 
@@ -1503,10 +1523,11 @@ def _full_mapping(tool: str) -> list:
 
 # 외부 노출용: 기존 _TOOL_DISPATCH 구조 유지 (mapping_fn, takes_args)
 _TOOL_DISPATCH = {
-    "keycloak": (lambda: _full_mapping("keycloak"), True),
-    "wazuh":    (lambda: _full_mapping("wazuh"),    True),
-    "nmap":     (lambda: _full_mapping("nmap"),     False),
-    "trivy":    (lambda: _full_mapping("trivy"),    False),
+    "keycloak":  (lambda: _full_mapping("keycloak"),  True),
+    "wazuh":     (lambda: _full_mapping("wazuh"),     True),
+    "nmap":      (lambda: _full_mapping("nmap"),      False),
+    "trivy":     (lambda: _full_mapping("trivy"),     False),
+    "web_probe": (lambda: _full_mapping("web_probe"), False),
 }
 
 
@@ -1591,6 +1612,14 @@ def _tool_configured(tool: str) -> Optional[str]:
             return f"Trivy 미연결: TRIVY_TARGET이 placeholder('{target or 'empty'}'). .env에 진단 대상 이미지/경로 설정 필요"
         return None
 
+    if tool == "web_probe":
+        # 외부 공개 도메인 1개만 있으면 동작. 세션 단위 set_session_target 으로 주입.
+        # 환경변수 fallback 없으면 미설정으로 본다 (run-time 에서 explicit target 우선).
+        target = os.getenv("WEB_PROBE_TARGET", "").strip()
+        if not target:
+            return "web_probe 미연결: WEB_PROBE_TARGET 미설정 — 도메인 입력 필요"
+        return None
+
     return f"unknown tool: {tool}"
 
 
@@ -1612,6 +1641,10 @@ def _tool_health(tool: str) -> Optional[str]:
         return _probe_tcp(os.getenv("NMAP_WRAPPER_URL", "http://localhost:8001"))
     if tool == "trivy":
         return _probe_tcp(os.getenv("TRIVY_WRAPPER_URL", "http://localhost:8002"))
+    if tool == "web_probe":
+        # web_probe 는 외부 도메인을 HTTPS 로 직접 조회 — backend egress 만 있으면 OK.
+        # 별도 wrapper 가 없으므로 TCP probe 는 생략(_tool_configured 에서 target 확인).
+        return None
     return f"unknown tool: {tool}"
 
 
@@ -1916,7 +1949,14 @@ def _run_collectors(session_id: int, tools: list[str]):
                     continue
 
                 # 사용자 입력 target / 자격 우선. 모듈-전역에 주입.
-                explicit_target = scan_targets.get(tool) if tool in ("nmap", "trivy") else None
+                # web_probe 는 별도 키가 있으면 우선, 없으면 nmap target 으로 폴백
+                # (둘 다 도메인/URL 형식이라 호환).
+                if tool == "web_probe":
+                    explicit_target = scan_targets.get("web_probe") or scan_targets.get("nmap")
+                elif tool in ("nmap", "trivy"):
+                    explicit_target = scan_targets.get(tool)
+                else:
+                    explicit_target = None
                 explicit_creds: Optional[dict] = None
                 if tool == "nmap":
                     from collectors import nmap_collector as _nm
@@ -1924,6 +1964,9 @@ def _run_collectors(session_id: int, tools: list[str]):
                 elif tool == "trivy":
                     from collectors import trivy_collector as _tr
                     _tr.set_session_target(explicit_target)
+                elif tool == "web_probe":
+                    from collectors import web_probe_collector as _wp
+                    _wp.set_session_target(explicit_target)
                 elif tool == "keycloak":
                     from collectors import keycloak_collector as _kc
                     explicit_creds = keycloak_creds or None
@@ -1937,11 +1980,15 @@ def _run_collectors(session_id: int, tools: list[str]):
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
                 # - keycloak/wazuh: 사용자가 URL을 직접 줬으면 그 URL TCP probe만 확인
                 #   (placeholder 가드는 .env 디폴트값에만 의미가 있으므로 우회).
+                # - web_probe: 사용자가 target 을 줬으면 별도 health probe 불필요
+                #   (외부 도메인 직접 호출이므로 .env placeholder 가드 우회).
                 if tool in ("nmap", "trivy") and explicit_target:
                     wrapper_env = "NMAP_WRAPPER_URL" if tool == "nmap" else "TRIVY_WRAPPER_URL"
                     health_err = _probe_tcp(os.getenv(wrapper_env, ""))
                 elif tool in ("keycloak", "wazuh") and explicit_creds and explicit_creds.get("url"):
                     health_err = _probe_tcp(explicit_creds["url"])
+                elif tool == "web_probe" and explicit_target:
+                    health_err = None
                 else:
                     health_err = _tool_health(tool)
 
@@ -2005,6 +2052,11 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import trivy_collector as _tr
                 _tr.set_session_target(None)
+            except Exception:
+                pass
+            try:
+                from collectors import web_probe_collector as _wp
+                _wp.set_session_target(None)
             except Exception:
                 pass
             try:

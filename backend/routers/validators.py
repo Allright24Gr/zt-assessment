@@ -120,6 +120,38 @@ def validate_https_url(url: str, field_name: str = "url") -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# web_probe target (도메인 또는 https URL)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 도메인: 영문/숫자/하이픈/점, 양 끝 영문/숫자. URL 은 https/http 허용.
+_DOMAIN_RE = re.compile(
+    r"^[a-zA-Z0-9](?:[a-zA-Z0-9\-\.]{0,253}[a-zA-Z0-9])?$"
+)
+
+
+def validate_web_probe_target(target: str) -> str:
+    """web_probe 대상: 도메인 또는 http(s) URL. CIDR/IP 단독은 허용하지 않음.
+
+    web_probe 는 HTTP/TLS/OIDC/DNS/CT 를 도메인 단위로 측정하므로 도메인 또는
+    스킴 포함 URL 만 의미가 있다. nmap 처럼 CIDR/IP 도 받지 않는다.
+    """
+    target = (target or "").strip()
+    if not target:
+        return ""
+    if any(c in target for c in _SHELL_METAS + " "):
+        raise ValueError("web_probe 대상에 허용되지 않은 문자가 포함되어 있습니다.")
+    if "://" in target:
+        # URL 형식 — validate_https_url 재사용
+        return validate_https_url(target, "web_probe target")
+    # 도메인 형식 — 점이 최소 1개 있어야 hostname 으로 의미가 있다.
+    if "." not in target:
+        raise ValueError(f"유효하지 않은 web_probe 도메인: {target!r} (예: example.com)")
+    if not _DOMAIN_RE.match(target):
+        raise ValueError(f"유효하지 않은 web_probe 도메인: {target!r}")
+    return target
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 자격(admin_user / admin_pass) 길이 검증
 # ──────────────────────────────────────────────────────────────────────────────
 

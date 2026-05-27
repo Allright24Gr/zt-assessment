@@ -169,7 +169,10 @@ def _create_completed_session(
     selected_tools: dict | None = None,
 ) -> DiagnosisSession:
     """완료된 세션 1건 + 모든 관련 데이터 생성."""
-    selected_tools = selected_tools or {"keycloak": True, "wazuh": True, "nmap": True, "trivy": True}
+    selected_tools = selected_tools or {
+        "keycloak": True, "wazuh": True, "nmap": True, "trivy": True,
+        "web_probe": True,
+    }
 
     session = DiagnosisSession(
         org_id=org.org_id,
@@ -250,7 +253,10 @@ def _create_inprogress_session(
     session = DiagnosisSession(
         org_id=org.org_id, user_id=user.user_id,
         status="진행 중", started_at=started_at,
-        selected_tools={"keycloak": True, "wazuh": True, "nmap": True, "trivy": True},
+        selected_tools={
+            "keycloak": True, "wazuh": True, "nmap": True, "trivy": True,
+            "web_probe": True,
+        },
         extra=extra,
     )
     db.add(session)

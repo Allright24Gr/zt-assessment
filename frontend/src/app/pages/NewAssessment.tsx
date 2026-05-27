@@ -135,19 +135,21 @@ export function NewAssessment() {
     edr_product: "",
     ot_segment_present: "unknown",
   });
-  // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy
-  const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean }>({
-    nmap: true, trivy: true,
+  // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy / Web Probe
+  // web_probe: OIDC/DNS/HTTP/TLS/CT log — IdP·SIEM 제품 종류와 관계없이 도메인만으로 측정.
+  const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean; web_probe: boolean }>({
+    nmap: true, trivy: true, web_probe: true,
   });
   // 내부적으로 백엔드에 보내는 tool_scope는 profileSelect + externalScanTools에서 파생
   const toolScope: Record<string, boolean> = {
-    keycloak: profileSelect.idp_type === "keycloak",
-    wazuh:    profileSelect.siem_type === "wazuh",
-    nmap:     externalScanTools.nmap,
-    trivy:    externalScanTools.trivy,
+    keycloak:  profileSelect.idp_type === "keycloak",
+    wazuh:     profileSelect.siem_type === "wazuh",
+    nmap:      externalScanTools.nmap,
+    trivy:     externalScanTools.trivy,
+    web_probe: externalScanTools.web_probe,
   };
-  const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string }>({
-    nmap: "", trivy: "",
+  const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string; web_probe: string }>({
+    nmap: "", trivy: "", web_probe: "",
   });
   const [files, setFiles] = useState<File[]>([]);
 
@@ -242,7 +244,8 @@ export function NewAssessment() {
   const isLive = scanMode === "live";
   const liveScanIntent = isLive && (
     (toolScope.nmap && scanTargets.nmap.trim()) ||
-    (toolScope.trivy && scanTargets.trivy.trim())
+    (toolScope.trivy && scanTargets.trivy.trim()) ||
+    (toolScope.web_probe && scanTargets.web_probe.trim())
   );
   // 승인 메타 필수값(승인자 + 비상연락처) — 외부 스캔 시 책임 추적을 위해 보고서에 기록.
   const consentMetaMissing = !!liveScanIntent && (
@@ -256,9 +259,12 @@ export function NewAssessment() {
   const buildRunPayload = (): AssessmentRunRequest => {
     const nmapTarget = scanTargets.nmap.trim();
     const trivyTarget = scanTargets.trivy.trim();
+    const webProbeTarget = scanTargets.web_probe.trim();
     const scanTargetsPayload: ScanTargets = {};
     if (isLive && toolScope.nmap && nmapTarget) scanTargetsPayload.nmap = nmapTarget;
     if (isLive && toolScope.trivy && trivyTarget) scanTargetsPayload.trivy = trivyTarget;
+    // web_probe: 별도 target 또는 nmap target 폴백 (백엔드가 동일 도메인으로 호환 처리).
+    if (isLive && toolScope.web_probe && webProbeTarget) scanTargetsPayload.web_probe = webProbeTarget;
     const hasScanTargets = Object.keys(scanTargetsPayload).length > 0;
 
     const kcPayload: KeycloakCreds = {};
@@ -705,6 +711,23 @@ export function NewAssessment() {
                       <p className="text-xs text-gray-500">컨테이너 이미지 + GitHub repo 스캔 (의존성/IaC/Secret)</p>
                     </div>
                   </label>
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] sm:col-span-2 ${
+                    externalScanTools.web_probe ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.web_probe}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, web_probe: !p.web_probe }))}
+                    />
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                      <p className="text-sm font-medium text-gray-800">Web/DNS/TLS Probe</p>
+                      <p className="text-xs text-gray-500">
+                        IdP/SIEM 제품과 관계없이 도메인만으로 측정 — OIDC Discovery / DNS(SPF·DMARC·CAA) /
+                        HTTP 보안 헤더 / TLS 1.3·인증서 / Certificate Transparency 로그
+                      </p>
+                    </div>
+                  </label>
                 </div>
               </div>
 
@@ -951,7 +974,7 @@ export function NewAssessment() {
             </div>
 
             {/* 진단 대상 (외부 스캔) */}
-            {(toolScope.nmap || toolScope.trivy) && (
+            {(toolScope.nmap || toolScope.trivy || toolScope.web_probe) && (
               <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <Target size={16} className="text-blue-600" />
@@ -1001,8 +1024,28 @@ export function NewAssessment() {
                       </p>
                     </div>
                   )}
+                  {toolScope.web_probe && (
+                    <div>
+                      <label className="block mb-2 text-sm">
+                        도메인 또는 URL (Web/DNS/TLS Probe) <span className="text-gray-400 text-xs">(선택)</span>
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                        value={scanTargets.web_probe}
+                        onChange={(e) => setScanTargets({ ...scanTargets, web_probe: e.target.value })}
+                        placeholder="예: tmarkovframework.vercel.app 또는 https://example.com"
+                        disabled={!isLive}
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        도메인 입력 시 OIDC Discovery / DNS(SPF·DMARC·CAA) / HTTP 보안 헤더 / TLS 1.3 ·
+                        인증서 / Certificate Transparency 로그를 외부에서 비침해 측정합니다.
+                        미입력 시 Nmap 대상 도메인으로 폴백됩니다.
+                      </p>
+                    </div>
+                  )}
                 </div>
-                {isLive && (scanTargets.nmap.trim() || scanTargets.trivy.trim()) && (
+                {isLive && (scanTargets.nmap.trim() || scanTargets.trivy.trim() || scanTargets.web_probe.trim()) && (
                   <>
                     <div className="mt-3 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
                       <AlertTriangle size={14} className="mt-0.5 shrink-0" />

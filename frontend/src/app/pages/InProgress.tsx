@@ -18,19 +18,29 @@ import {
   type AssessmentStatusResponse,
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
+import { toolLongLabel } from "../lib/toolLabel";
 import { useNotifications } from "../context/NotificationContext";
 import type { ManualItemDetail } from "../../types/api";
 
-const TOOL_NAMES = ["Keycloak", "Wazuh", "Nmap", "Trivy"] as const;
-const TOOL_KEY_MAP: Record<string, typeof TOOL_NAMES[number]> = {
-  keycloak: "Keycloak", wazuh: "Wazuh", nmap: "Nmap", trivy: "Trivy",
+// 도구 식별자 (백엔드 collector.tool 필드와 매칭되는 소문자 키).
+// 새 도구 추가 시: ① TOOL_KEYS 에 키 추가, ② TOOL_DISPLAY_NAME / TOOL_COLORS 추가,
+// ③ frontend/src/app/lib/toolLabel.ts 의 TOOL_LABEL/TOOL_LONG_LABEL 도 보강.
+const TOOL_KEYS = ["keycloak", "wazuh", "nmap", "trivy", "web_probe"] as const;
+type ToolKey = typeof TOOL_KEYS[number];
+const TOOL_DISPLAY_NAME: Record<ToolKey, string> = {
+  keycloak: "Keycloak",
+  wazuh: "Wazuh",
+  nmap: "Nmap",
+  trivy: "Trivy",
+  web_probe: "웹 Probe",
 };
 const PILLAR_COLORS = ["#2563eb", "#059669", "#f59e0b", "#0891b2", "#7c3aed", "#dc2626"];
-const TOOL_COLORS: Record<string, string> = {
-  Keycloak: PILLAR_COLORS[1],
-  Wazuh:    PILLAR_COLORS[0],
-  Nmap:     PILLAR_COLORS[3],
-  Trivy:    PILLAR_COLORS[2],
+const TOOL_COLORS: Record<ToolKey, string> = {
+  keycloak:  PILLAR_COLORS[1], // green
+  wazuh:     PILLAR_COLORS[0], // blue
+  nmap:      PILLAR_COLORS[3], // cyan
+  trivy:     PILLAR_COLORS[2], // amber
+  web_probe: PILLAR_COLORS[4], // purple
 };
 
 const PIPELINE_STEPS = [
@@ -52,8 +62,13 @@ const DEMO_LOG_EVENTS = [
   { type: "warning", message: "Wazuh 인증 실패 이벤트 일부 탐지" },
   { type: "info",    message: "Nmap 네트워크 세그먼테이션 스캔" },
   { type: "success", message: "Nmap 포트 노출 후보 분류 완료" },
-  { type: "info",    message: "Trivy 컨테이너 이미지 취약점 DB 동기화" },
+  { type: "info",    message: "Trivy 컨테이너 이미지/Repo 취약점 DB 동기화" },
   { type: "warning", message: "Trivy HIGH 등급 취약점 탐지" },
+  { type: "info",    message: "Trivy IaC/Secret 스캔 수행" },
+  { type: "info",    message: "웹 Probe OIDC Discovery 검사" },
+  { type: "info",    message: "웹 Probe DNS(SPF·DMARC·CAA) 조회" },
+  { type: "success", message: "웹 Probe TLS 1.3 / 인증서 만료 검증 완료" },
+  { type: "info",    message: "웹 Probe HTTP 보안 헤더 (HSTS/CSP) 점검" },
   { type: "info",    message: "Wazuh SIEM 룰 활성 상태 확인" },
   { type: "success", message: "Keycloak MFA 정책 검증 완료" },
 ] as const;
@@ -75,19 +90,24 @@ function nextLogVolume(previous: number | undefined, progress: number) {
   return Math.max(8, Math.min(92, Math.round(current + drift + jitter)));
 }
 
-function getLogTool(message: string) {
-  return TOOL_NAMES.find((tool) => message.includes(tool));
+// 로그 메시지에서 도구명을 찾아 하이라이트 — display 이름(영문/한글) 어느 쪽이든 매칭.
+function getLogTool(message: string): { key: ToolKey; display: string } | null {
+  for (const key of TOOL_KEYS) {
+    const display = TOOL_DISPLAY_NAME[key];
+    if (message.includes(display)) return { key, display };
+  }
+  return null;
 }
 
 function renderLogMessage(message: string) {
-  const tool = getLogTool(message);
-  if (!tool) return message;
-  const [before, ...afterParts] = message.split(tool);
+  const found = getLogTool(message);
+  if (!found) return message;
+  const [before, ...afterParts] = message.split(found.display);
   return (
     <>
       {before}
-      <span className="font-semibold" style={{ color: TOOL_COLORS[tool] }}>{tool}</span>
-      {afterParts.join(tool)}
+      <span className="font-semibold" style={{ color: TOOL_COLORS[found.key] }}>{found.display}</span>
+      {afterParts.join(found.display)}
     </>
   );
 }
@@ -278,9 +298,8 @@ export function InProgress() {
 
   // 도구별 진행률도 동일하게 smooth progress 따라가게 cap
   const toolProgress = useMemo(() => (
-    TOOL_NAMES.map((toolName, idx) => {
-      const lowerKey = toolName.toLowerCase();
-      const found = status?.tool_progress.find((t) => t.tool === lowerKey);
+    TOOL_KEYS.map((toolKey, idx) => {
+      const found = status?.tool_progress.find((t) => t.tool === toolKey);
       const backendCollected = found?.collected ?? 0;
       const expected = found?.expected ?? 0;
       const backendPct = expected > 0 ? (backendCollected / expected) * 100 : 0;
@@ -290,11 +309,13 @@ export function InProgress() {
       const displayPct = Math.min(backendPct, displayCap);
       const displayCollected = expected > 0 ? Math.round((displayPct / 100) * expected) : 0;
       return {
-        name: toolName,
+        key:       toolKey,
+        name:      TOOL_DISPLAY_NAME[toolKey],
+        longLabel: toolLongLabel(toolKey),
         collected: displayCollected,
         total:     expected,
-        fill:      TOOL_COLORS[toolName],
-        selected:  status?.selected_tools.includes(lowerKey) ?? false,
+        fill:      TOOL_COLORS[toolKey],
+        selected:  status?.selected_tools.includes(toolKey) ?? false,
       };
     })
   ), [status, progress]);
@@ -540,7 +561,7 @@ export function InProgress() {
         <div className="mt-3 flex items-center justify-between text-sm">
           <span className="text-gray-500">
             선택된 도구: {status?.selected_tools.length
-              ? status.selected_tools.map((t) => t.toUpperCase()).join(" · ")
+              ? status.selected_tools.map((t) => TOOL_DISPLAY_NAME[t as ToolKey] ?? t).join(" · ")
               : "없음"}
           </span>
           <span className={progress >= 100 ? "font-semibold text-green-600" : "font-semibold text-blue-700"}>
@@ -667,18 +688,25 @@ export function InProgress() {
 
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="mb-4">플레이북 도구 현황</h2>
-          <div className="grid grid-cols-2 gap-3">
-            {toolProgress.map((tool, index) => {
+          <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+            {toolProgress.map((tool) => {
               const ratio = tool.total > 0 ? Math.round((tool.collected / tool.total) * 100) : 0;
-              const color = PILLAR_COLORS[index];
+              const color = tool.fill;
               return (
-                <div key={tool.name} className={`p-3 rounded-lg border ${tool.selected ? "bg-gray-50 border-gray-100" : "bg-gray-50/50 border-gray-100 opacity-50"}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="font-medium text-sm">{tool.name}</p>
-                    <span className="text-xs font-semibold" style={{ color }}>
+                <div
+                  key={tool.key}
+                  className={`p-3 rounded-lg border ${
+                    tool.selected ? "bg-gray-50 border-gray-100" : "bg-gray-50/50 border-gray-100 opacity-50"
+                  }`}
+                  title={tool.longLabel}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="font-medium text-sm truncate" title={tool.longLabel}>{tool.name}</p>
+                    <span className="text-xs font-semibold shrink-0" style={{ color }}>
                       {tool.selected ? `${ratio}%` : "미선택"}
                     </span>
                   </div>
+                  <p className="text-[11px] text-gray-400 mb-1.5 truncate">{tool.longLabel}</p>
                   <p className="text-xs text-gray-500 mb-2">
                     {tool.selected ? `${tool.collected} / ${tool.total} 항목` : "사용 안 함"}
                   </p>
@@ -725,7 +753,7 @@ export function InProgress() {
               session: {orgName || "진단 대상"} / progress: {progress}%
             </div>
             {logs.map((log, i) => {
-              const tool = getLogTool(log.message);
+              const found = getLogTool(log.message);
               const prefix = log.type === "success" ? "====" : log.type === "warning" ? ">>>>" : "----";
               const typeText = log.type === "success" ? "SUCCESS" : log.type === "warning" ? "WARN" : "INFO";
 
@@ -739,9 +767,9 @@ export function InProgress() {
                   }>
                     {typeText}
                   </span>
-                  {tool && (
-                    <span className="rounded bg-gray-100 px-1.5 font-semibold" style={{ color: TOOL_COLORS[tool] }}>
-                      {tool}
+                  {found && (
+                    <span className="rounded bg-gray-100 px-1.5 font-semibold" style={{ color: TOOL_COLORS[found.key] }}>
+                      {found.display}
                     </span>
                   )}
                   <span>{renderLogMessage(log.message)}</span>

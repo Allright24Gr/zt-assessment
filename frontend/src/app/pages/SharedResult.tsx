@@ -9,6 +9,7 @@ import { getSharedAssessment, ApiError } from "../../config/api";
 import { PILLARS } from "../data/constants";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import { getMaturityLevel, getScoreColor, maturityLabel } from "../lib/maturity";
+import { toolLabel } from "../lib/toolLabel";
 import type { AssessmentResultResponse } from "../../types/api";
 
 const DEFAULT_SCORES = [0, 0, 0, 0, 0, 0];
@@ -184,7 +185,7 @@ export function SharedResult() {
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-800 truncate">{item.item}</p>
                       <p className="text-xs text-gray-500 mt-0.5">
-                        {item.pillar} · {item.tool}
+                        {item.pillar} · {toolLabel(item.tool)}
                       </p>
                     </div>
                     <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${

@@ -28,6 +28,7 @@ import { sessions as mockSessions, improvements as mockImprovements } from "../d
 import type { ChecklistDetail, Improvement, Session } from "../data/mockData";
 import { PILLARS } from "../data/constants";
 import { getMaturityLevel, getScoreColor, maturityLabel, getMaturityColor } from "../lib/maturity";
+import { toolLabel as sharedToolLabel } from "../lib/toolLabel";
 import { getAssessmentResult, getImprovement } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem, EvaluationMeta } from "../../types/api";
@@ -155,6 +156,34 @@ function getDemoFinding(detail: {
       reason: isFailed
         ? "세그멘테이션 또는 포트 노출 기준을 충족하지 못해 네트워크 위험으로 분류되었습니다."
         : "스캔 결과가 네트워크 접근 기준을 충족했습니다.",
+      impact,
+    };
+  }
+
+  if (detail.tool.includes("Trivy")) {
+    return {
+      source: "Trivy Scan (image / repo / IaC / secret)",
+      observed: isFailed
+        ? "컨테이너 이미지 또는 소스 repo에서 HIGH 이상 취약점·시크릿 후보 검출"
+        : "이미지/repo 의존성·IaC·시크릿 스캔 통과",
+      location: "image: nginx:1.25 · repo: github.com/owner/repo",
+      reason: isFailed
+        ? "취약점·시크릿 노출 또는 IaC 설정 위반이 기준을 초과해 감점되었습니다."
+        : "스캔 결과가 안전 기준 범위 내에 있어 충족 판정되었습니다.",
+      impact,
+    };
+  }
+
+  if (detail.tool.includes("web_probe") || detail.tool.toLowerCase().includes("웹 probe")) {
+    return {
+      source: "Web Probe (OIDC / DNS / HTTP / TLS / CT)",
+      observed: isFailed
+        ? "OIDC Discovery 미공개 또는 DNS(SPF/DMARC/CAA)·보안 헤더·TLS 1.3 기준 미달"
+        : "OIDC Discovery 정상 / DNS·보안 헤더·TLS 1.3 기준 충족",
+      location: "도메인 외부 비침해 측정 (대상 도메인)",
+      reason: isFailed
+        ? "외부에서 공개된 보안 면이 가이드 기준을 충족하지 못해 감점되었습니다."
+        : "외부 공개 면 측정 결과 가이드 기준을 충족했습니다.",
       impact,
     };
   }
@@ -560,8 +589,8 @@ export function Reporting() {
 
   // 자동/자가 비율 — checklistDetails 의 tool / rawResult 를 source 별로 카운트
   const sourceBreakdown = useMemo(() => {
-    let autoExternal = 0;  // nmap / trivy
-    let autoApi = 0;       // keycloak / wazuh / entra
+    let autoExternal = 0;  // nmap / trivy / web_probe (외부 비침해 측정)
+    let autoApi = 0;       // keycloak / wazuh / entra (내부 API 호출)
     let manual = 0;        // 수동
     let unscored = 0;      // tool_unavailable / 평가불가
     for (const d of checklistDetails) {
@@ -572,7 +601,7 @@ export function Reporting() {
         unscored += 1;
         continue;
       }
-      if (tool.includes("nmap") || tool.includes("trivy")) {
+      if (tool.includes("nmap") || tool.includes("trivy") || tool.includes("web_probe")) {
         autoExternal += 1;
       } else if (tool.includes("keycloak") || tool.includes("wazuh") || tool.includes("entra")) {
         autoApi += 1;
@@ -672,18 +701,18 @@ export function Reporting() {
                 <span
                   key={`sel-${t}`}
                   className="px-2 py-0.5 text-[11px] rounded bg-green-100 text-green-800 border border-green-200"
-                  title="이번 진단에서 수행된 자동 도구"
+                  title={`이번 진단에서 수행된 자동 도구 — ${t}`}
                 >
-                  ✓ {t}
+                  ✓ {sharedToolLabel(t)}
                 </span>
               ))}
               {(evalMeta.excluded_tools || []).map((t) => (
                 <span
                   key={`exc-${t}`}
                   className="px-2 py-0.5 text-[11px] rounded bg-gray-100 text-gray-500 border border-gray-200 line-through"
-                  title="이번 진단에서 제외된 도구 (수동 폴백 대상)"
+                  title={`이번 진단에서 제외된 도구 (수동 폴백 대상) — ${t}`}
                 >
-                  {t}
+                  {sharedToolLabel(t)}
                 </span>
               ))}
             </div>
@@ -715,6 +744,14 @@ export function Reporting() {
                 <span className="text-gray-500">Trivy 대상</span>
                 <span className="ml-1.5 font-mono text-gray-800 break-all">
                   {evalMeta.scan_targets.trivy}
+                </span>
+              </div>
+            )}
+            {evalMeta.scan_targets?.web_probe && (
+              <div className="col-span-1 sm:col-span-2">
+                <span className="text-gray-500">웹 Probe 대상</span>
+                <span className="ml-1.5 font-mono text-gray-800 break-all">
+                  {evalMeta.scan_targets.web_probe}
                 </span>
               </div>
             )}
@@ -1243,17 +1280,9 @@ export function Reporting() {
                   {/* 카테고리 (예: "1.2.1 다중인증") 단위로 묶고, 안에 4단계 (기존/초기/향상/최적화) row 표시 */}
                   {(() => {
                     const MATURITY_ORDER: Record<string, number> = { 기존: 1, 초기: 2, 향상: 3, 최적화: 4 };
-                    // 도구명 표시 라벨 — 자동/수동 메타 없이 도구 이름만 노출.
-                    const TOOL_DISPLAY: Record<string, string> = {
-                      keycloak: "Keycloak", wazuh: "Wazuh", nmap: "Nmap", trivy: "Trivy",
-                      "수동": "수동",
-                    };
-                    const toolLabel = (t?: string) => {
-                      const key = (t || "").trim().toLowerCase();
-                      if (!key) return "";
-                      if (key === "수동" || t === "수동") return "수동";
-                      return TOOL_DISPLAY[key] ?? (t || "");
-                    };
+                    // 도구명 표시 라벨 — 공통 util(toolLabel)로 위임. 신규 도구가 추가될 때
+                    // frontend/src/app/lib/toolLabel.ts 한 곳에서만 매핑을 늘리면 됨.
+                    const toolLabel = (t?: string) => sharedToolLabel(t);
                     const byCategory = items.reduce<Record<string, typeof items>>((acc, d) => {
                       const key = d.category;
                       if (!acc[key]) acc[key] = [];
@@ -1657,8 +1686,8 @@ export function Reporting() {
                 </div>
 
                 {/* 도구 필터 */}
-                <div className="flex gap-2 mb-3">
-                  {["all", "keycloak", "wazuh", "nmap", "trivy"].map((t) => (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {["all", "keycloak", "wazuh", "nmap", "trivy", "web_probe"].map((t) => (
                     <button
                       key={t}
                       type="button"
@@ -1669,7 +1698,7 @@ export function Reporting() {
                           : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
                       }`}
                     >
-                      {t === "all" ? "전체" : t}
+                      {t === "all" ? "전체" : sharedToolLabel(t)}
                     </button>
                   ))}
                 </div>

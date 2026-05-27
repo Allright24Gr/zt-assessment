@@ -36,22 +36,28 @@ _ALLOWED_EVIDENCE_MIMES = {
 MATURITY_NUM = {"기존": 1, "초기": 2, "향상": 3, "최적화": 4}
 VALID_RESULTS = {"충족", "부분충족", "미충족", "평가불가"}
 
+# 담당자가 선택할 수 있는 4가지 직관 기호 — 자유 입력 차단.
+# O = 충족, △ = 부분충족, X = 미충족, 평가불가 = 평가불가.
+CHOICE_OPTIONS = ["O", "△", "X", "평가불가"]
+CHOICE_TO_VERDICT = {
+    "O":      "충족",
+    "△":      "부분충족",
+    "X":      "미충족",
+    "평가불가": "평가불가",
+}
+
 
 def _normalize_result(v: str) -> str:
     """부분 충족 → 부분충족 등 공백 정규화."""
     return v.replace(" ", "") if v else "평가불가"
 
 
-def _build_judgment_map(wb: openpyxl.Workbook) -> dict:
-    """judgment_mapping 시트에서 (M_id, 선택값) → 판정결과 딕셔너리 생성."""
-    ws = wb["judgment_mapping"]
-    mapping = {}
-    for r in range(2, ws.max_row + 1):
-        row = [ws.cell(r, c).value for c in range(1, 7)]
-        m_id, _, _, _, choice, verdict = row
-        if m_id and m_id != "항목ID" and choice and verdict:
-            mapping[(str(m_id).strip(), str(choice).strip())] = _normalize_result(str(verdict).strip())
-    return mapping
+def resolve_verdict(user_choice: str) -> str:
+    """담당자가 선택한 기호 → 판정 결과 변환.
+
+    선택값이 정의되지 않은 값이면 '평가불가' 처리.
+    """
+    return CHOICE_TO_VERDICT.get((user_choice or "").strip(), "평가불가")
 
 
 def _find_checklist(db: Session, item_no_str: str, maturity: str, question: str) -> Optional[Checklist]:
@@ -115,13 +121,12 @@ async def manual_upload(
     except Exception:
         raise HTTPException(status_code=400, detail="올바른 Excel(.xlsx) 파일이 아닙니다.")
 
-    if "manual_diagnosis" not in wb.sheetnames or "judgment_mapping" not in wb.sheetnames:
+    if "manual_diagnosis" not in wb.sheetnames:
         raise HTTPException(
             status_code=400,
-            detail="manual_diagnosis / judgment_mapping 시트가 필요합니다.",
+            detail="manual_diagnosis 시트가 필요합니다.",
         )
 
-    judgment_map = _build_judgment_map(wb)
     ws = wb["manual_diagnosis"]
 
     weight_map = {"충족": 1.0, "부분충족": 0.5, "미충족": 0.0, "평가불가": 0.0}
@@ -142,12 +147,11 @@ async def manual_upload(
         choice_str = str(choice).strip()
         note_str = str(note).strip() if note else ""
 
-        verdict = judgment_map.get((m_id_str, choice_str))
-        if not verdict:
-            # 정확 매칭 실패 시 선택값 자체가 판정결과인 경우 허용
-            verdict = _normalize_result(choice_str)
-            if verdict not in VALID_RESULTS:
-                verdict = "평가불가"
+        # 신규 규칙: 담당자가 선택한 기호(O/△/X/평가불가) → 판정 직접 매핑.
+        # 양식의 모든 행은 동일한 4선택 dropdown 으로 통일됨.
+        verdict = resolve_verdict(choice_str)
+        if verdict not in VALID_RESULTS:
+            verdict = "평가불가"
 
         checklist = _find_checklist(db, str(item_no), str(maturity), str(question))
         if not checklist:
@@ -370,14 +374,9 @@ def _resolve_fallback_tools(session: DiagnosisSession) -> set[str]:
     return fallback
 
 
-# 폴백 항목 기본 선택지 — 가이드 §5 톤에 맞춘 4단계.
-# 기존 수동 항목 다수가 (운영 중, 계획, 미도입) 3선택지를 쓰므로 동일 패턴 유지.
-_FALLBACK_CHOICES = [
-    ("운영 중",     "충족"),
-    ("부분 운영",   "부분 충족"),
-    ("미도입",      "미충족"),
-    ("평가 불가",   "평가 불가"),
-]
+# 폴백 항목도 본 양식과 동일하게 O/△/X/평가불가 4선택 dropdown 사용.
+# (choice → verdict 매핑은 CHOICE_TO_VERDICT 참조)
+_FALLBACK_CHOICES = [(c, CHOICE_TO_VERDICT[c]) for c in CHOICE_OPTIONS]
 
 
 # 카테고리(Pillar) 정렬 순서 — 기존 양식과 동일하게 6 Pillar 순으로.
@@ -585,8 +584,9 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
                 if cs.get("border"):    c.border    = copy(cs["border"])
                 if cs.get("alignment"): c.alignment = copy(cs["alignment"])
 
-            # judgment_mapping 행 누적
-            for choice, verdict in _FALLBACK_CHOICES:
+            # judgment_mapping 시트는 참고용 — 선택값 → 판정 1:1 매핑 기재.
+            for choice in CHOICE_OPTIONS:
+                verdict = CHOICE_TO_VERDICT[choice]
                 new_mapping_rows.append(
                     (m_id, pillar, item_no_full, cl.maturity or "", choice, verdict)
                 )
@@ -599,16 +599,16 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             ws_judg.cell(judg_append, col).value = val
         judg_append += 1
 
-    # 드롭다운(데이터 검증) 추가 — ★ 담당자 선택 (필수) 컬럼(G)에 폴백 행만
-    # _FALLBACK_CHOICES 의 choice 값만 허용
-    fallback_choice_str = ",".join(c for c, _ in _FALLBACK_CHOICES)
+    # 드롭다운(데이터 검증) 추가 — ★ 담당자 선택 컬럼(G).
+    # 폴백 항목도 본 양식과 동일하게 O/△/X/평가불가 만 허용.
+    choice_str = ",".join(CHOICE_OPTIONS)
     dv = DataValidation(
         type="list",
-        formula1=f'"{fallback_choice_str}"',
+        formula1=f'"{choice_str}"',
         allow_blank=True,
         showErrorMessage=True,
         errorTitle="선택값 확인",
-        error="드롭다운에서 선택해주세요.",
+        error="O / △ / X / 평가불가 중에서 선택해주세요.",
     )
     # 폴백 데이터 행 범위 (notice_row+1 ~ append_at-1)
     first_data_row = notice_row + 1

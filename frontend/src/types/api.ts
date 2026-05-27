@@ -78,6 +78,9 @@ export interface AssessmentSession {
 export interface ScanTargets {
   nmap?: string;
   trivy?: string;
+  // 도구 무관 외부 probe (OIDC/DNS/HTTP/TLS/CT log). 도메인 또는 https URL.
+  // 미입력 시 백엔드는 nmap target 으로 폴백한다.
+  web_probe?: string;
 }
 
 export interface KeycloakCreds {
@@ -331,6 +334,7 @@ export interface EvaluationMeta {
   scan_targets?: {
     nmap?: string;
     trivy?: string;
+    web_probe?: string;
   };
   scan_consent?: ScanConsent;
   // SKT 가이드 §3 평가 착수 전 확정사항
