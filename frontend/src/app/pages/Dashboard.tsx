@@ -172,6 +172,17 @@ export function Dashboard() {
     return points.length > 0 ? points : [{ date: "현재", level: avgScore }];
   }, [trendPoints, apiSessions, avgScore]);
 
+  // API 응답 도착 전(apiSessions===null)에는 mockData 디폴트 점수가 잠깐 노출되는
+  // 깜빡임을 방지하기 위해 일반 사용자 한정 로딩 가드. admin 은 mock fallback 유지.
+  if (user?.role !== "admin" && apiSessions === null) {
+    return (
+      <div className="max-w-screen-md mx-auto pt-24 text-center text-gray-500">
+        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+        <p className="mt-3 text-sm">대시보드를 불러오는 중…</p>
+      </div>
+    );
+  }
+
   // 신규 회원 — 진단 기록 0건이면 환영 화면. mockData 디폴트 점수 노출 차단.
   const isNewUser = user?.role !== "admin" && apiSessions !== null && apiSessions.length === 0;
   if (isNewUser) {
