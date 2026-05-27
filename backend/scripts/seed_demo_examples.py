@@ -30,6 +30,30 @@ from routers.auth import _hash_password
 
 RESULT_WEIGHT = {"충족": 1.0, "부분충족": 0.5, "미충족": 0.0, "평가불가": 0.0}
 
+USER2_PROFILE = {
+    "org_name":     "T-Markov Framework",
+    "department":   "보안연구팀",
+    "contact":      "",
+    "org_type":     "IT",
+    "infra_type":   "퍼블릭",
+    "employees":    20,
+    "servers":      12,
+    "applications": 8,
+    "note":         "제로트러스트 성숙도 진단 프레임워크 자체 검증",
+}
+
+
+def _ensure_user2(db) -> User:
+    """T-Markov Framework 조직 + user2(서진우) 계정 idempotent 생성."""
+    org_tmarkov = _upsert_org(
+        db, "T-Markov Framework",
+        industry="IT", size="중소기업", cloud_type="퍼블릭",
+    )
+    return _upsert_auth_user(
+        db, login_id="user2", password="user2", name="서진우",
+        role="user", org=org_tmarkov, profile=USER2_PROFILE,
+    )
+
 RECOMMENDATION = {
     "충족": "",
     "부분충족": "설정 검토 및 보완이 필요합니다.",
@@ -265,6 +289,14 @@ def seed(force: bool = False):
             if existing_logins == REQUIRED_SEED_LOGINS:
                 print("[seed] admin/user1/user2가 이미 존재 — 스킵 (--force로 강제 재생성)")
                 return
+            # 마이그레이션: 기존 EC2 가 admin+user1 만 있는 상태에서 user2 만 추가하는 경우.
+            # 다른 데이터는 손대지 않고 user2 만 in-place upsert.
+            if existing_logins == {"admin", "user1"}:
+                print("[seed] user2 누락 감지 — 기존 데이터 보존 + user2 만 추가합니다.")
+                u2 = _ensure_user2(db)
+                db.commit()
+                print(f"user2 / user2 → 서진우 (T-Markov Framework), user_id={u2.user_id}")
+                return
             if existing_logins:
                 missing = REQUIRED_SEED_LOGINS - existing_logins
                 total_users = db.query(User).count()
@@ -305,22 +337,8 @@ def seed(force: bool = False):
             role="user", org=org_sejong, profile=user1_profile,
         )
 
-        org_tmarkov = _upsert_org(db, "T-Markov Framework", industry="IT", size="중소기업", cloud_type="퍼블릭")
-        user2_profile = {
-            "org_name":     "T-Markov Framework",
-            "department":   "보안연구팀",
-            "contact":      "",
-            "org_type":     "IT",
-            "infra_type":   "퍼블릭",
-            "employees":    20,
-            "servers":      12,
-            "applications": 8,
-            "note":         "제로트러스트 성숙도 진단 프레임워크 자체 검증",
-        }
-        user2 = _upsert_auth_user(
-            db, login_id="user2", password="user2", name="서진우",
-            role="user", org=org_tmarkov, profile=user2_profile,
-        )
+        user2 = _ensure_user2(db)
+        org_tmarkov = _upsert_org(db, "T-Markov Framework")
 
         # 3) 관리자 시점 예시 — 다양한 조직/점수 분포 4건
         now = datetime.now(timezone.utc)
