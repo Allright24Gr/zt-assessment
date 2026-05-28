@@ -1357,6 +1357,11 @@ export function Reporting() {
               const pillarIdx = PILLARS.findIndex((pp) => pp.key === pillar.key);
               const pillarScore = pillarIdx >= 0 ? currentScores[pillarIdx] : null;
               const pillarColors = pillarScore != null ? getScoreColor(pillarScore) : null;
+              // 측정불충분 (평가가능 항목이 너무 적은 pillar) — 백엔드 커버리지 가드 결과.
+              // currentScores[i] === 0 이고 unevaluable > 0 이면 점수를 표시하지 않고
+              // "측정 불충분" 배지로 대체. 한두 항목 충족만으로 4.0/최적화 같은 거짓 점수를 노출하지 않음.
+              const pillarUnevalCnt = pillarIdx >= 0 ? (pillarUnevaluable[pillar.key] ?? 0) : 0;
+              const pillarUnmeasurable = pillarScore === 0 && pillarUnevalCnt > 0;
               return (
               <section key={pillar.key} className="rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
                 <div className="mb-3 flex items-center justify-between">
@@ -1365,11 +1370,19 @@ export function Reporting() {
                     <p className="text-xs text-gray-500">{pillar.shortLabel} 필러 체크리스트</p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {pillarScore != null && pillarColors && (
-                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${pillarColors.badge}`}
-                        title="이 필러의 종합 성숙도 점수 (0~4)">
-                        영역 점수 {pillarScore.toFixed(2)} / 4.0
+                    {pillarUnmeasurable ? (
+                      <span
+                        className="rounded-full px-3 py-1 text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200"
+                        title="평가가능 항목이 부족해 영역 점수를 산출하지 않았습니다. 수동 증적 제출 후 재평가하세요.">
+                        측정 불충분
                       </span>
+                    ) : (
+                      pillarScore != null && pillarColors && (
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${pillarColors.badge}`}
+                          title="이 필러의 종합 성숙도 점수 (0~4)">
+                          영역 점수 {pillarScore.toFixed(2)} / 4.0
+                        </span>
+                      )
                     )}
                     <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-blue-700 shadow-sm">
                       {items.length}개 항목

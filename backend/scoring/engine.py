@@ -54,15 +54,21 @@ def score_session(
     session_id: int,
     collected_results: List[CollectedResult],
     checklist_meta: List[dict],
+    pillar_total_items: Dict[str, int] | None = None,
 ) -> ScoringOutput:
-    """B-2 개선 (2026-05-17):
+    """B-2 개선 (2026-05-17) + 커버리지 가드 (2026-05-28):
 
     - 평가불가 항목은 pillar 점수 산정에서 **제외** (이전: 0점으로 들어가 평균 깎음)
     - pillar 점수 = Σ(maturity_score × weight) / Σ(maturity_score) × 4
-      → 가이드라인 4단계(기존1/초기2/향상3/최적화4) 의도가 반영된 가중 평균 (0~4 정규화)
     - total = 평가 가능한 pillar 점수의 평균 (평가불가만 있는 pillar 는 제외)
-    - 결과 dict 에 evaluable / unevaluable 카운트도 함께 노출 → 신뢰도 표시용 (B-3 기반)
+
+    커버리지 가드 (pillar_total_items 인자가 주어졌을 때만 활성):
+    - pillar 별 평가가능 항목 수가 전체 항목의 MIN_COVERAGE 미만이면 그 pillar 점수를
+      **제외** (pillar_scores 에서 빠짐 → frontend 가 측정불충분으로 표시).
+      예: 기기 pillar 36개 중 단 1개만 충족이면 raw 점수는 4.0(최적화)이지만 실제로는
+      33개 미진단 상태이므로 의미 없는 값. 평가불가 처리가 더 정직.
     """
+    MIN_COVERAGE = 0.30  # 평가가능 항목이 30% 미만이면 측정 불충분으로 처리
     meta_by_check_id: Dict[int, dict] = {}
     meta_by_item_id: Dict[str, dict] = {}
     for m in checklist_meta:
@@ -109,11 +115,35 @@ def score_session(
     # pillar 점수 0~4 정규화 (가이드라인 4단계 일치)
     pillar_scores: Dict[str, float] = {}
     pillar_unevaluable: Dict[str, int] = {}
+    pillar_low_coverage: Dict[str, dict] = {}  # 진단된 비율이 너무 낮은 pillar 기록
     for pillar, agg in pillar_agg.items():
         pillar_unevaluable[pillar] = agg["unevaluable"]
-        if agg["weight_sum"] > 0:
-            pillar_scores[pillar] = round(agg["score_sum"] / agg["weight_sum"] * 4.0, 4)
-        # weight_sum == 0 → 그 pillar 는 전부 평가불가. pillar_scores 에 등록 안 함 (총점 계산서 제외).
+        if agg["weight_sum"] <= 0:
+            continue  # 전부 평가불가 → pillar_scores 등록 X
+        raw_score = round(agg["score_sum"] / agg["weight_sum"] * 4.0, 4)
+        # 커버리지 가드: pillar_total_items 가 주어졌고 평가가능 비율이 MIN_COVERAGE 미만이면
+        # 점수 등록 X (frontend 는 측정불충분 = 평가불가로 표시).
+        if pillar_total_items:
+            total = pillar_total_items.get(pillar, 0)
+            # agg 의 evaluable = score_sum 에 기여한 항목 수 = weight_sum / maturity_score
+            # 정확한 카운트를 위해 별도 집계가 필요 — checklist_results 에서 pillar 별 평가가능 카운트
+            evaluable_in_pillar = sum(
+                1 for r in checklist_results
+                if r["pillar"] == pillar and r["result"] != "평가불가"
+            )
+            if total > 0:
+                coverage = evaluable_in_pillar / total
+                if coverage < MIN_COVERAGE:
+                    pillar_low_coverage[pillar] = {
+                        "evaluable": evaluable_in_pillar,
+                        "total": total,
+                        "coverage": round(coverage, 4),
+                        "raw_score": raw_score,
+                    }
+                    # raw_score 가 그럴듯해도 통계적으로 무의미 → 제외
+                    pillar_unevaluable[pillar] = pillar_unevaluable.get(pillar, 0) + (total - evaluable_in_pillar)
+                    continue
+        pillar_scores[pillar] = raw_score
 
     # 총점 = 평가 가능한 pillar 들의 평균. 모든 pillar 가 평가불가면 0.0
     evaluable_scores = list(pillar_scores.values())
@@ -128,6 +158,7 @@ def score_session(
         "session_id": session_id,
         "pillar_scores": pillar_scores,
         "pillar_unevaluable": pillar_unevaluable,
+        "pillar_low_coverage": pillar_low_coverage,  # 측정 불충분 처리된 pillar 진단 메타
         "total_score": round(total_score, 4),
         "maturity_level": determine_maturity_level(total_score),
         "evaluable_items": evaluable_items,

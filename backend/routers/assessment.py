@@ -1146,7 +1146,14 @@ def _trigger_scoring(session_id: int, db: Session):
         }
         for r in collected_rows
     ]
-    output = score_session(session_id, collected_results, checklist_meta)
+    # pillar 별 전체 체크리스트 항목 수 — scoring 의 커버리지 가드용.
+    # (collected_results 에 없는 pillar 항목까지 분모에 포함해야 한 두 개만 충족돼도
+    # 최적화로 잘못 잡히는 거짓 만점을 막을 수 있다.)
+    pillar_total_rows = db.query(Checklist.pillar, func.count(Checklist.check_id)).group_by(Checklist.pillar).all()
+    pillar_total_items = {p: int(c) for p, c in pillar_total_rows}
+
+    output = score_session(session_id, collected_results, checklist_meta,
+                           pillar_total_items=pillar_total_items)
 
     for cr in output["checklist_results"]:
         check_id = cr.get("check_id")
