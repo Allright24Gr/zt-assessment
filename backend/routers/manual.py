@@ -884,29 +884,74 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     # 위에서 이미 dv 추가했으므로 여기서는 호환성 유지를 위한 노옵 (기존 변수 사용).
     _ = first_data_row  # noqa: F841
 
-    # ── 가독성: 열 너비 + 행 높이 자동 조정 ───────────────────────────────
-    # 기존 base 양식의 컬럼 너비가 일부 짧아 글자가 잘려보이는 문제 해소.
-    # A=M_id / B=Pillar / C=항목번호·이름 / D=성숙도 / E=세부질문 / F=판정기준 / G=선택 / H=비고
-    column_widths = {
-        "A": 8,    # M001 ~ M999
-        "B": 18,   # Pillar 이름 (식별자 및 신원 등)
-        "C": 28,   # 항목번호·이름
-        "D": 10,   # 성숙도 (기존/초기/향상/최적화)
-        "E": 60,   # 세부 질문 — 가장 길게
-        "F": 50,   # 판정 기준
-        "G": 14,   # 선택 (O/△/X/평가불가)
-        "H": 40,   # 비고/증적메모
+    # ── 가독성: 셀 실제 내용 길이 기반 열 너비/행 높이 자동 산정 ──────────
+    # 무지성 고정폭 X. 한국어/영문 혼합을 고려해 한국어 1글자 ≈ 2 width unit 로 가중치.
+    # 컬럼 별 상·하한 폭을 두어 너무 좁거나 너무 넓어지지 않도록 캡.
+    COL_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    # (최소, 최대) 폭 — 컬럼 의미에 맞춘 보호 범위
+    COL_BOUNDS = {
+        "A": (7,  10),   # M_id
+        "B": (12, 20),   # Pillar
+        "C": (18, 36),   # 항목번호·이름
+        "D": (8,  12),   # 성숙도
+        "E": (30, 70),   # 세부 질문 (가장 김)
+        "F": (24, 60),   # 판정 기준
+        "G": (10, 16),   # 선택
+        "H": (20, 48),   # 비고
     }
-    for col_letter, width in column_widths.items():
-        ws_diag.column_dimensions[col_letter].width = width
 
-    # 데이터 행은 wrap_text 가 켜져 있으므로 높이 자동 — 헤더와 일부 행만 명시.
-    # 모든 데이터 행에 충분한 높이 보장 (긴 세부질문/판정기준 2~3줄 wrap 가능).
+    def _visual_len(s: str) -> int:
+        """한글 1글자=2, 영문/숫자/공백=1 로 환산한 시각적 폭."""
+        n = 0
+        for ch in s:
+            n += 2 if ord(ch) > 0x7F else 1
+        return n
+
+    # 컬럼 별 최대 줄 길이 측정 (개행 분리)
+    col_max_len: dict[str, int] = {c: 0 for c in COL_LETTERS}
     for r in range(4, ws_diag.max_row + 1):
-        v = ws_diag.cell(r, 1).value
-        if v and isinstance(v, str) and v.startswith("M"):
-            # 데이터 행: 32pt 정도면 wrap 2~3줄 무리 없음
-            ws_diag.row_dimensions[r].height = 32
+        for ci, letter in enumerate(COL_LETTERS, start=1):
+            v = ws_diag.cell(r, ci).value
+            if v is None:
+                continue
+            s = str(v)
+            longest_line = max((_visual_len(line) for line in s.split("\n")), default=0)
+            if longest_line > col_max_len[letter]:
+                col_max_len[letter] = longest_line
+
+    for letter in COL_LETTERS:
+        lo, hi = COL_BOUNDS[letter]
+        # +2 padding for borders/padding, 그 후 (lo, hi) 범위로 클램프
+        ideal = col_max_len[letter] + 2
+        ws_diag.column_dimensions[letter].width = max(lo, min(ideal, hi))
+
+    # 행 높이 — 각 행의 가장 긴 셀 문자열이 그 컬럼 폭에 맞춰 몇 줄로 wrap 될지 추정.
+    # wrap_text 가 켜진 셀이라는 가정. 줄당 ~16pt, 최대 5줄(=80pt) 캡.
+    LINE_PT = 16
+    MAX_LINES = 5
+    for r in range(4, ws_diag.max_row + 1):
+        v0 = ws_diag.cell(r, 1).value
+        # 카테고리 구분행(▸) 은 단일 줄, 데이터 행(M###) 만 추정.
+        if not (v0 and isinstance(v0, str) and v0.startswith("M")):
+            continue
+        max_lines = 1
+        for ci, letter in enumerate(COL_LETTERS, start=1):
+            v = ws_diag.cell(r, ci).value
+            if v is None:
+                continue
+            s = str(v)
+            col_w = ws_diag.column_dimensions[letter].width or 10
+            # 명시 개행은 그대로 카운트, 추가로 폭 기준 wrap 줄 수 추정.
+            lines_in_cell = 0
+            for line in s.split("\n"):
+                vlen = _visual_len(line)
+                wrapped = max(1, (vlen + int(col_w) - 1) // max(1, int(col_w)))
+                lines_in_cell += wrapped
+            if lines_in_cell > max_lines:
+                max_lines = lines_in_cell
+        max_lines = min(max_lines, MAX_LINES)
+        # 1줄(=한글 18pt 정도)도 답답하지 않게 베이스 18pt + 추가 줄당 LINE_PT
+        ws_diag.row_dimensions[r].height = 18 + (max_lines - 1) * LINE_PT
 
     # ── 부록 시트: 자동 결과 요약 + 외부 자동 점검 결과 (참고용) ───────────
     _append_auto_summary_sheet(wb, auto_dist)
