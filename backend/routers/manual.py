@@ -724,43 +724,62 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             "alignment": copy(sc.alignment),
         }
 
-    # 폴백 항목을 Pillar 별로 그룹화
+    # 폴백/평가불가 항목을 Pillar 별로 그룹화 + Pillar 내부는 item_id 순서.
     by_pillar: dict[str, list] = {}
     for cl, item_no_prefix in new_items:
         by_pillar.setdefault(cl.pillar or "기타", []).append((cl, item_no_prefix))
+    for pillar in by_pillar:
+        by_pillar[pillar].sort(key=lambda t: t[0].item_id or "")
 
-    # manual_diagnosis 시트 끝에 추가
-    append_at = ws_diag.max_row + 2  # 한 줄 띄움
+    # 사전 M_id 할당 — xlsx 최종 visual order(식별자→기기→...→데이터) 기준 연속 번호.
+    # 이렇게 해야 reverse 삽입을 해도 보기에는 위→아래 M### 가 단조 증가.
+    pre_assigned_mids: list[str] = []
+    pillar_order_keys = [p for p in _PILLAR_ORDER if by_pillar.get(p)]
+    extra_pillars = sorted([p for p in by_pillar if p not in _PILLAR_ORDER])
+    for pillar in pillar_order_keys + extra_pillars:
+        for _ in by_pillar[pillar]:
+            pre_assigned_mids.append(f"M{next_m:03d}")
+            next_m += 1
 
-    # 안내 헤더 (폴백 섹션 구분)
-    notice_row = append_at
-    nc = ws_diag.cell(notice_row, 1)
-    nc.value = (
-        f"▼ 자동 폴백 + 평가불가 보완 항목 — 사용 환경에서 자동 진단이 불가능했거나 "
-        f"자동 호출 결과가 평가불가로 분류된 항목 ({len(new_items)}건)"
-    )
-    nc.font = Font(name="Arial", size=11, bold=True, color="FFB91C1C")
-    nc.fill = PatternFill("solid", fgColor="FFFEE2E2")
-    ws_diag.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=8)
-    nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    append_at += 1
+    # 기존 sheet 에서 Pillar 별 데이터 행 마지막 위치 스캔.
+    # ▸ 로 시작하는 카테고리 구분행을 기준으로 섹션 경계 파악.
+    pillar_section_end: dict[str, int] = {}  # pillar -> 그 pillar 의 마지막 데이터 행
+    current_pillar: Optional[str] = None
+    section_start_row = 4
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("▸"):
+            if current_pillar:
+                pillar_section_end[current_pillar] = section_start_row - 1
+            current_pillar = v.replace("▸", "").strip()
+            # 마지막 데이터 행 = 다음 ▸ 의 한 줄 위. 일단 r 로 두고 다음 ▸ 만나면 갱신.
+            section_start_row = r + 1
+            pillar_section_end[current_pillar] = ws_diag.max_row  # 일단 끝까지로 두고 다음 섹션 발견 시 갱신
+        elif v and isinstance(v, str) and v.startswith("M") and current_pillar:
+            pillar_section_end[current_pillar] = r
+
+    # 폴백 강조용 스타일 (M_id 셀 + 판정 선택 셀 두 군데에만 옅은 빨강 fill).
+    fallback_mid_font = Font(name="Arial", size=10, bold=True, color="FFB91C1C")
+    fallback_mid_fill = PatternFill("solid", fgColor="FFFEE2E2")
 
     new_mapping_rows: list[tuple] = []  # (m_id, pillar, item_no_full, maturity, choice, verdict)
+    inserted_row_ranges: list[tuple[int, int]] = []  # 드롭다운 적용용 (start, end inclusive)
 
-    for pillar in sorted(by_pillar.keys(), key=_pillar_sort_key):
+    # 본문: reverse pillar order 로 삽입 → earlier pillar 위치 안 흔들림.
+    # M_id 는 pre_assigned_mids 에서 visual order 로 미리 잘라둠.
+    visual_order = pillar_order_keys + extra_pillars
+    mid_cursor = 0
+    pillar_mid_slice: dict[str, list[str]] = {}
+    for pillar in visual_order:
+        cnt = len(by_pillar[pillar])
+        pillar_mid_slice[pillar] = pre_assigned_mids[mid_cursor:mid_cursor + cnt]
+        mid_cursor += cnt
+
+    for pillar in reversed(visual_order):
         items = by_pillar[pillar]
-        # 카테고리 구분행
-        cat_cell = ws_diag.cell(append_at, 1)
-        cat_cell.value = f"▸  {pillar}"
-        ws_diag.merge_cells(start_row=append_at, start_column=1, end_row=append_at, end_column=8)
-        for col in range(1, 9):
-            c = ws_diag.cell(append_at, col)
-            cs = cat_styles.get(col, {})
-            if cs.get("font"):      c.font      = copy(cs["font"])
-            if cs.get("fill"):      c.fill      = copy(cs["fill"])
-            if cs.get("border"):    c.border    = copy(cs["border"])
-            if cs.get("alignment"): c.alignment = copy(cs["alignment"])
-        append_at += 1
+        mids = pillar_mid_slice[pillar]
+        if not items:
+            continue
 
         # Pillar 별 자동 점검 요약 (한 번만 계산해서 같은 Pillar 행에 공유)
         pillar_evidence_text = ""
@@ -771,9 +790,33 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             except Exception:
                 pillar_evidence_text = ""
 
-        for cl, item_no_prefix in items:
-            m_id = f"M{next_m:03d}"
-            next_m += 1
+        # 삽입 위치: 기존 pillar 섹션의 마지막 데이터 행 바로 다음.
+        # 기존에 그 pillar 가 없으면 시트 맨 끝에 새 카테고리 구분행과 함께 추가.
+        if pillar in pillar_section_end:
+            insert_at = pillar_section_end[pillar] + 1
+            # N개 행 삽입 (기존 행들 아래로 밀림)
+            ws_diag.insert_rows(insert_at, amount=len(items))
+            data_start = insert_at
+        else:
+            # 새 pillar — 끝에 카테고리 구분행 + 데이터 행 모두 추가
+            data_start = ws_diag.max_row + 2
+            cat_cell = ws_diag.cell(data_start, 1)
+            cat_cell.value = f"▸  {pillar}"
+            ws_diag.merge_cells(start_row=data_start, start_column=1, end_row=data_start, end_column=8)
+            for col in range(1, 9):
+                c = ws_diag.cell(data_start, col)
+                cs = cat_styles.get(col, {})
+                if cs.get("font"):      c.font      = copy(cs["font"])
+                if cs.get("fill"):      c.fill      = copy(cs["fill"])
+                if cs.get("border"):    c.border    = copy(cs["border"])
+                if cs.get("alignment"): c.alignment = copy(cs["alignment"])
+            data_start += 1
+
+        # 데이터 행 채우기
+        first_new = data_start
+        for i, (cl, item_no_prefix) in enumerate(items):
+            r = data_start + i
+            m_id = mids[i]
             item_no_full = (cl.category or item_no_prefix)
             row_vals = [
                 m_id,
@@ -782,25 +825,28 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
                 cl.maturity or "",
                 cl.item_name or "",
                 cl.criteria or "",
-                None,                       # ★ 담당자 선택 (필수) — 빈 칸
-                pillar_evidence_text or None,  # 비고/증적메모 — 자동 점검 요약 미리 채움
+                None,                          # ★ 담당자 선택 (필수) — 빈 칸
+                pillar_evidence_text or None,  # 비고/증적메모
             ]
             for col, val in enumerate(row_vals, start=1):
-                c = ws_diag.cell(append_at, col)
+                c = ws_diag.cell(r, col)
                 c.value = val
                 cs = cell_styles.get(col, {})
                 if cs.get("font"):      c.font      = copy(cs["font"])
                 if cs.get("fill"):      c.fill      = copy(cs["fill"])
                 if cs.get("border"):    c.border    = copy(cs["border"])
                 if cs.get("alignment"): c.alignment = copy(cs["alignment"])
+            # M_id 셀에 폴백 강조 (옅은 빨강 배경 + 빨강 볼드)
+            mid_cell = ws_diag.cell(r, 1)
+            mid_cell.font = copy(fallback_mid_font)
+            mid_cell.fill = copy(fallback_mid_fill)
 
-            # judgment_mapping 시트는 참고용 — 선택값 → 판정 1:1 매핑 기재.
             for choice in CHOICE_OPTIONS:
                 verdict = CHOICE_TO_VERDICT[choice]
                 new_mapping_rows.append(
                     (m_id, pillar, item_no_full, cl.maturity or "", choice, verdict)
                 )
-            append_at += 1
+        inserted_row_ranges.append((first_new, first_new + len(items) - 1))
 
     # judgment_mapping 시트에 폴백 매핑 추가
     judg_append = ws_judg.max_row + 1
@@ -809,8 +855,15 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             ws_judg.cell(judg_append, col).value = val
         judg_append += 1
 
-    # 드롭다운(데이터 검증) 추가 — ★ 담당자 선택 컬럼(G).
-    # 폴백 항목도 본 양식과 동일하게 O/△/X/평가불가 만 허용.
+    # 전체 M_id 재번호 — 삽입 후 위→아래 순서로 M001 ~ Mxxx 단조 증가하도록.
+    renum = 1
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("M"):
+            ws_diag.cell(r, 1).value = f"M{renum:03d}"
+            renum += 1
+
+    # 드롭다운(데이터 검증) 추가 — ★ 담당자 선택 컬럼(G) 모든 새 행에 일괄 적용.
     choice_str = ",".join(CHOICE_OPTIONS)
     dv = DataValidation(
         type="list",
@@ -820,12 +873,40 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         errorTitle="선택값 확인",
         error="O / △ / X / 평가불가 중에서 선택해주세요.",
     )
-    # 폴백 데이터 행 범위 (notice_row+1 ~ append_at-1)
-    first_data_row = notice_row + 1
-    last_data_row = append_at - 1
-    if last_data_row >= first_data_row:
-        dv.add(f"G{first_data_row}:G{last_data_row}")
-        ws_diag.add_data_validation(dv)
+    # 모든 신규 삽입 구간을 DV 에 등록
+    for (s, e) in inserted_row_ranges:
+        dv.add(f"G{s}:G{e}")
+    ws_diag.add_data_validation(dv)
+    # 아래 기존 코드는 사용 안 함 — 변수만 정의해 호환성 유지.
+    first_data_row = inserted_row_ranges[0][0] if inserted_row_ranges else (ws_diag.max_row + 1)
+    # notice_row 는 더 이상 안 그림 — 폴백 강조는 M_id 셀 빨강 배경으로 대체.
+    notice_row = first_data_row - 1
+    # 위에서 이미 dv 추가했으므로 여기서는 호환성 유지를 위한 노옵 (기존 변수 사용).
+    _ = first_data_row  # noqa: F841
+
+    # ── 가독성: 열 너비 + 행 높이 자동 조정 ───────────────────────────────
+    # 기존 base 양식의 컬럼 너비가 일부 짧아 글자가 잘려보이는 문제 해소.
+    # A=M_id / B=Pillar / C=항목번호·이름 / D=성숙도 / E=세부질문 / F=판정기준 / G=선택 / H=비고
+    column_widths = {
+        "A": 8,    # M001 ~ M999
+        "B": 18,   # Pillar 이름 (식별자 및 신원 등)
+        "C": 28,   # 항목번호·이름
+        "D": 10,   # 성숙도 (기존/초기/향상/최적화)
+        "E": 60,   # 세부 질문 — 가장 길게
+        "F": 50,   # 판정 기준
+        "G": 14,   # 선택 (O/△/X/평가불가)
+        "H": 40,   # 비고/증적메모
+    }
+    for col_letter, width in column_widths.items():
+        ws_diag.column_dimensions[col_letter].width = width
+
+    # 데이터 행은 wrap_text 가 켜져 있으므로 높이 자동 — 헤더와 일부 행만 명시.
+    # 모든 데이터 행에 충분한 높이 보장 (긴 세부질문/판정기준 2~3줄 wrap 가능).
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("M"):
+            # 데이터 행: 32pt 정도면 wrap 2~3줄 무리 없음
+            ws_diag.row_dimensions[r].height = 32
 
     # ── 부록 시트: 자동 결과 요약 + 외부 자동 점검 결과 (참고용) ───────────
     _append_auto_summary_sheet(wb, auto_dist)
