@@ -742,8 +742,8 @@ def collect_role_change_events(item_id: str, maturity: str) -> CollectedResult:
 
 
 def collect_stepup_authz(item_id: str, maturity: str) -> CollectedResult:
-    """1.4.2.3_1: step-up flow ≥ 1 AND Shuffle 연동 → 충족 / flow만 → 부분충족"""
-    MK, TH = "stepup_with_shuffle", 1.0
+    """1.4.2.3_1: step-up flow ≥ 1 → 충족 / 0 → 미충족"""
+    MK, TH = "stepup_flow_count", 1.0
     try:
         token = _get_admin_token()
         flows = _kc_get(f"/admin/realms/{KEYCLOAK_REALM}/authentication/flows", token=token)
@@ -751,16 +751,9 @@ def collect_stepup_authz(item_id: str, maturity: str) -> CollectedResult:
             1 for f in (flows or [])
             if "step" in f.get("alias", "").lower()
         )
-        shuffle_url = os.environ.get("SHUFFLE_URL", "")
-        shuffle_connected = bool(shuffle_url)
-        if stepup_count >= TH and shuffle_connected:
-            verdict = "충족"
-        elif stepup_count >= TH:
-            verdict = "부분충족"
-        else:
-            verdict = "미충족"
+        verdict = "충족" if stepup_count >= TH else "미충족"
         return _make_result(item_id, maturity, MK, float(stepup_count), TH, verdict,
-                            {"stepup_flow_count": stepup_count, "shuffle_configured": shuffle_connected})
+                            {"stepup_flow_count": stepup_count})
     except Exception as exc:
         return _unavailable(item_id, maturity, MK, TH, str(exc))
 

@@ -379,6 +379,109 @@ def _resolve_fallback_tools(session: DiagnosisSession) -> set[str]:
 _FALLBACK_CHOICES = [(c, CHOICE_TO_VERDICT[c]) for c in CHOICE_OPTIONS]
 
 
+_MATURITY_NAME_FROM_NUM = {1: "기존", 2: "초기", 3: "향상", 4: "최적화"}
+
+
+def _category_prefix(item_id: str) -> str:
+    """item_id 'X.Y.Z.N_M' → 카테고리 prefix 'X.Y.Z'."""
+    if not item_id:
+        return ""
+    base = item_id.split("_", 1)[0]
+    parts = base.split(".")
+    return ".".join(parts[:3]) if len(parts) >= 3 else ""
+
+
+def _maturity_num_from_item_id(item_id: str) -> int:
+    """item_id 'X.Y.Z.N_M' → maturity 숫자 N (1=기존, 2=초기, 3=향상, 4=최적화)."""
+    if not item_id:
+        return 0
+    base = item_id.split("_", 1)[0]
+    parts = base.split(".")
+    if len(parts) < 4:
+        return 0
+    try:
+        return int(parts[3])
+    except (ValueError, TypeError):
+        return 0
+
+
+def _analyze_auto_max_level(session_id: int, db: Session) -> dict[str, int]:
+    """세션의 자동 진단 결과를 분석해 카테고리(prefix) 별 충족된 최고 단계 산출.
+
+    KISA ZT 가이드라인의 보수적 평가 원칙: 상위 단계가 충족되면 하위 단계는 자동
+    충족된 것으로 본다. 따라서 수동 양식에서는 자동으로 충족된 최고 단계 *이하* 행을
+    모두 제외해야 한다.
+
+    반환: {"1.1.1": 3, "1.2.1": 0, ...}
+      · 키: 카테고리 prefix (3-segment item_id)
+      · 값: 자동 진단에서 "충족" 으로 판정된 가장 높은 maturity 숫자 (1~4).
+            충족된 게 없으면 키 자체가 없음 → caller 는 .get(prefix, 0) 사용.
+    """
+    rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    auto_max: dict[str, int] = {}
+    for dr, cl in rows:
+        if cl.diagnosis_type != "자동":
+            continue
+        if dr.result != "충족":
+            continue
+        prefix = _category_prefix(cl.item_id or "")
+        mat_num = _maturity_num_from_item_id(cl.item_id or "")
+        if not prefix or not mat_num:
+            continue
+        prev = auto_max.get(prefix, 0)
+        if mat_num > prev:
+            auto_max[prefix] = mat_num
+    return auto_max
+
+
+def _auto_result_distribution(session_id: int, db: Session) -> dict[str, dict]:
+    """카테고리 prefix 별 자동 결과 분포 + 한국어 카테고리 이름 산출 (요약 시트용).
+
+    반환: {
+        "1.1.1": {
+            "category_label": "1.1.1 사용자 인벤토리",
+            "max_satisfied":  3,   # 자동 최고 충족 단계 (없으면 0)
+            "counts": {"충족": 2, "부분충족": 0, "미충족": 1, "평가불가": 0},
+        },
+        ...
+    }
+    """
+    rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    summary: dict[str, dict] = {}
+    for dr, cl in rows:
+        if cl.diagnosis_type != "자동":
+            continue
+        prefix = _category_prefix(cl.item_id or "")
+        if not prefix:
+            continue
+        rec = summary.setdefault(prefix, {
+            "category_label": cl.category or prefix,
+            "max_satisfied":  0,
+            "counts":         {"충족": 0, "부분충족": 0, "미충족": 0, "평가불가": 0},
+        })
+        # 가장 의미 있는 라벨 (Checklist.category) 채택
+        if cl.category and len(cl.category) > len(rec["category_label"]):
+            rec["category_label"] = cl.category
+        result_key = _normalize_result(dr.result or "")
+        if result_key in rec["counts"]:
+            rec["counts"][result_key] += 1
+        if result_key == "충족":
+            mat_num = _maturity_num_from_item_id(cl.item_id or "")
+            if mat_num > rec["max_satisfied"]:
+                rec["max_satisfied"] = mat_num
+    return summary
+
+
 # 카테고리(Pillar) 정렬 순서 — 기존 양식과 동일하게 6 Pillar 순으로.
 _PILLAR_ORDER = [
     "식별자 및 신원",
@@ -419,6 +522,19 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     ws_diag = wb["manual_diagnosis"]
     ws_judg = wb["judgment_mapping"]
 
+    # ── 자동 진단 결과 분석 (보수적 단계 평가) ────────────────────────────────
+    # 카테고리별 자동 충족된 최고 단계 ≥ 행 단계인 행은 양식에서 제외한다.
+    # ex) 1.1.1 카테고리에서 "향상(3)" 까지 자동 충족 → 1.1.1 의 기존/초기/향상 행 모두 제외.
+    auto_max = _analyze_auto_max_level(session.session_id, db)
+    auto_dist = _auto_result_distribution(session.session_id, db)
+
+    # ── 양식 R2 안내문에 보수적 평가 안내 추가 ────────────────────────────────
+    notice_cell = ws_diag.cell(2, 1)
+    base_notice = str(notice_cell.value or "")
+    extra_notice = " ※ 자동 진단에서 충족된 항목은 보수적 평가 원칙에 따라 양식에서 자동 제외되었습니다 (해당 카테고리 자동 결과 요약 시트 참고)."
+    if extra_notice not in base_notice:
+        notice_cell.value = base_notice + extra_notice
+
     # ── 공개 URL 자동 점검 (실패해도 양식 생성은 진행) ───────────────────────
     extra = session.extra if isinstance(session.extra, dict) else {}
     scan_targets = extra.get("scan_targets") if isinstance(extra.get("scan_targets"), dict) else {}
@@ -440,7 +556,45 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             logger.warning("[manual] web evidence collection failed: %s", exc)
             evidence = {"error": str(exc)}
 
-    # 기존 양식에 이미 포함된 (item_no_prefix, maturity) 조합 — 중복 추가 방지.
+    # ── 자동 충족된 행 제거 (보수적 단계 평가) ────────────────────────────────
+    # 역순 순회로 행 번호 안 꼬이게 처리. 데이터 행 (M### 시작) 만 검사 대상.
+    removed_rows_info: list[tuple[str, str]] = []  # (prefix, maturity) — 로그/디버그용
+    for r in range(ws_diag.max_row, 3, -1):
+        mid = ws_diag.cell(r, 1).value
+        if not mid or not isinstance(mid, str) or not mid.startswith("M"):
+            continue
+        item_no_cell = ws_diag.cell(r, 3).value
+        maturity_cell = ws_diag.cell(r, 4).value
+        if not item_no_cell or not maturity_cell:
+            continue
+        prefix = str(item_no_cell).split()[0]
+        maturity = str(maturity_cell).strip()
+        mat_num = MATURITY_NUM.get(maturity, 0)
+        if not prefix or not mat_num:
+            continue
+        category_max = auto_max.get(prefix, 0)
+        if category_max >= mat_num:
+            ws_diag.delete_rows(r, 1)
+            removed_rows_info.append((prefix, maturity))
+
+    # 빈 카테고리 구분행 (▸ ...) 정리 — 직후가 또 ▸ 이거나 시트 끝이면 제거.
+    for r in range(ws_diag.max_row, 3, -1):
+        v = ws_diag.cell(r, 1).value
+        if not v or not isinstance(v, str) or not v.startswith("▸"):
+            continue
+        nxt = ws_diag.cell(r + 1, 1).value if r + 1 <= ws_diag.max_row else None
+        if not nxt or (isinstance(nxt, str) and nxt.startswith("▸")):
+            ws_diag.delete_rows(r, 1)
+
+    # M_id 재번호 — 빈자리 없이 M001~ 연속 번호.
+    next_m_for_renumber = 1
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("M"):
+            ws_diag.cell(r, 1).value = f"M{next_m_for_renumber:03d}"
+            next_m_for_renumber += 1
+
+    # 기존 양식에 이미 포함된 (item_no_prefix, maturity) 조합 — 폴백 중복 추가 방지.
     existing_keys: set[tuple[str, str]] = set()
     for r in range(4, ws_diag.max_row + 1):
         mid = ws_diag.cell(r, 1).value
@@ -451,9 +605,26 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         if item_no and maturity:
             existing_keys.add((item_no, maturity))
 
+    # 양식이 완전히 비었으면 안내 한 줄 (행 4 = 첫 카테고리 위치).
+    has_any_data = next_m_for_renumber > 1
+    if not has_any_data:
+        info_row = 4
+        ic = ws_diag.cell(info_row, 1)
+        ic.value = "✓ 모든 자동 진단이 충족되어 수동 보완 항목이 없습니다. (자동 결과 요약 시트 참고)"
+        ic.font = Font(name="Arial", size=11, bold=True, color="FF0F766E")
+        ic.fill = PatternFill("solid", fgColor="FFE7F5F2")
+        ic.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws_diag.merge_cells(start_row=info_row, start_column=1, end_row=info_row, end_column=8)
+
     fallback_tools = _resolve_fallback_tools(session)
+    # instructions 시트에도 보수적 평가 안내 추가 (멱등).
+    _augment_instructions_sheet(wb)
+
     if not fallback_tools:
-        # 폴백 없음 — 그대로 출력 (=정적 양식과 동일)
+        # 폴백 없음 — 자동 결과 요약/외부 점검 시트만 부착 후 종료.
+        _append_auto_summary_sheet(wb, auto_dist)
+        if evidence and not evidence.get("error"):
+            _append_evidence_sheet(wb, evidence)
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
@@ -465,7 +636,7 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     # 카테고리·item_id 순으로 정렬
     rows.sort(key=lambda c: (_pillar_sort_key(c.pillar or ""), c.item_id or ""))
 
-    # 기존 양식에 이미 있는 항목 제외
+    # 기존 양식에 이미 있는 항목 제외 + 자동 충족된 단계 제외 (보수적 평가).
     new_items = []
     for cl in rows:
         prefix = (cl.item_id or "").split("_", 1)[0]  # "1.1.1.1"
@@ -473,9 +644,18 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         key = (item_no_prefix, cl.maturity or "")
         if key in existing_keys:
             continue
+        # 자동에서 같은 카테고리의 상위(또는 동등) 단계가 충족되어 있으면 폴백도 생략.
+        mat_num = MATURITY_NUM.get(cl.maturity or "", 0)
+        if mat_num and auto_max.get(item_no_prefix, 0) >= mat_num:
+            removed_rows_info.append((item_no_prefix, cl.maturity or ""))
+            continue
         new_items.append((cl, item_no_prefix))
 
     if not new_items:
+        # 자동 결과 요약 시트는 폴백 없이도 부착해서 담당자가 확인 가능.
+        _append_auto_summary_sheet(wb, auto_dist)
+        if evidence and not evidence.get("error"):
+            _append_evidence_sheet(wb, evidence)
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
@@ -617,13 +797,100 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         dv.add(f"G{first_data_row}:G{last_data_row}")
         ws_diag.add_data_validation(dv)
 
-    # ── 부록 시트: 외부 자동 점검 결과 (참고용) ─────────────────────────────
+    # ── 부록 시트: 자동 결과 요약 + 외부 자동 점검 결과 (참고용) ───────────
+    _append_auto_summary_sheet(wb, auto_dist)
     if evidence and not evidence.get("error"):
         _append_evidence_sheet(wb, evidence)
 
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _augment_instructions_sheet(wb: openpyxl.Workbook) -> None:
+    """instructions 시트에 보수적 평가 안내 한 줄 추가 (멱등).
+
+    이미 추가되어 있으면 아무 일도 하지 않는다. 시트 자체가 없으면 무시.
+    """
+    if "instructions" not in wb.sheetnames:
+        return
+    ws_i = wb["instructions"]
+    marker = "자동 진단에서 충족된 항목은 보수적 평가 원칙"
+    for r in range(1, ws_i.max_row + 1):
+        for c in range(1, 5):
+            v = ws_i.cell(r, c).value
+            if isinstance(v, str) and marker in v:
+                return  # 이미 안내됨
+    append_at = ws_i.max_row + 2
+    c1 = ws_i.cell(append_at, 1, "자동 처리")
+    c1.font = Font(name="Arial", size=10, bold=True, color="FF0F766E")
+    c2 = ws_i.cell(append_at, 2,
+        "자동 진단에서 충족된 항목은 보수적 평가 원칙(상위 충족 → 하위 자동 충족)에 따라 "
+        "양식에서 자동 제외되었습니다. 어떤 자동 결과로 어떤 단계가 빠졌는지는 "
+        "'자동 결과 요약' 시트에서 확인할 수 있습니다."
+    )
+    c2.alignment = Alignment(wrap_text=True, vertical="top")
+
+
+def _append_auto_summary_sheet(wb: openpyxl.Workbook, auto_dist: dict[str, dict]) -> None:
+    """양식에 '자동 결과 요약' 시트 추가 — 카테고리별 자동 충족 단계 + 결과 분포.
+
+    담당자가 어떤 자동 결과 때문에 어떤 단계가 양식에서 빠졌는지 한눈에 보도록.
+    auto_dist 가 비어있어도 헤더만 있는 빈 시트는 만들지 않는다.
+    """
+    if not auto_dist:
+        return
+    # 중복 호출 방지 — 같은 이름 시트가 이미 있으면 건너뜀.
+    sheet_name = "자동 결과 요약"
+    if sheet_name in wb.sheetnames:
+        return
+    ws = wb.create_sheet(sheet_name)
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 40
+
+    bold = Font(name="Arial", size=11, bold=True, color="FF1E3A5F")
+    header_fill = PatternFill("solid", fgColor="FFE7F5F2")
+    title_font = Font(name="Arial", size=12, bold=True, color="FF1E3A5F")
+    title_fill = PatternFill("solid", fgColor="FFFEF3C7")
+
+    tc = ws.cell(1, 1, "자동 진단 결과 요약 — 보수적 평가에 의해 양식에서 제외된 범위 확인용")
+    tc.font = title_font
+    tc.fill = title_fill
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    tc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    headers = ["카테고리(prefix)", "카테고리 이름", "자동 최고 충족 단계", "자동 결과 분포"]
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(3, col, h)
+        c.font = bold
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    # 정렬: prefix 사전순 (1.1.1 → 1.1.2 → ...)
+    row = 4
+    def _prefix_key(p: str) -> tuple:
+        try:
+            return tuple(int(x) for x in p.split("."))
+        except Exception:
+            return (999,)
+    for prefix in sorted(auto_dist.keys(), key=_prefix_key):
+        rec = auto_dist[prefix]
+        max_n = rec.get("max_satisfied", 0)
+        max_label = _MATURITY_NAME_FROM_NUM.get(max_n, "(없음)") if max_n else "(없음)"
+        counts = rec.get("counts", {})
+        dist_text = " / ".join(
+            f"{k} {counts.get(k, 0)}"
+            for k in ("충족", "부분충족", "미충족", "평가불가")
+        )
+        ws.cell(row, 1, prefix)
+        ws.cell(row, 2, rec.get("category_label") or prefix)
+        ws.cell(row, 3, max_label)
+        ws.cell(row, 4, dist_text)
+        for col in range(1, 5):
+            ws.cell(row, col).alignment = Alignment(vertical="center", wrap_text=True)
+        row += 1
 
 
 def _append_evidence_sheet(wb: openpyxl.Workbook, evidence: dict) -> None:

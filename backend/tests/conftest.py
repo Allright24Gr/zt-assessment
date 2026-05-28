@@ -23,7 +23,6 @@ from typing import Iterator, Optional
 # 동일 키로 토큰 재사용이 가능하게 한다.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-pytest-only-do-not-use-in-prod")
 os.environ.setdefault("ZTA_CLEANUP_DISABLE", "true")
-os.environ.setdefault("INTERNAL_API_TOKEN", "test-internal-token")
 
 # backend 패키지를 import 가능하게.
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

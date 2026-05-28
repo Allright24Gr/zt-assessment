@@ -1397,9 +1397,42 @@ export function Reporting() {
                             <ChevronDown size={18} className="text-gray-400 transition-transform group-open:rotate-180 shrink-0" />
                           </summary>
 
-                          {/* 4단계 row */}
+                          {/* 4단계 row — 충족된 최고 단계 미만은 기본 숨김 (보수적 평가 모델 일치).
+                              사용자가 필요 시 "자동 충족 N건 펼치기" 토글로 확인 가능. */}
+                          {(() => {
+                            const passedNums = passedLevels
+                              .map((l) => MATURITY_ORDER[l.maturity as string] ?? 0)
+                              .filter((n) => n > 0);
+                            const maxPassedNum = passedNums.length > 0 ? Math.max(...passedNums) : 0;
+                            const visibleLevels = sortedLevels.filter(
+                              (l) => (MATURITY_ORDER[l.maturity as string] ?? 5) >= maxPassedNum
+                            );
+                            const hiddenLevels = sortedLevels.filter(
+                              (l) => (MATURITY_ORDER[l.maturity as string] ?? 5) < maxPassedNum
+                            );
+                            return (
                           <div className="mt-4 space-y-2">
-                            {sortedLevels.map((level) => {
+                            {hiddenLevels.length > 0 && (
+                              <details className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                                <summary className="cursor-pointer list-none flex items-center justify-between gap-2">
+                                  <span>
+                                    충족 단계({repLevel.maturity}) 미만 {hiddenLevels.length}건 자동 충족으로 처리됨
+                                  </span>
+                                  <ChevronDown size={12} className="text-gray-400" />
+                                </summary>
+                                <div className="mt-2 space-y-1">
+                                  {hiddenLevels.map((h) => (
+                                    <div key={h.id} className="flex items-center gap-2 text-[11px]">
+                                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 border border-gray-200">
+                                        {h.maturity}
+                                      </span>
+                                      <span className="text-gray-500 truncate">{h.question}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+                            {visibleLevels.map((level) => {
                               const raw = (level as ChecklistDetail & { rawResult?: string }).rawResult ?? level.result;
                               const finding = getDemoFinding(level);
                               const resultBg = raw === "충족"
@@ -1490,6 +1523,8 @@ export function Reporting() {
                               );
                             })}
                           </div>
+                            );
+                          })()}
                         </details>
                       );
                     });

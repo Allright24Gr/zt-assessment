@@ -65,7 +65,6 @@
 - [x] `_resolve_supported_tools` — 사용자 환경에 따라 자동 도구 활성/비활성
 - [x] `validators.py` — `validate_nmap_target` / `validate_trivy_image` / `validate_https_url` / `validate_cred_field` / `validate_entra_tenant_id`. shell 메타문자 차단
 - [x] `_kc_mapping` 충돌 수정: `4.1.1.3_2 → collect_conditional_policy`, `6.2.1.3_1 → collect_data_abac_policy` 신규
-- [x] **`/webhook` fail-closed** — `INTERNAL_API_TOKEN` 미설정 시 503. 개발 우회 `ZTA_DEV_ALLOW_UNAUTH_WEBHOOK=true`
 - [x] **자격 비밀번호 메모리 dict 보관** (`_store_session_secrets` / `_pop_session_secrets`). DB 평문 저장 금지
 - [x] `_run_collectors` 전체를 `_collector_lock`으로 직렬화
 - [x] nmap/trivy/keycloak/wazuh/entra collector에 `set_session_target` / `set_session_creds` 헬퍼 일괄 추가
@@ -417,7 +416,7 @@
    ├ 도메인 + DNS A 레코드
    ├ AWS SES 프로덕션 신청 (1~3일 심사)
    ├ Let's Encrypt 인증서 + nginx/certs 배치
-   ├ .env 운영값(SECRET_KEY, DB_PASSWORD, INTERNAL_API_TOKEN, EMAIL_FROM …)
+   ├ .env 운영값(SECRET_KEY, DB_PASSWORD, EMAIL_FROM …)
    └ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
    │
    ▼  e2e 자체 검증

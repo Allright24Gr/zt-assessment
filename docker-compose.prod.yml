@@ -35,7 +35,6 @@ services:
     expose:
       - "8000"
     environment:
-      - SELF_BASE_URL=http://zt-backend:8000
       - CORS_ORIGINS=${CORS_ORIGINS}
       - ZTA_CLEANUP_DISABLE=${ZTA_CLEANUP_DISABLE:-}
       # 운영에서는 SES 실 발송 권장 — DRY_RUN 명시적으로 false 처리
