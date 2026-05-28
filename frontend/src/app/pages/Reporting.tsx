@@ -1349,13 +1349,34 @@ export function Reporting() {
                           (MATURITY_ORDER[a.maturity as string] ?? 5) -
                           (MATURITY_ORDER[b.maturity as string] ?? 5)
                       );
-                      // 대표 단계 = 충족된 최고 단계 (없으면 가장 높은 maturity)
+                      // 대표 단계 산출 — 평가 결과가 의미하는 상태를 헤더에 정확히 표기.
+                      // 충족이 하나라도 있으면 최고 충족 단계, 평가불가만 있으면 '평가불가',
+                      // 미충족만 있으면 '미충족', 부분충족만 있으면 '부분충족(최저 단계)'.
                       const passedLevels = sortedLevels.filter((l) => l.result === "충족");
-                      const repLevel = passedLevels.length > 0
-                        ? passedLevels[passedLevels.length - 1]
-                        : sortedLevels[sortedLevels.length - 1];
-                      const repColor = getMaturityColor(repLevel.maturity as string);
+                      const partialLevels = sortedLevels.filter((l) => l.result === "부분충족");
+                      const allNA = sortedLevels.length > 0 && sortedLevels.every((l) => l.result === "평가불가");
+                      const allFail = sortedLevels.length > 0 && sortedLevels.every((l) => l.result === "미충족");
+                      let repLabel: string;
+                      let repBadgeCls: string;
+                      if (allNA) {
+                        repLabel = "평가불가";
+                        repBadgeCls = "bg-gray-100 text-gray-600 border border-gray-200";
+                      } else if (passedLevels.length > 0) {
+                        repLabel = passedLevels[passedLevels.length - 1].maturity as string;
+                        repBadgeCls = getMaturityColor(repLabel).badge;
+                      } else if (partialLevels.length > 0) {
+                        repLabel = `부분충족 (${partialLevels[0].maturity})`;
+                        repBadgeCls = "bg-amber-100 text-amber-700 border border-amber-200";
+                      } else if (allFail) {
+                        repLabel = "미충족";
+                        repBadgeCls = "bg-red-100 text-red-700 border border-red-200";
+                      } else {
+                        // 혼합 (미충족 + 평가불가) — 미충족 우선 표시
+                        repLabel = "미충족";
+                        repBadgeCls = "bg-red-100 text-red-700 border border-red-200";
+                      }
                       const passCount = passedLevels.length;
+                      const naCount = sortedLevels.filter((l) => l.result === "평가불가").length;
                       // 카테고리 안 4단계의 도구 set — 수동 있으면 포함, "자동" 메타 없이 도구 이름만.
                       const categoryTools = Array.from(new Set(
                         sortedLevels.map((l) => toolLabel(l.tool)).filter(Boolean)
@@ -1376,12 +1397,14 @@ export function Reporting() {
                           <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
                             <div className="min-w-0 flex-1">
                               <div className="mb-1 flex flex-wrap items-center gap-2">
-                                {/* 노션 2번 B-5: "현재" 텍스트 제거 — maturity 이름만 노출 */}
-                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${repColor.badge}`}>
-                                  {repLevel.maturity}
+                                {/* 카테고리 대표 상태 — 평가불가/미충족/부분충족/최고 충족 단계 명시 */}
+                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${repBadgeCls}`}>
+                                  {repLabel}
                                 </span>
                                 <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-                                  {passCount}/{sortedLevels.length} 단계 충족
+                                  {allNA
+                                    ? `평가불가 ${naCount}/${sortedLevels.length}`
+                                    : `${passCount}/${sortedLevels.length} 단계 충족`}
                                 </span>
                                 {sortedCategoryTools.map((t) => (
                                   <span
@@ -1416,7 +1439,7 @@ export function Reporting() {
                               <details className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
                                 <summary className="cursor-pointer list-none flex items-center justify-between gap-2">
                                   <span>
-                                    충족 단계({repLevel.maturity}) 미만 {hiddenLevels.length}건 자동 충족으로 처리됨
+                                    충족 단계({passedLevels[passedLevels.length - 1].maturity}) 미만 {hiddenLevels.length}건 자동 충족으로 처리됨
                                   </span>
                                   <ChevronDown size={12} className="text-gray-400" />
                                 </summary>
