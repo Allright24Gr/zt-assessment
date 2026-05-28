@@ -1151,8 +1151,8 @@ export function NewAssessment() {
               </div>
             )}
 
-            {/* IdP / SIEM / EDR 연결 카드 */}
-            {(toolScope.keycloak || toolScope.wazuh) && (
+            {/* IdP / SIEM / 플랫폼 연결 카드 — 선택된 도구 중 자격 필요한 게 하나라도 있으면 노출 */}
+            {(toolScope.keycloak || toolScope.wazuh || toolScope.supabase || toolScope.vercel || toolScope.railway) && (
               <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <KeyRound size={16} className="text-blue-600" />
