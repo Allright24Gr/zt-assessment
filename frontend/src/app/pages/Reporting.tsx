@@ -1056,6 +1056,15 @@ export function Reporting() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
+              disabled={!sessionId}
+              onClick={() => window.location.reload()}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="현재 점수와 상태를 다시 불러옵니다"
+            >
+              결과 새로 불러오기
+            </button>
+            <button
+              type="button"
               disabled={manualDownloading || !sessionId}
               onClick={async () => {
                 if (!sessionId) return;
@@ -1089,40 +1098,18 @@ export function Reporting() {
                 setManualUploading(true);
                 try {
                   const res = await uploadManualExcel(sessionId, file);
-                  toast.success(`수동 보완 ${res.parsed_count ?? 0}건이 반영되었습니다. 재채점 중...`);
+                  toast.success(`수동 보완 ${res.parsed_count ?? 0}건 반영. 재채점 중...`);
                   try {
                     await finalizeAssessment(sessionId);
                   } catch (finErr) {
                     console.warn("[reporting] finalize after upload:", finErr);
                   }
-                  // 결과 다시 로드
-                  const fresh = await getAssessmentResult(sessionId);
-                  setSession({
-                    id:       fresh.session.id,
-                    org:      fresh.session.org,
-                    org_id:   fresh.session.org_id,
-                    date:     fresh.session.date,
-                    manager:  fresh.session.manager,
-                    user_id:  fresh.session.user_id,
-                    level:    fresh.session.level,
-                    status:   fresh.session.status,
-                    score:    fresh.session.score,
-                    errors:   (fresh.errors ?? []).map((e) => ({
-                      code: e.code, message: e.message, severity: e.severity,
-                      area: e.area, pillar: e.pillar,
-                      fail_count: e.fail_count, miss_count: e.miss_count,
-                    })),
-                    checklistDetails: [],
-                  });
-                  const refreshedScores = PILLARS.map((p) => {
-                    const m = fresh.pillar_scores.find((ps) =>
-                      (PILLAR_NAME_TO_KEY[ps.pillar] ?? ps.pillar) === p.key
-                    );
-                    return m ? m.score : 0;
-                  });
-                  setCurrentScores(refreshedScores);
-                  setChecklistDetails(fresh.checklist_results.map(adaptChecklistResult));
-                  toast.success("점수가 갱신되었습니다.");
+                  toast.success("점수가 갱신되었습니다. 결과를 다시 불러옵니다.");
+                  // pillarUnevaluable·errors·breakdown 등 모든 derived state 누락 없이
+                  // 갱신하려면 전체 페이지를 다시 로드하는 게 가장 안전.
+                  // 사용자가 토스트를 인지할 짧은 지연 후 리로드.
+                  setTimeout(() => window.location.reload(), 700);
+                  return;
                 } catch (err) {
                   console.warn("[reporting] excel upload:", err);
                   if (err instanceof ApiError) {
