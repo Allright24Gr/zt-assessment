@@ -7,6 +7,7 @@ import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
+  SupabaseCreds, VercelCreds, RailwayCreds,
   IdpType, SiemType, YesNoUnknown, ProfileSelect, ScanConsent,
   EvaluationVersion, ScopeAsset, DataClassification, Reviewers,
   AssessmentRunRequest,
@@ -50,6 +51,7 @@ const INFRA_TYPES = [
 // backend가 자동 항목을 수동 폴백으로 돌린다(manual.py /items 가 노출).
 const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported: boolean }> = [
   { key: "keycloak",         label: "Keycloak",          desc: "오픈소스 IAM/SSO",        supported: true  },
+  { key: "supabase",         label: "Supabase Auth",     desc: "Supabase 백엔드 인증 (T-Markov 스택)", supported: true },
   { key: "google_workspace", label: "Google Workspace",  desc: "Google OAuth 기반",       supported: false },
   { key: "entra",            label: "MS Entra ID",       desc: "Microsoft 365 / Azure AD", supported: false },
   { key: "okta",             label: "Okta",              desc: "Okta Workforce Identity",  supported: false },
@@ -132,18 +134,26 @@ export function NewAssessment() {
     edr_product: "",
     ot_segment_present: "unknown",
   });
-  // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy / Web Probe
+  // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy / Web Probe + 플랫폼 Vercel/Railway
   // web_probe: OIDC/DNS/HTTP/TLS/CT log — IdP·SIEM 제품 종류와 관계없이 도메인만으로 측정.
-  const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean; web_probe: boolean }>({
+  // vercel/railway: 배포 플랫폼 API 기반 (자격 입력 시 활성).
+  const [externalScanTools, setExternalScanTools] = useState<{
+    nmap: boolean; trivy: boolean; web_probe: boolean;
+    vercel: boolean; railway: boolean;
+  }>({
     nmap: true, trivy: true, web_probe: true,
+    vercel: false, railway: false,
   });
   // 내부적으로 백엔드에 보내는 tool_scope는 profileSelect + externalScanTools에서 파생
   const toolScope: Record<string, boolean> = {
     keycloak:  profileSelect.idp_type === "keycloak",
+    supabase:  profileSelect.idp_type === "supabase",
     wazuh:     profileSelect.siem_type === "wazuh",
     nmap:      externalScanTools.nmap,
     trivy:     externalScanTools.trivy,
     web_probe: externalScanTools.web_probe,
+    vercel:    externalScanTools.vercel,
+    railway:   externalScanTools.railway,
   };
   const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string; web_probe: string }>({
     nmap: "", trivy: "", web_probe: "",
@@ -193,6 +203,18 @@ export function NewAssessment() {
   const [wazuhCreds, setWazuhCreds] = useState<{ url: string; api_user: string; api_pass: string }>({
     url: "", api_user: "", api_pass: "",
   });
+  // Supabase 자격 — Management PAT 권장. service_role/anon 은 보조.
+  const [supabaseCreds, setSupabaseCreds] = useState<{
+    project_ref: string; pat: string; service_role: string; anon_key: string;
+  }>({ project_ref: "", pat: "", service_role: "", anon_key: "" });
+  // Vercel 자격
+  const [vercelCreds, setVercelCreds] = useState<{
+    token: string; team_id: string; project_id: string;
+  }>({ token: "", team_id: "", project_id: "" });
+  // Railway 자격
+  const [railwayCreds, setRailwayCreds] = useState<{
+    token: string; project_id: string; service_id: string; environment_id: string;
+  }>({ token: "", project_id: "", service_id: "", environment_id: "" });
 
   const togglePillar = (key: string) => {
     setPillarScope((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -272,6 +294,32 @@ export function NewAssessment() {
     }
     const hasWz = Object.keys(wzPayload).length > 0;
 
+    const sbPayload: SupabaseCreds = {};
+    if (isLive && toolScope.supabase) {
+      if (supabaseCreds.project_ref.trim()) sbPayload.project_ref = supabaseCreds.project_ref.trim();
+      if (supabaseCreds.pat.trim())          sbPayload.pat          = supabaseCreds.pat.trim();
+      if (supabaseCreds.service_role.trim()) sbPayload.service_role = supabaseCreds.service_role.trim();
+      if (supabaseCreds.anon_key.trim())     sbPayload.anon_key     = supabaseCreds.anon_key.trim();
+    }
+    const hasSb = Object.keys(sbPayload).length > 0;
+
+    const vcPayload: VercelCreds = {};
+    if (isLive && toolScope.vercel) {
+      if (vercelCreds.token.trim())      vcPayload.token      = vercelCreds.token.trim();
+      if (vercelCreds.team_id.trim())    vcPayload.team_id    = vercelCreds.team_id.trim();
+      if (vercelCreds.project_id.trim()) vcPayload.project_id = vercelCreds.project_id.trim();
+    }
+    const hasVc = Object.keys(vcPayload).length > 0;
+
+    const rwPayload: RailwayCreds = {};
+    if (isLive && toolScope.railway) {
+      if (railwayCreds.token.trim())          rwPayload.token          = railwayCreds.token.trim();
+      if (railwayCreds.project_id.trim())     rwPayload.project_id     = railwayCreds.project_id.trim();
+      if (railwayCreds.service_id.trim())     rwPayload.service_id     = railwayCreds.service_id.trim();
+      if (railwayCreds.environment_id.trim()) rwPayload.environment_id = railwayCreds.environment_id.trim();
+    }
+    const hasRw = Object.keys(rwPayload).length > 0;
+
     const consentPayload: ScanConsent = {};
     if (liveScanIntent) {
       const approver = (scanConsent.approver || "").trim();
@@ -331,6 +379,9 @@ export function NewAssessment() {
       ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),
+      ...(hasSb ? { supabase_creds: sbPayload } : {}),
+      ...(hasVc ? { vercel_creds: vcPayload } : {}),
+      ...(hasRw ? { railway_creds: rwPayload } : {}),
       ...(hasConsent ? { scan_consent: consentPayload } : {}),
       ...(hasEvalVersion ? { evaluation_version: evalVersionPayload } : {}),
       ...(scopeAssetsPayload.length > 0 ? { evaluation_scope_assets: scopeAssetsPayload } : {}),
@@ -639,6 +690,36 @@ export function NewAssessment() {
                         IdP/SIEM 제품과 관계없이 도메인만으로 측정 — OIDC Discovery / DNS(SPF·DMARC·CAA) /
                         HTTP 보안 헤더 / TLS 1.3·인증서 / Certificate Transparency 로그
                       </p>
+                    </div>
+                  </label>
+                  {/* Vercel API */}
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
+                    externalScanTools.vercel ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.vercel}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, vercel: !p.vercel }))}
+                    />
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                      <p className="text-sm font-medium text-gray-800">Vercel</p>
+                      <p className="text-xs text-gray-500">배포 이력 / 환경변수 / 도메인 SSL / 팀 RBAC</p>
+                    </div>
+                  </label>
+                  {/* Railway API */}
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
+                    externalScanTools.railway ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.railway}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, railway: !p.railway }))}
+                    />
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                      <p className="text-sm font-medium text-gray-800">Railway</p>
+                      <p className="text-xs text-gray-500">배포 상태 / 환경변수 / 헬스체크 / restart 정책</p>
                     </div>
                   </label>
                 </div>
@@ -1165,6 +1246,104 @@ export function NewAssessment() {
                           disabled={!isLive}
                           aria-label="Wazuh API 비밀번호"
                         />
+                      </div>
+                    </div>
+                  )}
+                  {/* Supabase 카드 — idp_type=supabase 일 때만 활성 */}
+                  {toolScope.supabase && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Supabase</span>
+                        <span className="text-[10px] text-gray-400">Auth / DB / RLS</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.project_ref}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, project_ref: e.target.value })}
+                          placeholder="project ref (예: jftrrdemctgwemsujwnv)"
+                          disabled={!isLive} aria-label="Supabase project ref" />
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.pat}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, pat: e.target.value })}
+                          placeholder="Management PAT (sbp_...) — 권장"
+                          disabled={!isLive} aria-label="Supabase Management PAT" />
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.service_role}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, service_role: e.target.value })}
+                          placeholder="service_role JWT (선택)"
+                          disabled={!isLive} aria-label="Supabase service_role key" />
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.anon_key}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, anon_key: e.target.value })}
+                          placeholder="anon key JWT (선택, 공개 설정만)"
+                          disabled={!isLive} aria-label="Supabase anon key" />
+                      </div>
+                    </div>
+                  )}
+                  {/* Vercel 카드 */}
+                  {toolScope.vercel && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Vercel</span>
+                        <span className="text-[10px] text-gray-400">배포·환경변수·도메인</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={vercelCreds.token}
+                          onChange={(e) => setVercelCreds({ ...vercelCreds, token: e.target.value })}
+                          placeholder="API Token (vcp_...)"
+                          disabled={!isLive} aria-label="Vercel token" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={vercelCreds.team_id}
+                          onChange={(e) => setVercelCreds({ ...vercelCreds, team_id: e.target.value })}
+                          placeholder="team_id (선택, 팀 계정만)"
+                          disabled={!isLive} aria-label="Vercel team_id" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={vercelCreds.project_id}
+                          onChange={(e) => setVercelCreds({ ...vercelCreds, project_id: e.target.value })}
+                          placeholder="project_id (prj_...)"
+                          disabled={!isLive} aria-label="Vercel project_id" />
+                      </div>
+                    </div>
+                  )}
+                  {/* Railway 카드 */}
+                  {toolScope.railway && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Railway</span>
+                        <span className="text-[10px] text-gray-400">배포·서비스·헬스체크</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.token}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, token: e.target.value })}
+                          placeholder="API Token (UUID)"
+                          disabled={!isLive} aria-label="Railway token" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.project_id}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, project_id: e.target.value })}
+                          placeholder="project_id (UUID)"
+                          disabled={!isLive} aria-label="Railway project_id" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.service_id}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, service_id: e.target.value })}
+                          placeholder="service_id (UUID)"
+                          disabled={!isLive} aria-label="Railway service_id" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.environment_id}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, environment_id: e.target.value })}
+                          placeholder="environment_id (UUID)"
+                          disabled={!isLive} aria-label="Railway environment_id" />
                       </div>
                     </div>
                   )}

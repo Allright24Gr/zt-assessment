@@ -791,7 +791,8 @@ def _make_pdf(data: dict) -> bytes:
     selected_tools = em.get("selected_tools") or []
     tool_matrix = " · ".join(
         {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap",
-         "trivy": "Trivy", "web_probe": "web_probe"}.get(t, t)
+         "trivy": "Trivy", "web_probe": "web_probe",
+         "supabase": "Supabase", "vercel": "Vercel", "railway": "Railway"}.get(t, t)
         for t in selected_tools
     ) or "(없음)"
     profile = em.get("profile_select") or {}
@@ -1145,7 +1146,9 @@ def _make_pdf(data: dict) -> bytes:
     else:
         for i, q in enumerate(quick_wins, start=1):
             tool_disp = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap",
-                         "trivy": "Trivy", "web_probe": "web_probe", "수동": "수동"}.get(
+                         "trivy": "Trivy", "web_probe": "web_probe",
+                         "supabase": "Supabase", "vercel": "Vercel", "railway": "Railway",
+                         "수동": "수동"}.get(
                 (q.get("tool") or "").lower(), q.get("tool") or "—")
             # Paragraph 로 wrap 가능하게 (긴 텍스트 한 줄 잘림 방지)
             task_text = (q.get("task") or "")[:120]
@@ -1212,6 +1215,12 @@ def _make_pdf(data: dict) -> bytes:
          "이미지·파일시스템 취약점·SBOM·의존성"],
         ["web_probe", "앱·데이터", str(tool_count_map.get("web_probe", 0)),
          "공개 URL 보안 헤더·HTTPS·DNS 위생"],
+        ["Supabase", "식별자·신원·데이터", str(tool_count_map.get("supabase", 0)),
+         "Auth 정책·RLS·사용자·MFA·비밀번호 정책"],
+        ["Vercel", "앱·데이터", str(tool_count_map.get("vercel", 0)),
+         "배포 이력·환경변수 분리·도메인 SSL·팀 RBAC"],
+        ["Railway", "네트워크·앱", str(tool_count_map.get("railway", 0)),
+         "배포 상태·환경변수·헬스체크·restart 정책"],
         ["수동", "전 영역", str(tool_count_map.get("수동", 0)),
          "도구 미연결·정책/문서 기반 항목 (폴백 자동 전환)"],
     ]
@@ -1543,6 +1552,7 @@ def _make_pdf(data: dict) -> bytes:
             for x in sorted_items:
                 tool_disp = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap",
                              "trivy": "Trivy", "web_probe": "web_probe",
+                             "supabase": "Supabase", "vercel": "Vercel", "railway": "Railway",
                              "수동": "수동"}.get(
                     (x.get("tool") or "").lower(), x.get("tool") or "—")
                 evidence_str = "—"
@@ -1723,6 +1733,7 @@ def _make_pdf(data: dict) -> bytes:
         for t in top3:
             tool_disp = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap",
                          "trivy": "Trivy", "web_probe": "web_probe",
+                         "supabase": "Supabase", "vercel": "Vercel", "railway": "Railway",
                          "수동": "수동"}.get(
                 (t.get("tool") or "").lower(), t.get("tool") or "—")
             steps_first = " → ".join(t.get("steps", [])[:3]) or t.get("solution", "")
@@ -1804,10 +1815,12 @@ def _make_pdf(data: dict) -> bytes:
         for x in ev_items:
             tool_disp = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap",
                          "trivy": "Trivy", "web_probe": "web_probe",
+                         "supabase": "Supabase", "vercel": "Vercel", "railway": "Railway",
                          "수동": "수동"}.get(
                 (x.get("tool") or "").lower(), x.get("tool") or "—")
-            ev_type = "API 응답" if tool_disp in ("Keycloak", "Wazuh") else (
-                "스캔 결과" if tool_disp in ("Nmap", "Trivy", "web_probe") else "수동 입력")
+            ev_type = "API 응답" if tool_disp in ("Keycloak", "Wazuh", "Supabase") else (
+                "스캔 결과" if tool_disp in ("Nmap", "Trivy", "web_probe") else
+                "플랫폼 API" if tool_disp in ("Vercel", "Railway") else "수동 입력")
             src = f"{tool_disp} · {x.get('metric_key', '') or '(metric 없음)'}"
             cat = (x.get("collected_at") or "")[:10]
             ev_rows.append([x["item_id"], ev_type, src[:90], cat or "—"])
@@ -2066,6 +2079,7 @@ def _detail_item_card(item: dict, font, total_w, colors_mod, sty_fn,
 
     tool_disp = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap",
                  "trivy": "Trivy", "web_probe": "web_probe",
+                 "supabase": "Supabase", "vercel": "Vercel", "railway": "Railway",
                  "수동": "수동"}.get(
         (item.get("tool") or "").lower(), item.get("tool") or "—")
 

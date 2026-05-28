@@ -19,7 +19,10 @@ import { toolLongLabel } from "../lib/toolLabel";
 // 도구 식별자 (백엔드 collector.tool 필드와 매칭되는 소문자 키).
 // 새 도구 추가 시: ① TOOL_KEYS 에 키 추가, ② TOOL_DISPLAY_NAME / TOOL_COLORS 추가,
 // ③ frontend/src/app/lib/toolLabel.ts 의 TOOL_LABEL/TOOL_LONG_LABEL 도 보강.
-const TOOL_KEYS = ["keycloak", "wazuh", "nmap", "trivy", "web_probe"] as const;
+const TOOL_KEYS = [
+  "keycloak", "wazuh", "nmap", "trivy", "web_probe",
+  "supabase", "vercel", "railway",
+] as const;
 type ToolKey = typeof TOOL_KEYS[number];
 const TOOL_DISPLAY_NAME: Record<ToolKey, string> = {
   keycloak: "Keycloak",
@@ -27,6 +30,9 @@ const TOOL_DISPLAY_NAME: Record<ToolKey, string> = {
   nmap: "Nmap",
   trivy: "Trivy",
   web_probe: "웹 Probe",
+  supabase: "Supabase",
+  vercel: "Vercel",
+  railway: "Railway",
 };
 const PILLAR_COLORS = ["#2563eb", "#059669", "#f59e0b", "#0891b2", "#7c3aed", "#dc2626"];
 const TOOL_COLORS: Record<ToolKey, string> = {
@@ -35,6 +41,9 @@ const TOOL_COLORS: Record<ToolKey, string> = {
   nmap:      PILLAR_COLORS[3], // cyan
   trivy:     PILLAR_COLORS[2], // amber
   web_probe: PILLAR_COLORS[4], // purple
+  supabase:  "#3ecf8e",        // Supabase brand green
+  vercel:    "#000000",        // Vercel brand black
+  railway:   "#9333ea",        // Railway purple
 };
 
 const PIPELINE_STEPS = [

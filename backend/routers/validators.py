@@ -166,3 +166,88 @@ def validate_cred_field(value: str, field_name: str, max_len: int = 100) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Supabase / Vercel / Railway 자격 검증
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Supabase project ref: 20자 lowercase 영숫자 (대시보드 URL 의 서브도메인).
+_SUPABASE_REF_RE = re.compile(r"^[a-z0-9]{20}$")
+# Management PAT: sbp_ + hex
+_SUPABASE_PAT_RE = re.compile(r"^sbp_[a-f0-9]{32,64}$")
+# JWT 형식 (anon/service_role): 3 segments separated by dot, base64url alphabet
+_JWT_RE = re.compile(r"^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$")
+
+
+def validate_supabase_ref(value: str, field_name: str = "supabase_creds.project_ref") -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _SUPABASE_REF_RE.match(value):
+        raise ValueError(f"{field_name}: 20자 lowercase 영숫자여야 합니다 (대시보드 URL 의 ref).")
+    return value
+
+
+def validate_supabase_pat(value: str, field_name: str = "supabase_creds.pat") -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _SUPABASE_PAT_RE.match(value):
+        raise ValueError(f"{field_name}: sbp_ 로 시작하는 hex 토큰이어야 합니다.")
+    return value
+
+
+def validate_jwt_field(value: str, field_name: str) -> str:
+    """anon key / service_role key 같은 JWT 형식 검증."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _JWT_RE.match(value):
+        raise ValueError(f"{field_name}: JWT 형식이 아닙니다 (header.payload.signature).")
+    if len(value) > 4096:
+        raise ValueError(f"{field_name}: JWT 가 비정상적으로 깁니다.")
+    return value
+
+
+# Vercel personal/team token: vcp_/vcl_ + 영숫자, 또는 vca_ (OAuth access).
+_VERCEL_TOKEN_RE = re.compile(r"^(vcp_|vcl_|vca_|vcr_)?[A-Za-z0-9]{20,128}$")
+
+
+def validate_vercel_token(value: str, field_name: str = "vercel_creds.token") -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _VERCEL_TOKEN_RE.match(value):
+        raise ValueError(f"{field_name}: Vercel 토큰 형식이 아닙니다.")
+    if any(c in value for c in _SHELL_METAS + " "):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자가 포함되어 있습니다.")
+    return value
+
+
+# Vercel team/project id: team_xxx / prj_xxx
+_VERCEL_ID_RE = re.compile(r"^(team_|prj_)?[A-Za-z0-9]{8,64}$")
+
+
+def validate_vercel_id(value: str, field_name: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _VERCEL_ID_RE.match(value):
+        raise ValueError(f"{field_name}: Vercel ID 형식이 아닙니다 (team_/prj_ 접두).")
+    return value
+
+
+# Railway: UUID v4 형식 토큰/ID
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def validate_uuid_field(value: str, field_name: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _UUID_RE.match(value):
+        raise ValueError(f"{field_name}: UUID 형식이 아닙니다.")
+    return value
+
+
+# ──────────────────────────────────────────────────────────────────────────────

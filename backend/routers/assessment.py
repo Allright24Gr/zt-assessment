@@ -28,6 +28,12 @@ from routers.validators import (
     validate_https_url,
     validate_cred_field,
     validate_web_probe_target,
+    validate_supabase_ref,
+    validate_supabase_pat,
+    validate_jwt_field,
+    validate_vercel_token,
+    validate_vercel_id,
+    validate_uuid_field,
 )
 from services.ocsf_transformer import build_session_ocsf
 
@@ -48,6 +54,12 @@ ALL_TOOLS = (
     # T-Markov(Google Workspace + Vercel + Railway, SIEM 없음) 같은 SaaS-only 환경에서도
     # 자동 진단 항목을 늘리기 위해 추가. OIDC/DNS/HTTP/TLS/CT log 5영역 24개 항목.
     "web_probe",
+    # T-Markov 같은 Supabase + Vercel + Railway 스택 자동 진단 (IdP/배포/플랫폼).
+    # supabase: IdP 카테고리 (Keycloak 대체) — profile_select.idp_type=supabase 일 때 활성.
+    # vercel/railway: 배포 플랫폼 — tool_scope 에서 독립 토글.
+    "supabase",
+    "vercel",
+    "railway",
 )
 
 
@@ -78,6 +90,15 @@ def _mask_creds(extra: dict) -> dict:
             for pw_field in ("admin_pass", "api_pass", "password"):
                 if masked.get(pw_field):
                     masked[pw_field] = "***"
+            safe[key] = masked
+    # Supabase / Vercel / Railway 자격 (DB 평문 저장 금지 정책 + 응답 마스킹).
+    for key in ("supabase_creds", "vercel_creds", "railway_creds"):
+        val = safe.get(key)
+        if isinstance(val, dict):
+            masked = dict(val)
+            for secret_field in ("pat", "service_role", "anon_key", "token"):
+                if masked.get(secret_field):
+                    masked[secret_field] = "***"
             safe[key] = masked
     return safe
 
@@ -137,12 +158,22 @@ def _store_session_secrets(
     session_id: int,
     kc_creds: dict,
     wz_creds: dict,
+    sb_creds: Optional[dict] = None,
+    vc_creds: Optional[dict] = None,
+    rw_creds: Optional[dict] = None,
 ) -> None:
-    """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
+    """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성.
+
+    Supabase/Vercel/Railway 자격(토큰/PAT/JWT)도 DB 평문 저장 금지 정책에 따라
+    메모리 dict 로만 보관한다. BackgroundTask 가 사용 후 즉시 폐기.
+    """
     with _session_creds_lock:
         _session_creds_store[session_id] = {
             "keycloak": dict(kc_creds or {}),
             "wazuh":    dict(wz_creds or {}),
+            "supabase": dict(sb_creds or {}),
+            "vercel":   dict(vc_creds or {}),
+            "railway":  dict(rw_creds or {}),
         }
 
 
@@ -256,7 +287,7 @@ class ProfileSelect(BaseModel):
       ot_segment_present — 'yes'|'no'|'unknown'. OT 세그먼트 존재 여부. 'yes' 면
         해당 자산은 별도 트랙으로 분리(평가불가 사유 ot_segment_excluded).
     """
-    idp_type:   Optional[str] = None  # keycloak | none
+    idp_type:   Optional[str] = None  # keycloak | supabase | none
     siem_type:  Optional[str] = None  # wazuh | none
     windows_audit_policy_enabled: Optional[str] = None  # yes | no | unknown
     sysmon_deployed:              Optional[str] = None  # yes | no | unknown
@@ -288,6 +319,16 @@ class AssessmentRunRequest(BaseModel):
     keycloak_creds: Optional[dict] = None
     # 예: {"url": "https://wazuh.example.com:55000", "api_user": "...", "api_pass": "..."}
     wazuh_creds: Optional[dict] = None
+    # Supabase 자격 — Management PAT 권장. service_role/anon 은 보조.
+    # 예: {"project_ref": "abc123...", "pat": "sbp_...",
+    #      "service_role": "eyJ...", "anon_key": "eyJ..."}
+    supabase_creds: Optional[dict] = None
+    # Vercel 자격 — Personal/Team token + project/team id.
+    # 예: {"token": "vcp_...", "team_id": "team_...", "project_id": "prj_..."}
+    vercel_creds: Optional[dict] = None
+    # Railway 자격 — API token + project/service/environment UUID.
+    # 예: {"token": "uuid", "project_id": "uuid", "service_id": "uuid", "environment_id": "uuid"}
+    railway_creds: Optional[dict] = None
     # 시연/실 스캔 토글 — "demo" 면 collector 실호출 없이 fake 결과 생성, "live" 면 실제 외부 호출.
     # frontend의 scanMode 토글(NewAssessment Step 1)에서 전달.
     scan_mode: Optional[str] = "demo"
@@ -313,16 +354,18 @@ class AssessmentRunRequest(BaseModel):
     skip_collector: Optional[bool] = False
 
 
-# 4 오픈소스 도구만 운영. 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑.
+# IdP/SIEM 사용자 선택 ↔ 자동 도구 매핑.
+# 같은 카테고리 내 도구는 상호 배타 — 사용자가 선택한 1개만 활성.
 _IDP_TOOL_OF = {
     "keycloak": "keycloak",
+    "supabase": "supabase",
     # "none" / 미선택 → IdP 자동 도구 비활성 (수동 폴백)
 }
 _SIEM_TOOL_OF = {
     "wazuh": "wazuh",
     # "none" / 미선택 → SIEM 자동 도구 비활성 (수동 폴백)
 }
-_IDP_AUTO_TOOLS = {"keycloak"}
+_IDP_AUTO_TOOLS = {"keycloak", "supabase"}
 _SIEM_AUTO_TOOLS = {"wazuh"}
 
 
@@ -394,6 +437,41 @@ def run_assessment(
                 wz_in.get("api_pass") or "", "wazuh_creds.api_pass"
             )
 
+        # Supabase 자격 — Management PAT 권장. service_role/anon 은 보조 (JWT).
+        sb_in = dict(req.supabase_creds or {}) if req.supabase_creds else {}
+        if sb_in:
+            sb_in["project_ref"] = validate_supabase_ref(sb_in.get("project_ref") or "")
+            sb_in["pat"]          = validate_supabase_pat(sb_in.get("pat") or "")
+            sb_in["service_role"] = validate_jwt_field(
+                sb_in.get("service_role") or "", "supabase_creds.service_role"
+            )
+            sb_in["anon_key"]     = validate_jwt_field(
+                sb_in.get("anon_key") or "", "supabase_creds.anon_key"
+            )
+
+        # Vercel 자격 — token + project/team id.
+        vc_in = dict(req.vercel_creds or {}) if req.vercel_creds else {}
+        if vc_in:
+            vc_in["token"]      = validate_vercel_token(vc_in.get("token") or "")
+            vc_in["team_id"]    = validate_vercel_id(vc_in.get("team_id") or "", "vercel_creds.team_id")
+            vc_in["project_id"] = validate_vercel_id(
+                vc_in.get("project_id") or "", "vercel_creds.project_id"
+            )
+
+        # Railway 자격 — UUID 토큰/ID.
+        rw_in = dict(req.railway_creds or {}) if req.railway_creds else {}
+        if rw_in:
+            rw_in["token"]          = validate_uuid_field(rw_in.get("token") or "", "railway_creds.token")
+            rw_in["project_id"]     = validate_uuid_field(
+                rw_in.get("project_id") or "", "railway_creds.project_id"
+            )
+            rw_in["service_id"]     = validate_uuid_field(
+                rw_in.get("service_id") or "", "railway_creds.service_id"
+            )
+            rw_in["environment_id"] = validate_uuid_field(
+                rw_in.get("environment_id") or "", "railway_creds.environment_id"
+            )
+
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -445,6 +523,10 @@ def run_assessment(
                 (scan_targets_in.get("web_probe") or "").strip()
                 or (scan_targets_in.get("nmap") or "").strip()
             ),
+            # Supabase: project_ref + (PAT or anon_key) 둘 다 있어야 동작.
+            "supabase":  bool(sb_in.get("project_ref") and (sb_in.get("pat") or sb_in.get("anon_key"))),
+            "vercel":    bool(vc_in.get("token")),
+            "railway":   bool(rw_in.get("token")),
         }
         missing = [t for t in selected_tools if not creds_required.get(t, True)]
         if missing:
@@ -461,6 +543,11 @@ def run_assessment(
     # URL/사용자명만 extra에 남기고, 비밀번호는 _store_session_secrets 로 메모리에만 보관.
     kc_meta = {k: v for k, v in kc_in.items() if k in ("url", "admin_user") and v}
     wz_meta = {k: v for k, v in wz_in.items() if k in ("url", "api_user") and v}
+    # 새 도구들의 비민감 메타 (project_ref/team_id 등은 노출 OK, 토큰/PAT/key 는 메모리만).
+    sb_meta = {k: v for k, v in sb_in.items() if k in ("project_ref",) and v}
+    vc_meta = {k: v for k, v in vc_in.items() if k in ("team_id", "project_id") and v}
+    rw_meta = {k: v for k, v in rw_in.items()
+               if k in ("project_id", "service_id", "environment_id") and v}
     # scan_mode 정규화. frontend의 demo/live 토글. 미지정 시 안전한 demo.
     scan_mode = (req.scan_mode or "demo").strip().lower()
     if scan_mode not in ("demo", "live"):
@@ -531,6 +618,9 @@ def run_assessment(
         "scan_consent": sc_meta,
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
+        "supabase_creds": sb_meta,
+        "vercel_creds":   vc_meta,
+        "railway_creds":  rw_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
         # SKT 가이드 §3 평가 착수 전 확정사항 4종
@@ -555,8 +645,9 @@ def run_assessment(
     db.commit()
     db.refresh(session)
 
-    # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
-    _store_session_secrets(session.session_id, kc_in, wz_in)
+    # 자격 비밀번호/토큰은 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
+    _store_session_secrets(session.session_id, kc_in, wz_in,
+                           sb_creds=sb_in, vc_creds=vc_in, rw_creds=rw_in)
 
     if not req.skip_collector:
         if selected_tools:
@@ -1270,6 +1361,65 @@ def _wp_mapping():
     return []
 
 
+def _sb_mapping():
+    """Supabase base mapping. Keycloak 과 같은 item_id 를 다중 매핑 — IdP 카테고리
+    배타이므로 둘 다 동시에 활성화되지 않는다 (_resolve_supported_tools)."""
+    from collectors.supabase_collector import (
+        collect_user_inventory, collect_idp_inventory, collect_idp_registered,
+        collect_active_idp_multi, collect_mfa_required, collect_otp_flow,
+        collect_webauthn_status, collect_session_policy, collect_password_policy,
+        collect_rbac_policy, collect_abac_policy, collect_data_abac_policy,
+        collect_mfa_required_actions, collect_role_change_events,
+    )
+    return [
+        (collect_user_inventory,         "1.1.1.2_1",  "초기"),
+        (collect_idp_inventory,          "1.1.1.3_1",  "향상"),
+        (collect_idp_registered,         "1.1.2.1_1",  "기존"),
+        (collect_active_idp_multi,       "1.1.2.2_1",  "초기"),
+        (collect_mfa_required,           "1.2.1.1_1",  "기존"),
+        (collect_otp_flow,               "1.2.1.2_1",  "초기"),
+        (collect_webauthn_status,        "1.2.1.2_2",  "초기"),
+        (collect_session_policy,         "1.2.2.1_1",  "기존"),
+        (collect_password_policy,        "1.4.2.2_1",  "초기"),
+        (collect_role_change_events,     "1.4.2.2_2",  "초기"),
+        (collect_rbac_policy,            "1.4.1.2_1",  "초기"),
+        (collect_abac_policy,            "4.1.1.3_1",  "향상"),
+        (collect_mfa_required_actions,   "4.2.2.2_2",  "초기"),
+        (collect_data_abac_policy,       "6.2.1.3_1",  "향상"),
+    ]
+
+
+def _vc_mapping():
+    """Vercel base mapping. web_probe/Trivy 와 일부 다중 매핑 (보강 증거)."""
+    from collectors.vercel_collector import (
+        collect_deployment_history, collect_env_separation, collect_team_rbac,
+        collect_domain_ssl, collect_secrets_management, collect_audit_log_retention,
+    )
+    return [
+        (collect_deployment_history,    "5.4.1.2_2",  "초기"),
+        (collect_env_separation,        "5.5.1.3_2",  "향상"),
+        (collect_team_rbac,             "4.1.1.4_2",  "최적화"),
+        (collect_domain_ssl,            "3.3.1.1_1",  "기존"),
+        (collect_secrets_management,    "5.5.1.2_3",  "초기"),
+        (collect_audit_log_retention,   "5.2.1.1_2",  "기존"),
+    ]
+
+
+def _rw_mapping():
+    """Railway base mapping. Trivy/Wazuh 와 일부 다중 매핑."""
+    from collectors.railway_collector import (
+        collect_deployment_status, collect_env_var_separation,
+        collect_project_members, collect_service_uptime, collect_restart_policy,
+    )
+    return [
+        (collect_deployment_status,     "5.4.1.2_4",  "초기"),
+        (collect_env_var_separation,    "5.5.1.3_1",  "향상"),
+        (collect_project_members,       "4.1.1.4_2",  "최적화"),
+        (collect_service_uptime,        "3.5.1.3_1",  "향상"),
+        (collect_restart_policy,        "3.5.1.1_2",  "기존"),
+    ]
+
+
 def _tr_mapping():
     from collectors.trivy_collector import (
         collect_image_scan, collect_cicd_scan_ratio, collect_integrity_check,
@@ -1352,15 +1502,21 @@ _TOOL_MODULE = {
     "nmap":      "collectors.nmap_collector",
     "trivy":     "collectors.trivy_collector",
     "web_probe": "collectors.web_probe_collector",
+    "supabase":  "collectors.supabase_collector",
+    "vercel":    "collectors.vercel_collector",
+    "railway":   "collectors.railway_collector",
 }
 
-# 명시 매핑 함수 캐시(원본 함수) — 4 오픈소스 도구 + web_probe
+# 명시 매핑 함수 캐시(원본 함수) — 4 오픈소스 도구 + web_probe + Supabase/Vercel/Railway
 _BASE_MAPPING_FNS = {
     "keycloak":  _kc_mapping,
     "wazuh":     _wz_mapping,
     "nmap":      _nm_mapping,
     "trivy":     _tr_mapping,
     "web_probe": _wp_mapping,
+    "supabase":  _sb_mapping,
+    "vercel":    _vc_mapping,
+    "railway":   _rw_mapping,
 }
 
 
@@ -1410,6 +1566,9 @@ _TOOL_DISPATCH = {
     "nmap":      (lambda: _full_mapping("nmap"),      False),
     "trivy":     (lambda: _full_mapping("trivy"),     False),
     "web_probe": (lambda: _full_mapping("web_probe"), False),
+    "supabase":  (lambda: _full_mapping("supabase"),  True),
+    "vercel":    (lambda: _full_mapping("vercel"),    True),
+    "railway":   (lambda: _full_mapping("railway"),   True),
 }
 
 
@@ -1502,6 +1661,28 @@ def _tool_configured(tool: str) -> Optional[str]:
             return "web_probe 미연결: WEB_PROBE_TARGET 미설정 — 도메인 입력 필요"
         return None
 
+    if tool == "supabase":
+        ref = os.getenv("SUPABASE_PROJECT_REF", "").strip()
+        pat = os.getenv("SUPABASE_MGMT_PAT", "").strip()
+        anon = os.getenv("SUPABASE_ANON_KEY", "").strip()
+        if not ref:
+            return "Supabase 미연결: SUPABASE_PROJECT_REF 미설정 (대시보드 ref 또는 NewAssessment 입력 필요)"
+        if not pat and not anon:
+            return "Supabase 미연결: Management PAT 또는 anon key 중 하나는 필수"
+        return None
+
+    if tool == "vercel":
+        token = os.getenv("VERCEL_TOKEN", "").strip()
+        if not token:
+            return "Vercel 미연결: VERCEL_TOKEN 미설정 — NewAssessment 에서 입력 필요"
+        return None
+
+    if tool == "railway":
+        token = os.getenv("RAILWAY_TOKEN", "").strip()
+        if not token:
+            return "Railway 미연결: RAILWAY_TOKEN 미설정 — NewAssessment 에서 입력 필요"
+        return None
+
     return f"unknown tool: {tool}"
 
 
@@ -1527,6 +1708,12 @@ def _tool_health(tool: str) -> Optional[str]:
         # web_probe 는 외부 도메인을 HTTPS 로 직접 조회 — backend egress 만 있으면 OK.
         # 별도 wrapper 가 없으므로 TCP probe 는 생략(_tool_configured 에서 target 확인).
         return None
+    if tool == "supabase":
+        return _probe_tcp("https://api.supabase.com")
+    if tool == "vercel":
+        return _probe_tcp("https://api.vercel.com")
+    if tool == "railway":
+        return _probe_tcp("https://backboard.railway.app")
     return f"unknown tool: {tool}"
 
 
@@ -1780,6 +1967,9 @@ def _run_collectors(session_id: int, tools: list[str]):
     scan_targets: dict = {}
     keycloak_creds: dict = {}
     wazuh_creds: dict = {}
+    supabase_creds: dict = {}
+    vercel_creds: dict = {}
+    railway_creds: dict = {}
     profile_select_runtime: dict = {}
     db_pre = SessionLocal()
     try:
@@ -1796,6 +1986,15 @@ def _run_collectors(session_id: int, tools: list[str]):
             wz_meta = sess.extra.get("wazuh_creds") or {}
             if isinstance(wz_meta, dict):
                 wazuh_creds = {k: v for k, v in wz_meta.items() if v}
+            sb_meta = sess.extra.get("supabase_creds") or {}
+            if isinstance(sb_meta, dict):
+                supabase_creds = {k: v for k, v in sb_meta.items() if v}
+            vc_meta = sess.extra.get("vercel_creds") or {}
+            if isinstance(vc_meta, dict):
+                vercel_creds = {k: v for k, v in vc_meta.items() if v}
+            rw_meta = sess.extra.get("railway_creds") or {}
+            if isinstance(rw_meta, dict):
+                railway_creds = {k: v for k, v in rw_meta.items() if v}
             ps_meta = sess.extra.get("profile_select") or {}
             if isinstance(ps_meta, dict):
                 profile_select_runtime = ps_meta
@@ -1804,10 +2003,13 @@ def _run_collectors(session_id: int, tools: list[str]):
     finally:
         db_pre.close()
 
-    # 메모리에 보관된 자격 비번 합류 (사용 후 폐기 보장)
+    # 메모리에 보관된 자격 비번/토큰 합류 (사용 후 폐기 보장)
     secrets_blob = _pop_session_secrets(session_id)
     kc_secret = secrets_blob.get("keycloak") if isinstance(secrets_blob, dict) else None
     wz_secret = secrets_blob.get("wazuh") if isinstance(secrets_blob, dict) else None
+    sb_secret = secrets_blob.get("supabase") if isinstance(secrets_blob, dict) else None
+    vc_secret = secrets_blob.get("vercel") if isinstance(secrets_blob, dict) else None
+    rw_secret = secrets_blob.get("railway") if isinstance(secrets_blob, dict) else None
     if isinstance(kc_secret, dict):
         for k, v in kc_secret.items():
             if v:
@@ -1816,6 +2018,18 @@ def _run_collectors(session_id: int, tools: list[str]):
         for k, v in wz_secret.items():
             if v:
                 wazuh_creds[k] = v
+    if isinstance(sb_secret, dict):
+        for k, v in sb_secret.items():
+            if v:
+                supabase_creds[k] = v
+    if isinstance(vc_secret, dict):
+        for k, v in vc_secret.items():
+            if v:
+                vercel_creds[k] = v
+    if isinstance(rw_secret, dict):
+        for k, v in rw_secret.items():
+            if v:
+                railway_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -1857,6 +2071,18 @@ def _run_collectors(session_id: int, tools: list[str]):
                     from collectors import wazuh_collector as _wz
                     explicit_creds = wazuh_creds or None
                     _wz.set_session_creds(explicit_creds)
+                elif tool == "supabase":
+                    from collectors import supabase_collector as _sb
+                    explicit_creds = supabase_creds or None
+                    _sb.set_session_creds(explicit_creds)
+                elif tool == "vercel":
+                    from collectors import vercel_collector as _vc
+                    explicit_creds = vercel_creds or None
+                    _vc.set_session_creds(explicit_creds)
+                elif tool == "railway":
+                    from collectors import railway_collector as _rw
+                    explicit_creds = railway_creds or None
+                    _rw.set_session_creds(explicit_creds)
 
                 # 가용성 체크:
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
@@ -1871,6 +2097,13 @@ def _run_collectors(session_id: int, tools: list[str]):
                     health_err = _probe_tcp(explicit_creds["url"])
                 elif tool == "web_probe" and explicit_target:
                     health_err = None
+                elif tool == "supabase" and explicit_creds and explicit_creds.get("project_ref"):
+                    # 자격 있으면 api.supabase.com 만 TCP probe.
+                    health_err = _probe_tcp("https://api.supabase.com")
+                elif tool == "vercel" and explicit_creds and explicit_creds.get("token"):
+                    health_err = _probe_tcp("https://api.vercel.com")
+                elif tool == "railway" and explicit_creds and explicit_creds.get("token"):
+                    health_err = _probe_tcp("https://backboard.railway.app")
                 else:
                     health_err = _tool_health(tool)
 
@@ -1949,6 +2182,21 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import wazuh_collector as _wz
                 _wz.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import supabase_collector as _sb
+                _sb.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import vercel_collector as _vc
+                _vc.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import railway_collector as _rw
+                _rw.set_session_creds(None)
             except Exception:
                 pass
 

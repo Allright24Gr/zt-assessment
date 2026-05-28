@@ -189,6 +189,48 @@ function getDemoFinding(detail: {
     };
   }
 
+  if (detail.tool.toLowerCase().includes("supabase")) {
+    return {
+      source: "Supabase Management / Auth API",
+      observed: isFailed
+        ? "MFA / RLS / 비밀번호 정책 / 사용자 인벤토리 기준 미충족 항목 검출"
+        : "Auth 설정, RLS 정책, 사용자 권한 기준 충족",
+      location: "auth/v1/settings · projects/{ref}/config/auth · pg_policies",
+      reason: isFailed
+        ? "Supabase Auth/RLS 정책이 가이드 기준에 미달해 감점되었습니다."
+        : "Supabase Auth/RLS 정책이 기준을 충족했습니다.",
+      impact,
+    };
+  }
+
+  if (detail.tool.toLowerCase().includes("vercel")) {
+    return {
+      source: "Vercel API (배포·환경변수·도메인)",
+      observed: isFailed
+        ? "배포 실패 비율, 환경변수 분리, 도메인 SSL 또는 팀 RBAC 기준 미충족"
+        : "배포·환경변수·도메인·팀 RBAC 기준 충족",
+      location: "v6/deployments · v9/projects/{id}/env · v9/projects/{id}/domains",
+      reason: isFailed
+        ? "Vercel 배포 정책·시크릿 관리 기준에 미달해 감점되었습니다."
+        : "Vercel 배포·시크릿·도메인 정책이 기준을 충족했습니다.",
+      impact,
+    };
+  }
+
+  if (detail.tool.toLowerCase().includes("railway")) {
+    return {
+      source: "Railway GraphQL API (서비스·헬스·restart)",
+      observed: isFailed
+        ? "배포 상태·환경변수·헬스체크·restart 정책 기준 미충족"
+        : "배포·헬스체크·restart 정책 기준 충족",
+      location: "backboard.railway.app/graphql/v2 (service / serviceInstances)",
+      reason: isFailed
+        ? "Railway 서비스 가용성 정책이 기준에 미달해 감점되었습니다."
+        : "Railway 서비스 가용성 정책이 기준을 충족했습니다.",
+      impact,
+    };
+  }
+
   return {
     source: detail.tool === "수동" ? "Manual Evidence Review" : `${detail.tool} Result`,
     observed: isFailed
@@ -604,7 +646,10 @@ export function Reporting() {
       }
       if (tool.includes("nmap") || tool.includes("trivy") || tool.includes("web_probe")) {
         autoExternal += 1;
-      } else if (tool.includes("keycloak") || tool.includes("wazuh") || tool.includes("entra")) {
+      } else if (
+        tool.includes("keycloak") || tool.includes("wazuh") || tool.includes("entra") ||
+        tool.includes("supabase") || tool.includes("vercel") || tool.includes("railway")
+      ) {
         autoApi += 1;
       } else if (tool.includes("수동") || tool.includes("manual")) {
         manual += 1;
@@ -1790,7 +1835,7 @@ export function Reporting() {
 
                 {/* 도구 필터 */}
                 <div className="flex flex-wrap gap-2 mb-3">
-                  {["all", "keycloak", "wazuh", "nmap", "trivy", "web_probe"].map((t) => (
+                  {["all", "keycloak", "wazuh", "nmap", "trivy", "web_probe", "supabase", "vercel", "railway"].map((t) => (
                     <button
                       key={t}
                       type="button"

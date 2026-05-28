@@ -346,7 +346,7 @@ def _find_base_template() -> Optional[Path]:
 # 폴백되는데, 정적 양식엔 그 폴백 항목이 없다. 세션의 profile_select 와
 # selected_tools 를 기반으로 폴백 항목까지 포함한 양식을 동적 생성한다.
 
-_IDP_AUTO_TOOLS_FOR_FALLBACK = {"keycloak", "entra"}
+_IDP_AUTO_TOOLS_FOR_FALLBACK = {"keycloak", "supabase", "entra"}
 _SIEM_AUTO_TOOLS_FOR_FALLBACK = {"wazuh"}
 
 

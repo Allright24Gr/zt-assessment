@@ -16,6 +16,9 @@ export const TOOL_LABEL: Record<string, string> = {
   nmap: "Nmap",
   trivy: "Trivy",
   web_probe: "웹 Probe",
+  supabase: "Supabase",
+  vercel: "Vercel",
+  railway: "Railway",
   수동: "수동",
   manual: "수동",
   tool_unavailable: "미연결",
@@ -29,6 +32,9 @@ export const TOOL_LONG_LABEL: Record<string, string> = {
   nmap: "Nmap (네트워크/포트)",
   trivy: "Trivy (이미지/Repo/IaC/Secret)",
   web_probe: "웹 Probe (OIDC/DNS/TLS/HTTP/CT)",
+  supabase: "Supabase (Auth/RLS/DB)",
+  vercel: "Vercel (배포/환경변수/도메인)",
+  railway: "Railway (서비스/헬스/restart)",
   수동: "수동 입력",
 };
 
