@@ -17,6 +17,23 @@ def score_single_item(collected: CollectedResult) -> dict:
     if metric_value is None or threshold is None:
         return {"result": "평가불가", "score": 0.0, "recommendation": "임계값 또는 측정값 누락"}
 
+    # 수동 진단 결과는 (manual.py) metric_value 에 0/0.5/1.0 (충족 가중치) 을 직접 저장하고
+    # threshold=1.0 으로 둔다. 자동 진단의 임계 비율 비교 로직(>= threshold * 0.7) 을 그대로
+    # 적용하면 0.5 < 0.7 이라 "부분충족" 이 "미충족" 으로 잘못 떨어지는 버그가 있었다.
+    # raw_json.manual=True 인 경우 metric_value 자체를 가중치로 해석한다.
+    raw = collected.get("raw_json")
+    is_manual = isinstance(raw, dict) and raw.get("manual") is True
+    if is_manual:
+        if metric_value >= 1.0:
+            result, weight = "충족", 1.0
+        elif metric_value >= 0.5:
+            result, weight = "부분충족", 0.5
+        elif metric_value > 0:
+            result, weight = "부분충족", 0.5
+        else:
+            result, weight = "미충족", 0.0
+        return {"result": result, "score": maturity_score * weight, "recommendation": ""}
+
     if threshold == 0:
         # "낮을수록 좋음" 역방향 판정 (미패치 취약점 수, 평문 알림 수 등)
         if metric_value == 0:

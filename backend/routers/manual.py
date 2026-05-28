@@ -60,11 +60,21 @@ def resolve_verdict(user_choice: str) -> str:
     return CHOICE_TO_VERDICT.get((user_choice or "").strip(), "평가불가")
 
 
-def _find_checklist(db: Session, item_no_str: str, maturity: str, question: str) -> Optional[Checklist]:
+def _find_checklist(
+    db: Session,
+    item_no_str: str,
+    maturity: str,
+    question: str,
+    used_check_ids: Optional[set] = None,
+) -> Optional[Checklist]:
     """항목번호+성숙도+질문으로 Checklist 행을 찾는다.
 
     Excel 항목번호 예: "1.1.1 사용자 인벤토리" → prefix "1.1.1"
     DB item_id 형식: "{prefix}.{maturity_num}_{counter}" → "1.1.1.1_1"
+
+    같은 prefix·성숙도에 후보가 여러 개일 때(질문 텍스트가 양식과 안 맞는 경우)
+    used_check_ids 를 받아 이미 이번 업로드에서 쓰인 check_id 는 제외하고 매칭한다.
+    → 여러 xlsx 행이 같은 candidates[0] 으로 몰리는 중복 binding 방지.
     """
     if not item_no_str:
         return None
@@ -74,27 +84,32 @@ def _find_checklist(db: Session, item_no_str: str, maturity: str, question: str)
         return None
 
     pattern = f"{prefix}.{mat_num}_%"
-    candidates = db.query(Checklist).filter(Checklist.item_id.like(pattern)).all()
+    candidates = db.query(Checklist).filter(
+        Checklist.item_id.like(pattern)
+    ).order_by(Checklist.item_id).all()
     if not candidates:
         return None
 
     q = (question or "").strip()
     if q:
-        # 1차: 완전 일치
+        # 1차: 완전 일치 (used 무시 — 같은 질문이면 같은 row 로 정확히 update)
         for c in candidates:
             if c.item_name and c.item_name.strip() == q:
                 return c
-        # 2차: 공백/특수문자 무시한 정규화 일치 — 양식에서 줄바꿈/탭이 섞이는 경우 대비
+        # 2차: 공백/특수문자 무시한 정규화 일치
         import re as _re
         norm_q = _re.sub(r"\s+", "", q)
         for c in candidates:
             if c.item_name and _re.sub(r"\s+", "", c.item_name.strip()) == norm_q:
                 return c
-    # 후보가 1개뿐이면 매칭 실패해도 안전하게 채택. 2개 이상이고 매칭 실패면
-    # 잘못된 매칭으로 중복 결과를 만들 위험 — None 반환해 unmatched 로 분류.
-    if len(candidates) == 1:
-        return candidates[0]
-    return None
+
+    # 질문 매칭 실패: 라운드로빈 — 아직 쓰이지 않은 후보를 item_id 순으로 채택.
+    if used_check_ids is not None:
+        for c in candidates:
+            if c.check_id not in used_check_ids:
+                return c
+    # used 모두 소진 또는 used_check_ids 미지정 — 첫 후보 폴백.
+    return candidates[0]
 
 
 class ManualAnswer(BaseModel):
@@ -169,7 +184,10 @@ async def manual_upload(
         if verdict not in VALID_RESULTS:
             verdict = "평가불가"
 
-        checklist = _find_checklist(db, str(item_no), str(maturity), str(question))
+        checklist = _find_checklist(
+            db, str(item_no), str(maturity), str(question),
+            used_check_ids=processed_check_ids,
+        )
         if not checklist:
             unmatched += 1
             continue
@@ -226,15 +244,25 @@ async def manual_upload(
             db.flush()
 
         if note_str:
-            db.add(Evidence(
-                session_id=session_id,
-                check_id=check_id,
-                source="수동입력(Excel)",
-                observed=note_str,
-                location="",
-                reason="",
-                impact=None,
-            ))
+            # Evidence 도 upsert — 같은 (session, check_id, source=수동입력(Excel)) 에 새 노트를
+            # 매번 INSERT 하면 같은 항목에 중복 row 가 쌓인다. 가장 최근 노트만 유지.
+            existing_ev = db.query(Evidence).filter(
+                Evidence.session_id == session_id,
+                Evidence.check_id == check_id,
+                Evidence.source == "수동입력(Excel)",
+            ).first()
+            if existing_ev:
+                existing_ev.observed = note_str
+            else:
+                db.add(Evidence(
+                    session_id=session_id,
+                    check_id=check_id,
+                    source="수동입력(Excel)",
+                    observed=note_str,
+                    location="",
+                    reason="",
+                    impact=None,
+                ))
 
         if not already_processed:
             saved += 1
@@ -337,6 +365,7 @@ def manual_submit(
                 raw_json={"manual": True, "evidence": evidence_text},
                 error=None,
             ))
+            db.flush()  # 같은 answers 안에서 동일 check_id 중복 등장 시 두 번째 iter 가 위 row 보도록.
 
         existing = db.query(DiagnosisResult).filter(
             DiagnosisResult.session_id == req.session_id,
@@ -354,17 +383,28 @@ def manual_submit(
                 score=checklist.maturity_score * weight_map.get(result, 0.0),
                 recommendation="",
             ))
+            db.flush()
 
         if evidence_text:
-            db.add(Evidence(
-                session_id=req.session_id,
-                check_id=check_id,
-                source="수동입력",
-                observed=evidence_text,
-                location="",
-                reason="",
-                impact=None,
-            ))
+            # Evidence 도 upsert — manual_submit 재호출 시 같은 (session, check_id, source=수동입력)
+            # 에 중복 row 가 쌓이는 것 방지.
+            existing_ev = db.query(Evidence).filter(
+                Evidence.session_id == req.session_id,
+                Evidence.check_id == check_id,
+                Evidence.source == "수동입력",
+            ).first()
+            if existing_ev:
+                existing_ev.observed = evidence_text
+            else:
+                db.add(Evidence(
+                    session_id=req.session_id,
+                    check_id=check_id,
+                    source="수동입력",
+                    observed=evidence_text,
+                    location="",
+                    reason="",
+                    impact=None,
+                ))
 
         saved += 1
 

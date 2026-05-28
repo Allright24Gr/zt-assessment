@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Float, Text, JSON,
-    DateTime, ForeignKey, Index, Enum
+    DateTime, ForeignKey, Index, Enum, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -117,6 +117,7 @@ class CollectedData(Base):
     __table_args__ = (
         Index("idx_collected_data_session", "session_id"),
         Index("idx_collected_data_check", "check_id"),
+        UniqueConstraint("session_id", "check_id", name="uq_cd_session_check"),
     )
 
 
@@ -154,6 +155,10 @@ class DiagnosisResult(Base):
 
     session = relationship("DiagnosisSession", back_populates="results")
     checklist = relationship("Checklist", back_populates="results")
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "check_id", name="uq_dr_session_check"),
+    )
 
 
 class MaturityScore(Base):

@@ -1149,8 +1149,32 @@ def _trigger_scoring(session_id: int, db: Session):
     # pillar 별 전체 체크리스트 항목 수 — scoring 의 커버리지 가드용.
     # (collected_results 에 없는 pillar 항목까지 분모에 포함해야 한 두 개만 충족돼도
     # 최적화로 잘못 잡히는 거짓 만점을 막을 수 있다.)
+    # ★ pillar_scope 를 존중 — 사용자가 진단 범위에서 선택하지 않은 pillar 는 분모에 포함하지 않음.
+    #   (그 pillar 는 아예 점수에서 제외되므로 커버리지 가드도 의미 없음.)
+    extra_meta = session.extra if isinstance(session.extra, dict) else {}
+    pillar_scope_dict = extra_meta.get("pillar_scope") if isinstance(extra_meta.get("pillar_scope"), dict) else {}
+    _PILLAR_KEY_TO_NAME = {
+        "identify":    "식별자 및 신원",
+        "identity":    "식별자 및 신원",
+        "device":      "기기 및 엔드포인트",
+        "network":     "네트워크",
+        "system":      "시스템",
+        "application": "애플리케이션 및 워크로드",
+        "data":        "데이터",
+    }
+    active_pillars_for_coverage: set[str] = set()
+    if pillar_scope_dict:
+        for k, v in pillar_scope_dict.items():
+            if not v:
+                continue
+            nm = _PILLAR_KEY_TO_NAME.get(str(k).lower())
+            if nm:
+                active_pillars_for_coverage.add(nm)
     pillar_total_rows = db.query(Checklist.pillar, func.count(Checklist.check_id)).group_by(Checklist.pillar).all()
-    pillar_total_items = {p: int(c) for p, c in pillar_total_rows}
+    if active_pillars_for_coverage:
+        pillar_total_items = {p: int(c) for p, c in pillar_total_rows if p in active_pillars_for_coverage}
+    else:
+        pillar_total_items = {p: int(c) for p, c in pillar_total_rows}
 
     output = score_session(session_id, collected_results, checklist_meta,
                            pillar_total_items=pillar_total_items)

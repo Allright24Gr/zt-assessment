@@ -366,11 +366,14 @@ export function Reporting() {
   const [manualDownloading, setManualDownloading] = useState(false);
   const [manualUploading, setManualUploading] = useState(false);
   const manualFileInputRef = useRef<HTMLInputElement>(null);
-  // 직전 업로드 결과 상세 — sessionStorage 에 보관해 자동 reload 후에도 표시.
+  // 직전 업로드 결과 상세 — sessionStorage 에 sessionId 별로 분리 보관.
+  // (이전 버전은 zt_last_manual_upload 단일 키였어서 세션 A 업로드 결과가 세션 B 리포트에도
+  //  잘못 나타나는 cross-session 누출 버그가 있었음.)
+  const lastUploadStorageKey = sessionId ? `zt_last_manual_upload_${sessionId}` : "zt_last_manual_upload";
   const [lastUpload, setLastUpload] = useState<ManualUploadResponse | null>(() => {
-    if (typeof window === "undefined") return null;
+    if (typeof window === "undefined" || !sessionId) return null;
     try {
-      const raw = window.sessionStorage.getItem("zt_last_manual_upload");
+      const raw = window.sessionStorage.getItem(`zt_last_manual_upload_${sessionId}`);
       return raw ? JSON.parse(raw) as ManualUploadResponse : null;
     } catch { return null; }
   });
@@ -1107,10 +1110,10 @@ export function Reporting() {
                 setManualUploading(true);
                 try {
                   const res = await uploadManualExcel(sessionId, file);
-                  // 결과 상세 sessionStorage 보관 — reload 후에도 패널에 표시.
+                  // 결과 상세 sessionStorage 보관 — sessionId 별 키로 cross-session 누출 차단.
                   try {
                     window.sessionStorage.setItem(
-                      "zt_last_manual_upload", JSON.stringify(res),
+                      lastUploadStorageKey, JSON.stringify(res),
                     );
                   } catch { /* quota 초과 등 무시 */ }
                   setLastUpload(res);
@@ -1167,7 +1170,7 @@ export function Reporting() {
                 type="button"
                 onClick={() => {
                   setLastUpload(null);
-                  try { window.sessionStorage.removeItem("zt_last_manual_upload"); } catch { /* ignore */ }
+                  try { window.sessionStorage.removeItem(lastUploadStorageKey); } catch { /* ignore */ }
                 }}
                 className="text-[11px] text-gray-400 hover:text-gray-700"
                 title="이 결과 패널 닫기"
@@ -1178,7 +1181,24 @@ export function Reporting() {
             {/* Pillar 별 충족/미충족/평가불가 */}
             {lastUpload.by_pillar && Object.keys(lastUpload.by_pillar).length > 0 && (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-3">
-                {Object.entries(lastUpload.by_pillar).map(([p, c]) => (
+                {(() => {
+                  // 6 Pillar 표준 순서 — 식별자 → 기기 → 네트워크 → 시스템 → 애플리케이션 → 데이터.
+                  const PILLAR_DISPLAY_ORDER = [
+                    "식별자 및 신원",
+                    "기기 및 엔드포인트",
+                    "네트워크",
+                    "시스템",
+                    "애플리케이션 및 워크로드",
+                    "데이터",
+                  ];
+                  const entries = Object.entries(lastUpload.by_pillar);
+                  entries.sort(([a], [b]) => {
+                    const ai = PILLAR_DISPLAY_ORDER.indexOf(a);
+                    const bi = PILLAR_DISPLAY_ORDER.indexOf(b);
+                    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+                  });
+                  return entries;
+                })().map(([p, c]) => (
                   <div key={p} className="border border-gray-200 rounded px-2 py-1.5 bg-gray-50/60">
                     <p className="text-[11px] font-medium text-gray-700 truncate" title={p}>{p}</p>
                     <p className="text-[10px] text-gray-500 tabular-nums">
