@@ -30,7 +30,10 @@ import { PILLARS } from "../data/constants";
 import { getMaturityLevel, getScoreColor, maturityLabel, getMaturityColor } from "../lib/maturity";
 import { formatSessionDate } from "../lib/datetime";
 import { toolLabel as sharedToolLabel } from "../lib/toolLabel";
-import { getAssessmentResult, getImprovement } from "../../config/api";
+import {
+  getAssessmentResult, getImprovement,
+  downloadSessionManualTemplate, uploadManualExcel, finalizeAssessment, ApiError,
+} from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem, EvaluationMeta } from "../../types/api";
 
@@ -358,6 +361,10 @@ export function Reporting() {
   const [detailQuestionQuery, setDetailQuestionQuery] = useState("");
   const [selectedRiskCode, setSelectedRiskCode] = useState<string | null>(null);
   const [pdfDownloading, setPdfDownloading] = useState(false);
+  // 수동 보완 양식 — 결과 페이지에서도 다운로드/업로드 가능 (재진단 없이 보완 가능)
+  const [manualDownloading, setManualDownloading] = useState(false);
+  const [manualUploading, setManualUploading] = useState(false);
+  const manualFileInputRef = useRef<HTMLInputElement>(null);
   // OCSF (Open Cybersecurity Schema Framework) 변환 결과
   const [ocsfData, setOcsfData] = useState<OcsfSessionResponse | null>(null);
   const [ocsfLoading, setOcsfLoading] = useState(false);
@@ -1029,6 +1036,117 @@ export function Reporting() {
           </div>
         );
       })()}
+
+      {/* 수동 보완 양식 — 결과 페이지에서도 다운로드/업로드 가능 (재진단 불필요) */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+              📝 수동 보완 양식
+              <span className="text-[10px] font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                자동 평가불가·도구 미사용 항목
+              </span>
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              현재 결과에 평가 안 된 항목이 있다면 양식을 다운로드 → 답변 작성 → 업로드 시
+              <strong className="text-gray-700"> 점수를 다시 계산</strong>합니다. 자동 진단에서 상위 단계가
+              충족된 항목은 양식에서 자동 제외됩니다(보수적 평가 원칙).
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={manualDownloading || !sessionId}
+              onClick={async () => {
+                if (!sessionId) return;
+                setManualDownloading(true);
+                try {
+                  await downloadSessionManualTemplate(sessionId);
+                  toast.success("수동 보완 양식을 다운로드했습니다.");
+                } catch (err) {
+                  console.warn("[reporting] template download:", err);
+                  toast.error("양식 다운로드에 실패했습니다.");
+                } finally {
+                  setManualDownloading(false);
+                }
+              }}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {manualDownloading ? "다운로드 중..." : "양식 다운로드"}
+            </button>
+            <input
+              ref={manualFileInputRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file || !sessionId) return;
+                if (!file.name.toLowerCase().endsWith(".xlsx")) {
+                  toast.error(".xlsx 파일만 업로드 가능합니다.");
+                  return;
+                }
+                setManualUploading(true);
+                try {
+                  const res = await uploadManualExcel(sessionId, file);
+                  toast.success(`수동 보완 ${res.parsed_count ?? 0}건이 반영되었습니다. 재채점 중...`);
+                  try {
+                    await finalizeAssessment(sessionId);
+                  } catch (finErr) {
+                    console.warn("[reporting] finalize after upload:", finErr);
+                  }
+                  // 결과 다시 로드
+                  const fresh = await getAssessmentResult(sessionId);
+                  setSession({
+                    id:       fresh.session.id,
+                    org:      fresh.session.org,
+                    org_id:   fresh.session.org_id,
+                    date:     fresh.session.date,
+                    manager:  fresh.session.manager,
+                    user_id:  fresh.session.user_id,
+                    level:    fresh.session.level,
+                    status:   fresh.session.status,
+                    score:    fresh.session.score,
+                    errors:   (fresh.errors ?? []).map((e) => ({
+                      code: e.code, message: e.message, severity: e.severity,
+                      area: e.area, pillar: e.pillar,
+                      fail_count: e.fail_count, miss_count: e.miss_count,
+                    })),
+                    checklistDetails: [],
+                  });
+                  const refreshedScores = PILLARS.map((p) => {
+                    const m = fresh.pillar_scores.find((ps) =>
+                      (PILLAR_NAME_TO_KEY[ps.pillar] ?? ps.pillar) === p.key
+                    );
+                    return m ? m.score : 0;
+                  });
+                  setCurrentScores(refreshedScores);
+                  setChecklistDetails(fresh.checklist_results.map(adaptChecklistResult));
+                  toast.success("점수가 갱신되었습니다.");
+                } catch (err) {
+                  console.warn("[reporting] excel upload:", err);
+                  if (err instanceof ApiError) {
+                    toast.error(err.message || "업로드 중 오류가 발생했습니다.");
+                  } else {
+                    toast.error("업로드 중 오류가 발생했습니다.");
+                  }
+                } finally {
+                  setManualUploading(false);
+                  if (manualFileInputRef.current) manualFileInputRef.current.value = "";
+                }
+              }}
+            />
+            <button
+              type="button"
+              disabled={manualUploading || !sessionId}
+              onClick={() => manualFileInputRef.current?.click()}
+              className="px-3 py-2 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {manualUploading ? "업로드 + 재채점 중..." : "작성본 업로드"}
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* Tabs */}
       <div className="border-b border-gray-200">
