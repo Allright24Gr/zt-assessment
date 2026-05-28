@@ -1002,7 +1002,7 @@ export function InProgress() {
           </p>
           <button
             type="button"
-            onClick={() => sid && navigate(`/reporting/${sid}`)}
+            onClick={() => sid && navigate(`/assessment/next/${sid}`)}
             disabled={!sid || (!finalized && finalizing)}
             className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-medium ${
               !sid || (!finalized && finalizing)
@@ -1010,7 +1010,7 @@ export function InProgress() {
                 : "bg-green-600 text-white hover:bg-green-700"
             }`}
           >
-            결과 보러가기
+            다음 단계로 (수동 보완)
           </button>
         </div>
       )}
