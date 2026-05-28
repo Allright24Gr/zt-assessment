@@ -51,7 +51,7 @@ const INFRA_TYPES = [
 // backend가 자동 항목을 수동 폴백으로 돌린다(manual.py /items 가 노출).
 const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported: boolean }> = [
   { key: "keycloak",         label: "Keycloak",          desc: "오픈소스 IAM/SSO",        supported: true  },
-  { key: "supabase",         label: "Supabase Auth",     desc: "Supabase 백엔드 인증 (T-Markov 스택)", supported: true },
+  { key: "supabase",         label: "Supabase Auth",     desc: "Supabase 백엔드 인증 (Auth / RLS)",     supported: true  },
   { key: "google_workspace", label: "Google Workspace",  desc: "Google OAuth 기반",       supported: false },
   { key: "entra",            label: "MS Entra ID",       desc: "Microsoft 365 / Azure AD", supported: false },
   { key: "okta",             label: "Okta",              desc: "Okta Workforce Identity",  supported: false },
@@ -1028,7 +1028,7 @@ export function NewAssessment() {
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                         value={scanTargets.web_probe}
                         onChange={(e) => setScanTargets({ ...scanTargets, web_probe: e.target.value })}
-                        placeholder="예: tmarkovframework.vercel.app 또는 https://example.com"
+                        placeholder="예: example.com 또는 https://app.example.com"
                         disabled={!isLive}
                       />
                       <p className="mt-1 text-xs text-gray-500">
@@ -1260,7 +1260,7 @@ export function NewAssessment() {
                         <input type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
                           value={supabaseCreds.project_ref}
                           onChange={(e) => setSupabaseCreds({ ...supabaseCreds, project_ref: e.target.value })}
-                          placeholder="project ref (예: jftrrdemctgwemsujwnv)"
+                          placeholder="project ref (대시보드 URL 의 20자 lowercase 영숫자)"
                           disabled={!isLive} aria-label="Supabase project ref" />
                         <input type="password" autoComplete="new-password"
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
@@ -1490,8 +1490,8 @@ export function NewAssessment() {
                             setScopeAssets(next);
                           }}
                           placeholder={
-                            asset.name === "Frontend URL" ? "https://tmarkovframework.vercel.app" :
-                            asset.name === "Backend API" ? "https://api.tmarkov.example.com" :
+                            asset.name === "Frontend URL" ? "https://app.example.com" :
+                            asset.name === "Backend API" ? "https://api.example.com" :
                             asset.name === "Supabase project" ? "프로젝트 ID 또는 URL" :
                             asset.name === "GitHub repo" ? "owner/name" :
                             "값 또는 URL"
