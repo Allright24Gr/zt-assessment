@@ -26,14 +26,10 @@ cd zt-assessment
 ```
 
 `bootstrap.sh` 가 자동으로 처리하는 것:
-1. `.env` 자동 생성 + `SECRET_KEY`/`INTERNAL_API_TOKEN`/`DB_PASSWORD` 자동 발급
-2. `docker swarm init` + `shuffle_swarm_executions` overlay 네트워크 (Shuffle Orborus 필수)
-3. `docker compose --profile shuffle up -d --build` — 11개 컨테이너 기동
-4. 헬스 대기 (backend / frontend / shuffle UI / shuffle backend)
-5. Shuffle 첫 admin 자동 가입 + apikey 추출 → `.env` 자동 주입
-6. `shuffle/workflows/zt-*.json` 7개 자동 import → 워크플로우 ID `.env` 자동 채움
-7. backend 재기동 (.env 재로드)
-8. 시드 데이터(체크리스트 / 개선가이드 / 데모세션)는 backend entrypoint 가 자동 적재
+1. `.env` 자동 생성 + `SECRET_KEY`/`DB_PASSWORD` 자동 발급
+2. `docker compose up -d --build` — 컨테이너 기동
+3. 헬스 대기 (backend / frontend)
+4. 시드 데이터(체크리스트 / 개선가이드 / 데모세션)는 backend entrypoint 가 자동 적재
 
 소요: 첫 빌드 5~10분, 두 번째부터 1분 이내.
 

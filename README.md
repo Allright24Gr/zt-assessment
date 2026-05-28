@@ -222,7 +222,7 @@ POST /api/assessment/finalize/{id}
 git clone https://github.com/Allright24Gr/zt-assessment
 cd zt-assessment
 cp .env.example .env
-# .env 의 INTERNAL_API_TOKEN, DB 비밀번호 등을 운영 환경에 맞춰 수정
+# .env 의 SECRET_KEY, DB 비밀번호 등을 운영 환경에 맞춰 수정
 ```
 
 ### 2. 한 줄 배포
@@ -397,7 +397,7 @@ zt-assessment/
 ### 필수 — 운영
 
 ```bash
-INTERNAL_API_TOKEN=             # 미설정 시 webhook 503 (fail-closed)
+SECRET_KEY=                     # JWT 서명 키. 32+ char 권장
 DB_HOST=mysql
 DB_PORT=3306
 DB_NAME=zt_assessment
@@ -433,7 +433,6 @@ ZTA_SESSION_RETENTION_DAYS=90            # 90일 후 세션 자동 삭제
 ZTA_PROTECT_DEMO_DATA=true               # 시드 데이터 보호
 ZTA_CLEANUP_DISABLE=                     # cleanup 비활성
 ZTA_CLEANUP_INTERVAL_HOURS=24
-ZTA_DEV_ALLOW_UNAUTH_WEBHOOK=            # 운영 금지 — dev 한정
 ```
 
 ---
@@ -600,11 +599,6 @@ docker exec zt-assessment-zt-backend-1 python /app/scripts/validate_checklist_ma
 - 채널: `zt.audit` (stdlib logger)
 - 이벤트: register / login(성공·실패·잠금) / profile update / change-password / cleanup
 - 현재는 콘솔, 추후 DB 테이블화 예정
-
-### 웹훅 보안
-
-- `INTERNAL_API_TOKEN` 미설정 시 webhook **503 fail-closed**
-- 로컬 dev 우회: `ZTA_DEV_ALLOW_UNAUTH_WEBHOOK=true` (운영 금지)
 
 ---
 

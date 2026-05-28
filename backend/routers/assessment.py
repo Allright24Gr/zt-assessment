@@ -1,10 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Any, Optional
 from datetime import datetime, timezone
-import httpx
 import logging
 import os
 import threading
@@ -35,21 +34,9 @@ from services.ocsf_transformer import build_session_ocsf
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-SHUFFLE_URL     = os.getenv("SHUFFLE_URL", "")
-SHUFFLE_API_KEY = os.getenv("SHUFFLE_API_KEY", "")
-SELF_BASE_URL   = os.getenv("SELF_BASE_URL", "http://zt-backend:8000")
-INTERNAL_TOKEN  = os.getenv("INTERNAL_API_TOKEN", "")
-
 # seed_demo가 만드는 데모 조직의 정확한 이름. 결과/이력 응답에 is_demo 플래그로 노출.
 DEMO_ORG_NAME = "데모_조직"
 
-# 도구별 개별 워크플로우 ID (Shuffle UI에서 워크플로우 만든 후 입력)
-SHUFFLE_WF = {
-    "keycloak": os.getenv("SHUFFLE_WORKFLOW_KEYCLOAK", ""),
-    "wazuh":    os.getenv("SHUFFLE_WORKFLOW_WAZUH",    ""),
-    "nmap":     os.getenv("SHUFFLE_WORKFLOW_NMAP",     ""),
-    "trivy":    os.getenv("SHUFFLE_WORKFLOW_TRIVY",    ""),
-}
 # 학생 프로젝트 — 라이선스 비용 없이 실제 검증 가능한 4개 오픈소스만 사용.
 # IdP=Keycloak / SIEM=Wazuh / 외부 스캔=Nmap, Trivy.
 ALL_TOOLS = (
@@ -67,20 +54,6 @@ ALL_TOOLS = (
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _verify_internal_token(x_internal_token: Optional[str]):
-    """X-Internal-Token 헤더 검증. fail-closed: 토큰 미설정 시 503.
-
-    개발 편의를 위해 ZTA_DEV_ALLOW_UNAUTH_WEBHOOK=true 환경변수가 설정된 경우에만
-    토큰 검증을 스킵한다. 운영 기본값은 fail-closed.
-    """
-    if not INTERNAL_TOKEN:
-        if os.getenv("ZTA_DEV_ALLOW_UNAUTH_WEBHOOK", "").lower() == "true":
-            return
-        raise HTTPException(status_code=503, detail="INTERNAL_API_TOKEN not configured")
-    if x_internal_token != INTERNAL_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid internal token")
-
 
 def _get_session_or_404(db: Session, session_id: int) -> DiagnosisSession:
     s = db.query(DiagnosisSession).filter(DiagnosisSession.session_id == session_id).first()
@@ -377,26 +350,6 @@ def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) ->
     return result
 
 
-class WebhookResultItem(BaseModel):
-    item_id: Optional[str] = None
-    tool: Optional[str] = None
-    metric_key: Optional[str] = None
-    metric_value: Optional[float] = None
-    threshold: Optional[float] = None
-    raw_json: Optional[dict] = None
-    error: Optional[str] = None
-    result: Optional[str] = None
-
-
-class WebhookPayload(BaseModel):
-    session_id: int
-    results: list[WebhookResultItem] = Field(default_factory=list)
-
-
-class InternalCollectPayload(BaseModel):
-    session_id: int
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ──────────────────────────────────────────────────────────────────────────────
@@ -606,11 +559,7 @@ def run_assessment(
     _store_session_secrets(session.session_id, kc_in, wz_in)
 
     if not req.skip_collector:
-        # Shuffle 경로 우선, 미설정 시 직접 collector 실행
-        has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
-        if has_shuffle:
-            background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)
-        elif selected_tools:
+        if selected_tools:
             background.add_task(_run_collectors, session.session_id, list(selected_tools))
         message = "진단이 시작되었습니다."
     else:
@@ -658,10 +607,7 @@ def start_prepared_assessment(
     db.commit()
 
     selected_tools = sorted(_selected_tools_set(session))
-    has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
-    if has_shuffle:
-        background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)
-    elif selected_tools:
+    if selected_tools:
         background.add_task(_run_collectors, session.session_id, list(selected_tools))
 
     return {
@@ -798,46 +744,6 @@ def finalize_assessment(
 
     _trigger_scoring(session_id, db)
     return {"status": "ok", "session_id": session_id}
-
-
-@router.post("/internal/collect/{tool}")
-def internal_collect(
-    tool: str,
-    payload: InternalCollectPayload,
-    background: BackgroundTasks,
-    x_internal_token: Optional[str] = Header(default=None),
-    db: Session = Depends(get_db),
-):
-    """Shuffle 워크플로우가 호출하는 단일 도구 수집 엔드포인트."""
-    _verify_internal_token(x_internal_token)
-    if tool not in ALL_TOOLS:
-        raise HTTPException(status_code=400, detail=f"지원하지 않는 도구입니다: {tool}")
-    _get_session_or_404(db, payload.session_id)
-    background.add_task(_run_collectors, payload.session_id, [tool])
-    return {"status": "ok", "tool": tool, "session_id": payload.session_id}
-
-
-@router.post("/webhook")
-def assessment_webhook(
-    payload: WebhookPayload,
-    x_internal_token: Optional[str] = Header(default=None),
-    db: Session = Depends(get_db),
-):
-    _verify_internal_token(x_internal_token)
-    _get_session_or_404(db, payload.session_id)
-
-    saved = 0
-    for item in payload.results:
-        if not item.item_id:
-            continue
-        checklist = db.query(Checklist).filter(Checklist.item_id == item.item_id).first()
-        if not checklist:
-            continue
-        _upsert_collected(db, payload.session_id, checklist.check_id, item.model_dump())
-        saved += 1
-
-    db.commit()
-    return {"status": "ok", "saved": saved}
 
 
 @router.get("/result")
@@ -1108,30 +1014,6 @@ def _upsert_collected(db: Session, session_id: int, check_id: int, item: dict):
         db.add(CollectedData(session_id=session_id, check_id=check_id, **fields))
 
 
-def _trigger_shuffle_workflows(session_id: int, selected_tools: list[str]):
-    """선택된 도구에 해당하는 Shuffle 워크플로우만 개별 트리거 (BackgroundTasks 내에서 동기 실행)."""
-    payload = {
-        "execution_argument": {
-            "session_id":  session_id,
-            "webhook_url": f"{SELF_BASE_URL}/api/assessment/webhook",
-            "internal_token": INTERNAL_TOKEN or None,
-        }
-    }
-    with httpx.Client(timeout=10.0) as client:
-        for tool in selected_tools:
-            wf_id = SHUFFLE_WF.get(tool, "")
-            if not wf_id:
-                continue
-            try:
-                client.post(
-                    f"{SHUFFLE_URL}/api/v1/workflows/{wf_id}/execute",
-                    headers={"Authorization": f"Bearer {SHUFFLE_API_KEY}"},
-                    json=payload,
-                )
-            except Exception as exc:
-                logger.warning("[shuffle] %s workflow trigger failed: %s", tool, exc)
-
-
 def _trigger_scoring(session_id: int, db: Session):
     session = db.query(DiagnosisSession).filter(
         DiagnosisSession.session_id == session_id
@@ -1236,7 +1118,7 @@ def _trigger_scoring(session_id: int, db: Session):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Collector dispatcher (Shuffle 미사용 시 fallback)
+# Collector dispatcher
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _kc_mapping():
