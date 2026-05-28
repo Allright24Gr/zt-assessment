@@ -3,10 +3,7 @@ import { useNavigate } from "react-router";
 import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint, BookOpenCheck, Tag, Database as DatabaseIcon, Users as UsersIcon, GitCommit } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
-import {
-  runAssessment, prepareAssessment, startPreparedAssessment,
-  downloadSessionManualTemplate, uploadManualExcel,
-} from "../../config/api";
+import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
@@ -188,14 +185,6 @@ export function NewAssessment() {
     cloud_owner: "",
     security_reviewer: "",
   });
-  // Step 2 — 수동 양식 미리 작성 (선택). prepareAssessment 로 미리 세션 생성.
-  const [preparedSessionId, setPreparedSessionId] = useState<number | string | null>(null);
-  const [preparing, setPreparing] = useState(false);
-  const [manualUploading, setManualUploading] = useState(false);
-  const [manualUploadResult, setManualUploadResult] = useState<
-    { parsed: number; skipped: number; unmatched: number } | null
-  >(null);
-  const manualFileInputRef = useRef<HTMLInputElement>(null);
   // Keycloak 연결 카드 입력값 (작업 E-fe)
   const [keycloakCreds, setKeycloakCreds] = useState<{ url: string; admin_user: string; admin_pass: string }>({
     url: "", admin_user: "", admin_pass: "",
@@ -255,7 +244,7 @@ export function NewAssessment() {
   const submitDisabled =
     !!liveScanIntent && (!consentExternalScan || consentMetaMissing);
 
-  // payload 빌더 — runAssessment / prepareAssessment 둘 다 사용.
+  // payload 빌더 — runAssessment 호출에 사용.
   const buildRunPayload = (): AssessmentRunRequest => {
     const nmapTarget = scanTargets.nmap.trim();
     const trivyTarget = scanTargets.trivy.trim();
@@ -355,81 +344,17 @@ export function NewAssessment() {
     .map(([tool]) => tool)
     .join(",");
 
-  // 미리 세션 만들기 (skip_collector=true) — Step 2 양식 카드에서 호출.
-  const handlePrepareSession = async () => {
-    if (preparedSessionId || preparing) return;
-    setPreparing(true);
-    try {
-      const res = await prepareAssessment(buildRunPayload());
-      setPreparedSessionId(res.session_id);
-      toast.success("세션 준비 완료 — 양식을 다운로드받아 작성하세요.");
-    } catch (err) {
-      console.warn("[new-assessment] prepare failed:", err);
-      toast.error("세션 준비 실패: 입력값을 확인해주세요.");
-    } finally {
-      setPreparing(false);
-    }
-  };
-
-  // 양식 다운로드 (prepared session 기반).
-  const handleDownloadManualTemplate = async () => {
-    if (!preparedSessionId) {
-      toast.error("먼저 세션을 준비해주세요.");
-      return;
-    }
-    try {
-      await downloadSessionManualTemplate(preparedSessionId);
-    } catch (err) {
-      console.warn("[new-assessment] template download failed:", err);
-      toast.error("양식 다운로드에 실패했습니다.");
-    }
-  };
-
-  // 양식 업로드 (자동 채점).
-  const handleManualExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !preparedSessionId) return;
-    setManualUploading(true);
-    try {
-      const res = await uploadManualExcel(preparedSessionId, file);
-      setManualUploadResult({
-        parsed: res.parsed_count ?? 0,
-        skipped: res.skipped_count ?? 0,
-        unmatched: res.unmatched_count ?? 0,
-      });
-      toast.success(`양식 업로드 완료 — ${res.parsed_count ?? 0}건 채점됨`);
-    } catch (err) {
-      console.warn("[new-assessment] manual upload failed:", err);
-      toast.error("양식 업로드에 실패했습니다.");
-    } finally {
-      setManualUploading(false);
-      if (manualFileInputRef.current) manualFileInputRef.current.value = "";
-    }
-  };
-
+  // 진단 시작 — runAssessment 호출 후 InProgress 로 이동.
+  // 수동 양식 다운/업로드는 자동 진단 완료 후 AssessmentNext 페이지에서만 수행한다.
   const handleSubmit = () => {
-    // 이미 prepared session 있으면 startPreparedAssessment, 아니면 기존 runAssessment.
-    const navTo = (sid: number | string) =>
-      navigate(`/in-progress/${sid}`, {
+    runAssessment(buildRunPayload())
+      .then((res) => navigate(`/in-progress/${res.session_id}`, {
         state: {
           excludedTools: excludedToolsStr,
           orgName: formData.orgName,
           manager: formData.manager,
         },
-      });
-
-    if (preparedSessionId) {
-      startPreparedAssessment(preparedSessionId)
-        .then(() => navTo(preparedSessionId))
-        .catch((err) => {
-          console.warn("[new-assessment] startPrepared failed:", err);
-          toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
-        });
-      return;
-    }
-
-    runAssessment(buildRunPayload())
-      .then((res) => navTo(res.session_id))
+      }))
       .catch((err) => {
         console.warn("[new-assessment] runAssessment failed:", err);
         toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
@@ -1571,75 +1496,15 @@ export function NewAssessment() {
               );
             })()}
 
-            {/* 수동 양식 미리 작성 (선택) — 진단 시작 전 자동 채점 */}
-            <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-5">
-              <div className="flex items-center gap-2 mb-2">
-                <Upload size={18} className="text-blue-700" />
-                <h3 className="text-sm font-semibold text-gray-800">
-                  수동 진단 양식 미리 작성 (선택)
-                </h3>
+            {/* 안내 — 수동 양식 다운/업로드는 자동 진단 완료 후 다음 단계(AssessmentNext)에서 진행. */}
+            <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 text-xs text-gray-600">
+              <div className="flex items-start gap-2">
+                <Info size={14} className="mt-0.5 text-gray-500 shrink-0" />
+                <p>
+                  자동 진단이 끝난 뒤 <strong>다음 단계</strong> 페이지에서 환경에 맞춘
+                  수동 양식(.xlsx)을 다운로드받아 작성 후 업로드하면, 자동 결과와 합쳐서 최종 보고서가 생성됩니다.
+                </p>
               </div>
-              <p className="text-xs text-gray-600 mb-3">
-                Step 1에서 선택한 IdP/SIEM 환경에 맞춰 자동 진단이 불가능한 항목만 모은 Excel 양식을
-                미리 받아 채울 수 있습니다. 업로드 시 자동 채점됩니다.
-                다음 단계 마지막에 [진단 시작]을 누르면 자동 수집과 합쳐져 최종 PDF가 만들어집니다.
-              </p>
-
-              {!preparedSessionId ? (
-                <button
-                  type="button"
-                  onClick={handlePrepareSession}
-                  disabled={preparing || selectedPillarCount === 0}
-                  className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg ${
-                    preparing || selectedPillarCount === 0
-                      ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                      : "bg-blue-600 text-white hover:bg-blue-700"
-                  }`}
-                >
-                  {preparing ? "준비 중..." : "환경 기반 양식 준비"}
-                </button>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-xs text-emerald-700">
-                    ✅ 세션 준비 완료 (session #{preparedSessionId}). 양식 다운로드 → 작성 → 업로드.
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={handleDownloadManualTemplate}
-                      className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 bg-white rounded-lg hover:bg-gray-50 text-gray-700"
-                    >
-                      <FileText size={15} />
-                      양식 다운로드 (.xlsx)
-                    </button>
-                    <label
-                      className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer ${
-                        manualUploading
-                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                          : "bg-blue-600 text-white hover:bg-blue-700"
-                      }`}
-                    >
-                      <Upload size={15} />
-                      {manualUploading ? "업로드 중..." : "작성한 양식 업로드"}
-                      <input
-                        ref={manualFileInputRef}
-                        type="file"
-                        accept=".xlsx"
-                        className="hidden"
-                        disabled={manualUploading}
-                        onChange={handleManualExcelUpload}
-                      />
-                    </label>
-                  </div>
-                  {manualUploadResult && (
-                    <div className="text-xs text-gray-700 bg-white rounded border border-gray-200 px-3 py-2">
-                      <span className="font-semibold text-emerald-700">자동 채점 완료:</span>{" "}
-                      <strong>{manualUploadResult.parsed}건</strong> 채점,
-                      건너뜀 {manualUploadResult.skipped}건, 매칭 실패 {manualUploadResult.unmatched}건.
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
 
             <div className="flex justify-between pt-4">
