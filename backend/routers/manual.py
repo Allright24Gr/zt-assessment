@@ -620,8 +620,28 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     # instructions 시트에도 보수적 평가 안내 추가 (멱등).
     _augment_instructions_sheet(wb)
 
-    if not fallback_tools:
-        # 폴백 없음 — 자동 결과 요약/외부 점검 시트만 부착 후 종료.
+    # 자동 진단에서 평가불가로 떨어진 항목들도 수동 입력으로 보완 — 결과 페이지에
+    # "평가 안 됨" 공백을 남기지 않기 위함. KISA 보수적 평가 원칙은 동일하게 적용
+    # (해당 카테고리의 상위 단계가 자동 충족이면 하위 단계 평가불가 항목은 제외).
+    unavailable_check_ids: set[int] = set()
+    unavailable_rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(
+            DiagnosisResult.session_id == session.session_id,
+            DiagnosisResult.result == "평가불가",
+        )
+        .all()
+    )
+    unavailable_checklist: list[Checklist] = []
+    for _dr, cl in unavailable_rows:
+        if cl.check_id in unavailable_check_ids:
+            continue
+        unavailable_check_ids.add(cl.check_id)
+        unavailable_checklist.append(cl)
+
+    if not fallback_tools and not unavailable_checklist:
+        # 폴백 없음 + 평가불가 없음 — 자동 결과 요약/외부 점검 시트만 부착 후 종료.
         _append_auto_summary_sheet(wb, auto_dist)
         if evidence and not evidence.get("error"):
             _append_evidence_sheet(wb, evidence)
@@ -629,10 +649,20 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         wb.save(buf)
         return buf.getvalue()
 
-    # 폴백 도구 매핑된 Checklist 항목 조회
-    rows = db.query(Checklist).filter(
-        Checklist.tool.in_(sorted(fallback_tools))
-    ).all()
+    # 폴백 도구 매핑된 Checklist 항목 조회 + 자동 평가불가 항목 합치기 (중복 제거).
+    rows: list[Checklist] = []
+    seen_check_ids: set[int] = set()
+    if fallback_tools:
+        for cl in db.query(Checklist).filter(
+            Checklist.tool.in_(sorted(fallback_tools))
+        ).all():
+            if cl.check_id not in seen_check_ids:
+                seen_check_ids.add(cl.check_id)
+                rows.append(cl)
+    for cl in unavailable_checklist:
+        if cl.check_id not in seen_check_ids:
+            seen_check_ids.add(cl.check_id)
+            rows.append(cl)
     # 카테고리·item_id 순으로 정렬
     rows.sort(key=lambda c: (_pillar_sort_key(c.pillar or ""), c.item_id or ""))
 
@@ -706,8 +736,8 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     notice_row = append_at
     nc = ws_diag.cell(notice_row, 1)
     nc.value = (
-        f"▼ 자동 폴백 항목 — 사용 환경(IdP/SIEM)에서 자동 진단이 불가능해 수동으로 평가해야 하는 항목 "
-        f"({len(new_items)}건)"
+        f"▼ 자동 폴백 + 평가불가 보완 항목 — 사용 환경에서 자동 진단이 불가능했거나 "
+        f"자동 호출 결과가 평가불가로 분류된 항목 ({len(new_items)}건)"
     )
     nc.font = Font(name="Arial", size=11, bold=True, color="FFB91C1C")
     nc.fill = PatternFill("solid", fgColor="FFFEE2E2")
