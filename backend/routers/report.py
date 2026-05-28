@@ -393,9 +393,140 @@ def _level_for(score: float) -> str:
     return determine_maturity_level(score or 0.0)
 
 
+def _part_badge_flowable(text: str, font: str):
+    """부 마커 — 작은 파란 둥근 배지 안에 흰 글자.
+    샘플 PDF의 '1부 · 문서 식별' 스타일.
+    """
+    from reportlab.graphics.shapes import Drawing, Rect, String
+    from reportlab.lib import colors
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    PADDING_X = 10
+    PADDING_Y = 5
+    SIZE = 10
+    text_w = stringWidth(text, font, SIZE)
+    W = text_w + PADDING_X * 2
+    H = SIZE + PADDING_Y * 2 + 2
+
+    d = Drawing(W, H)
+    d.add(Rect(0, 0, W, H, fillColor=colors.HexColor("#dbeafe"),
+               strokeColor=colors.HexColor("#93c5fd"), strokeWidth=0.5, rx=4, ry=4))
+    d.add(String(W / 2, PADDING_Y + 2, text, textAnchor="middle",
+                 fontName=font, fontSize=SIZE, fillColor=colors.HexColor("#1e3a5f")))
+    return d
+
+
+def _section_heading_flowable(number: str, title: str, font: str, total_w: float):
+    """장 제목 — 좌측 굵은 파란 막대 + 검정 큰 제목.
+    예: '4. 진단 범위 및 방법론' (좌측 4pt 두께 파란 막대 + 옆 큰 제목)
+    """
+    from reportlab.platypus import Table, Paragraph
+    from reportlab.platypus.tables import TableStyle
+    from reportlab.lib import colors
+
+    style_title = ParagraphStyle(
+        "_sec_title", fontName=font, fontSize=15, leading=20,
+        textColor=colors.HexColor("#0f172a"), leftIndent=0,
+    )
+    label = Paragraph(f"<b>{number}. {title}</b>", style_title)
+    # 좌측 4pt 파란 막대를 Table cell의 BACKGROUND로
+    t = Table([["", label]], colWidths=[5, total_w - 5],
+              rowHeights=[24])
+    t.setStyle(TableStyle([
+        ("BACKGROUND",   (0, 0), (0, 0), colors.HexColor("#1e3a5f")),
+        ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",  (1, 0), (1, 0), 10),
+        ("RIGHTPADDING", (1, 0), (1, 0), 0),
+        ("TOPPADDING",   (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+    ]))
+    return t
+
+
+_LEVEL_BADGE_COLORS = {
+    "기존":   ("#fee2e2", "#991b1b"),   # 빨강
+    "초기":   ("#fef3c7", "#92400e"),   # 노랑/오렌지
+    "향상":   ("#dbeafe", "#1e40af"),   # 파랑
+    "최적화": ("#d1fae5", "#065f46"),   # 초록
+}
+
+_VERDICT_CHIP_COLORS = {
+    "충족":     ("#d1fae5", "#065f46"),
+    "부분충족": ("#fef3c7", "#92400e"),
+    "미충족":   ("#fee2e2", "#991b1b"),
+    "평가불가": ("#e5e7eb", "#475569"),
+}
+
+
+def _cover_stat_card(W_pt: float, H_pt: float, title: str, big_text: str,
+                     big_color: str, badge_text: str | None, badge_palette: tuple[str, str] | None,
+                     sub_line1: str, sub_line2: str, font: str,
+                     big_suffix: str = ""):
+    """표지용 통계 카드 (Drawing) — 흰 배경 + 옅은 회색 외곽선.
+
+    레이아웃 (위→아래):
+      · title          (작은 회색, y=H-16)
+      · big_text       (큰, 가운데, y≈H/2+10)
+      · big_suffix     (옆에 작게, 옵션 — "/ 4.0" 처럼)
+      · badge          (선택, 그 아래, 노란/파란 등 등급 배지)
+      · sub_line1      (작은 회색, 하단)
+      · sub_line2      (더 작은 회색, 가장 아래)
+    """
+    from reportlab.graphics.shapes import Drawing, Rect, String
+    from reportlab.lib import colors
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    d = Drawing(W_pt, H_pt)
+    # 외곽 카드 (둥근 모서리 + 옅은 회색 테두리)
+    d.add(Rect(0.5, 0.5, W_pt - 1, H_pt - 1, fillColor=colors.white,
+               strokeColor=colors.HexColor("#cbd5e1"), strokeWidth=0.8, rx=6, ry=6))
+
+    # title — 카드 상단
+    d.add(String(W_pt / 2, H_pt - 16, title, textAnchor="middle",
+                 fontName=font, fontSize=9, fillColor=colors.HexColor("#64748b")))
+
+    # big_text + 옵셔널 suffix (예: 2.43 / 4.0)
+    BIG_SIZE = 26
+    SUF_SIZE = 11
+    big_w = stringWidth(big_text, font, BIG_SIZE)
+    suf_w = stringWidth(big_suffix, font, SUF_SIZE) if big_suffix else 0
+    gap   = 4 if big_suffix else 0
+    total = big_w + gap + suf_w
+    start_x = (W_pt - total) / 2
+
+    # baseline 위치 — 카드 중앙보다 살짝 위
+    big_y = H_pt / 2 + 6
+    d.add(String(start_x, big_y, big_text, textAnchor="start",
+                 fontName=font, fontSize=BIG_SIZE, fillColor=colors.HexColor(big_color)))
+    if big_suffix:
+        d.add(String(start_x + big_w + gap, big_y + 2, big_suffix, textAnchor="start",
+                     fontName=font, fontSize=SUF_SIZE, fillColor=colors.HexColor("#94a3b8")))
+
+    # badge — big_text 아래
+    badge_bottom = big_y - 6
+    if badge_text and badge_palette:
+        bg, fg = badge_palette
+        badge_w, badge_h = 66, 17
+        badge_x = (W_pt - badge_w) / 2
+        badge_y = badge_bottom - badge_h - 2
+        d.add(Rect(badge_x, badge_y, badge_w, badge_h,
+                   fillColor=colors.HexColor(bg), strokeColor=None, rx=8, ry=8))
+        d.add(String(W_pt / 2, badge_y + 5, badge_text, textAnchor="middle",
+                     fontName=font, fontSize=9, fillColor=colors.HexColor(fg)))
+
+    # sub lines — 카드 하단
+    if sub_line1:
+        d.add(String(W_pt / 2, 18, sub_line1, textAnchor="middle",
+                     fontName=font, fontSize=8.5, fillColor=colors.HexColor("#64748b")))
+    if sub_line2:
+        d.add(String(W_pt / 2, 8, sub_line2, textAnchor="middle",
+                     fontName=font, fontSize=8, fillColor=colors.HexColor("#94a3b8")))
+    return d
+
+
 def _gradient_card_drawing(W_pt: float, H_pt: float, score: float, level: str,
                            confidence_pct: int, eval_text: str, font: str):
-    """표지 좌측 그라데이션 카드 (Drawing).
+    """표지 좌측 그라데이션 카드 (Drawing). [사용처: §6.1 종합 점수]
     파랑→인디고 그라데이션 + 큰 점수 + 등급 + 신뢰도/평가 가능.
     """
     from reportlab.graphics.shapes import Drawing, Rect, String, Line
@@ -711,6 +842,10 @@ def _make_pdf(data: dict) -> bytes:
         canvas.setFillColor(colors.HexColor("#94a3b8"))
         canvas.drawCentredString(PAGE_W / 2, PAGE_H - 1.4 * cm,
             "Z E R O T R U S T   M A T U R I T Y   A S S E S S M E N T   R E P O R T")
+        # 영문 헤더 아래 얇은 가로선
+        canvas.setStrokeColor(colors.HexColor("#e2e8f0"))
+        canvas.setLineWidth(0.4)
+        canvas.line(MARGIN, PAGE_H - 1.65 * cm, PAGE_W - MARGIN, PAGE_H - 1.65 * cm)
         # 푸터 (표지에는 안 그림 — 깔끔하게)
         canvas.restoreState()
 
@@ -750,30 +885,69 @@ def _make_pdf(data: dict) -> bytes:
     # 1부 · 문서 식별
     # =====================================================================
 
-    # ── 0. 표지 ──────────────────────────────────────────────────────────
-    story.append(Spacer(1, 0.6 * cm))
+    # ── 0. 표지 (샘플 PDF 픽셀 매칭) ─────────────────────────────────────
+    # 상단 영문 라벨 (자간 넓게) — cover 페이지 헤더에서 그림 (onPage)
+    story.append(Spacer(1, 2.4 * cm))
+
     story.append(Paragraph(
-        '<font size="20" color="#1e3a5f"><b>제로트러스트 가이드라인 2.0 기반</b></font>',
-        sty("cover_title1", fontSize=20, leading=26, alignment=1),
+        '<font size="12" color="#64748b">제로트러스트 가이드라인 2.0 기반</font>',
+        sty("cover_title1", fontSize=12, leading=18, alignment=1),
     ))
-    story.append(Spacer(1, 0.15 * cm))
+    story.append(Spacer(1, 0.1 * cm))
     story.append(Paragraph(
         '<font size="26" color="#0f172a"><b>보안 성숙도 진단 보고서</b></font>',
-        sty("cover_title2", fontSize=26, leading=32, alignment=1),
+        sty("cover_title2", fontSize=26, leading=34, alignment=1),
     ))
-    story.append(Spacer(1, 0.15 * cm))
+    story.append(Spacer(1, 0.1 * cm))
     story.append(Paragraph(
-        '<font size="10" color="#64748b">Readyz-T Zero Trust Security Assessment</font>',
+        '<font size="10" color="#94a3b8"><i>Readyz-T Zero Trust Security Assessment</i></font>',
         sty("cover_title3", fontSize=10, leading=14, alignment=1),
     ))
-    story.append(Spacer(1, 0.9 * cm))
+    story.append(Spacer(1, 1.6 * cm))
 
-    # 좌측 그라데이션 카드 + 우측 메타 표
-    grad_w, grad_h = 7.0 * cm, 8.2 * cm
-    eval_text = f"{eval_capable} / {total_items}"
-    grad_d = _gradient_card_drawing(grad_w, grad_h, overall_score, overall_level,
-                                    confidence_pct, eval_text, F)
+    # 카드 3개 — 종합 성숙도 / 진단 신뢰도 / 진단 모드 (가로 배치)
+    card_w = (CONTENT_W - 1.0 * cm) / 3  # 두 칸 사이 0.5cm 간격
+    card_h = 3.4 * cm
+    level_palette = _LEVEL_BADGE_COLORS.get(overall_level, ("#dbeafe", "#1e40af"))
 
+    card_score = _cover_stat_card(
+        card_w, card_h, "종합 성숙도", f"{overall_score:.2f}",
+        big_color="#0f172a",
+        badge_text=f"{overall_level} 단계", badge_palette=level_palette,
+        sub_line1="", sub_line2="", font=F,
+        big_suffix="/ 4.0",
+    )
+    card_conf = _cover_stat_card(
+        card_w, card_h, "진단 신뢰도", f"{confidence_pct}%",
+        big_color="#1e40af",
+        badge_text=None, badge_palette=None,
+        sub_line1=f"평가 가능 {eval_capable} / {total_items}", sub_line2="", font=F,
+    )
+    # 진단 모드 + 도구 매트릭스
+    card_mode = _cover_stat_card(
+        card_w, card_h, "진단 모드", scan_mode_label,
+        big_color="#0f172a",
+        badge_text=None, badge_palette=None,
+        sub_line1=tool_matrix, sub_line2="", font=F,
+    )
+
+    cards_row = Table(
+        [[card_score, card_conf, card_mode]],
+        colWidths=[card_w, card_w, card_w],
+        style=TableStyle([
+            ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING",   (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+            ("LEFTPADDING",  (1, 0), (1, 0), 0.5 * cm),
+            ("LEFTPADDING",  (2, 0), (2, 0), 0.5 * cm),
+        ]),
+    )
+    story.append(cards_row)
+    story.append(Spacer(1, 1.1 * cm))
+
+    # 메타 표 6행 (헤더 행 없음, 좌측 라벨 + 우측 값)
     meta_rows = [
         [Paragraph("진단 대상", META_K), Paragraph(org_name, META_V)],
         [Paragraph("담당자", META_K),    Paragraph(manager, META_V)],
@@ -783,46 +957,27 @@ def _make_pdf(data: dict) -> bytes:
          Paragraph(f"{doc_no} / v1.0", META_V)],
         [Paragraph("기밀 등급", META_K),
          Paragraph('<font color="#b91c1c"><b>대외비 (Confidential)</b></font>', META_V)],
-        [Paragraph("진단 모드", META_K),
-         Paragraph(f"<b>{scan_mode_label}</b>", META_V)],
-        [Paragraph("도구 매트릭스", META_K), Paragraph(tool_matrix, META_V)],
-        [Paragraph("환경 (IdP / SIEM)", META_K),
-         Paragraph(f"IdP: <b>{idp}</b>  /  SIEM: <b>{siem}</b>", META_V)],
     ]
     meta_table = Table(
-        meta_rows, colWidths=[3.2 * cm, CONTENT_W - grad_w - 0.5 * cm - 3.2 * cm],
+        meta_rows, colWidths=[3.4 * cm, CONTENT_W - 3.4 * cm],
         style=TableStyle([
             ("FONTNAME",      (0, 0), (-1, -1), F),
-            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-            ("LINEBELOW",     (0, 0), (-1, -2), 0.3, colors.HexColor("#e2e8f0")),
-            ("TOPPADDING",    (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("BOX",           (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+            ("INNERGRID",     (0, 0), (-1, -1), 0.3, colors.HexColor("#e2e8f0")),
+            ("BACKGROUND",    (0, 0), (0, -1), colors.HexColor("#f8fafc")),
+            ("TOPPADDING",    (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 12),
         ]),
     )
+    story.append(meta_table)
 
-    cover_two_col = Table(
-        [[grad_d, meta_table]],
-        colWidths=[grad_w, CONTENT_W - grad_w - 0.5 * cm],
-        style=TableStyle([
-            ("VALIGN",       (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING",  (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING",   (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
-            ("LEFTPADDING",  (1, 0), (1, 0), 12),
-        ]),
-    )
-    story.append(cover_two_col)
-    story.append(Spacer(1, 1.0 * cm))
-
-    # 푸터 라인
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.5,
-                            color=colors.HexColor("#cbd5e1")))
-    story.append(Spacer(1, 0.25 * cm))
+    # 푸터 (페이지 맨 아래) — 빈 공간 채우고 가운데 텍스트
+    story.append(Spacer(1, 3.5 * cm))
     story.append(Paragraph(
-        f"Readyz-T · 신뢰많이된다 팀 · {org_name}",
-        sty("cover_footer", fontSize=8.5, leading=11, alignment=1,
-            textColor=colors.HexColor("#64748b")),
+        f'<font size="9" color="#64748b">Readyz-T · 신뢰많이된다 팀 · {org_name}</font>',
+        sty("cover_footer", fontSize=9, leading=12, alignment=1),
     ))
 
     # 본문 페이지 템플릿으로 전환
@@ -838,11 +993,10 @@ def _make_pdf(data: dict) -> bytes:
         story.append(_PartMarker(name, current_part))
 
     _set_part("1부 · 문서 식별")
-    story.append(Paragraph("1부 · 문서 식별", H_PART))
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.6,
-                            color=colors.HexColor(_COLORS["navy"]), spaceAfter=8))
+    story.append(_part_badge_flowable("1부 · 문서 식별", F))
+    story.append(Spacer(1, 0.4 * cm))
 
-    story.append(Paragraph("1. 문서 정보", H_SEC))
+    story.append(_section_heading_flowable("1", "문서 정보", F, CONTENT_W))
     story.append(Paragraph(
         "본 보고서가 결재·감사·대외 제출에 쓰일 수 있도록, "
         "문서로서의 식별 정보와 책임 소재를 명시합니다.", BODY))
@@ -894,7 +1048,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.4 * cm))
 
     # 2. 목차
-    story.append(Paragraph("2. 목차", H_SEC))
+    story.append(_section_heading_flowable("2", "목차", F, CONTENT_W))
     toc_rows = [
         ["부", "장"],
         ["1부 문서 식별",     "0. 표지 / 1. 문서 정보 / 2. 목차"],
@@ -915,11 +1069,10 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 2부 · 요약 — 3. 경영진 요약
     # =====================================================================
-    story.append(Paragraph("2부 · 요약", H_PART))
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.6,
-                            color=colors.HexColor(_COLORS["navy"]), spaceAfter=8))
+    story.append(_part_badge_flowable("2부 · 요약", F))
+    story.append(Spacer(1, 0.4 * cm))
 
-    story.append(Paragraph("3. 경영진 요약", H_SEC))
+    story.append(_section_heading_flowable("3", "경영진 요약", F, CONTENT_W))
     story.append(Paragraph(
         "의사결정자가 이 페이지만으로 현재 수준과 우선 과제를 파악할 수 있도록 핵심만 정리했습니다.",
         BODY))
@@ -971,7 +1124,7 @@ def _make_pdf(data: dict) -> bytes:
             _ko_pillar_short(p["pillar"]),
             f"{p['score']:.2f}",
             p["level"],
-            weak_reasons.get(p["pillar"], "(미흡 사유 데이터 없음)"),
+            Paragraph(weak_reasons.get(p["pillar"], "(미흡 사유 데이터 없음)"), CELL),
         ])
     story.append(_table(weak_rows, F,
         col_widths=[1.2 * cm, 3.0 * cm, 1.6 * cm, 2.0 * cm,
@@ -994,19 +1147,27 @@ def _make_pdf(data: dict) -> bytes:
             tool_disp = {"keycloak": "Keycloak", "wazuh": "Wazuh", "nmap": "Nmap",
                          "trivy": "Trivy", "web_probe": "web_probe", "수동": "수동"}.get(
                 (q.get("tool") or "").lower(), q.get("tool") or "—")
+            # Paragraph 로 wrap 가능하게 (긴 텍스트 한 줄 잘림 방지)
+            task_text = (q.get("task") or "")[:120]
+            ex_text   = (q.get("solution") or q.get("expected_effect") or "")[:200]
             qw_rows.append([
                 str(i),
-                (q.get("task") or "")[:120],
+                Paragraph(task_text, CELL),
                 tool_disp,
-                (q.get("solution") or q.get("expected_effect") or "")[:160],
+                Paragraph(ex_text, CELL),
             ])
-    story.append(_table(qw_rows, F,
-        col_widths=[0.8 * cm, 5.5 * cm, 2.0 * cm, CONTENT_W - 8.3 * cm],
-        header=True))
-    story.append(Spacer(1, 0.3 * cm))
-    story.append(Paragraph(
-        "※ 상세 근거는 5부(상세 결과), 전체 실행 계획은 6부(개선 로드맵)를 참조하십시오.",
-        SMALL))
+    from reportlab.platypus import KeepTogether
+    _qw_table = _table(qw_rows, F,
+        col_widths=[0.8 * cm, 4.5 * cm, 2.2 * cm, CONTENT_W - 7.5 * cm],
+        header=True)
+    # 표 + ※ 안내 문구를 한 묶음으로 — 안내가 단독으로 빈 페이지에 떨어지지 않게.
+    story.append(KeepTogether([
+        _qw_table,
+        Spacer(1, 0.3 * cm),
+        Paragraph(
+            "※ 상세 근거는 5부(상세 결과), 전체 실행 계획은 6부(개선 로드맵)를 참조하십시오.",
+            SMALL),
+    ]))
 
     _set_part("3부 · 진단 개요")
     story.append(PageBreak())
@@ -1014,11 +1175,10 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 3부 · 진단 개요
     # =====================================================================
-    story.append(Paragraph("3부 · 진단 개요", H_PART))
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.6,
-                            color=colors.HexColor(_COLORS["navy"]), spaceAfter=8))
+    story.append(_part_badge_flowable("3부 · 진단 개요", F))
+    story.append(Spacer(1, 0.4 * cm))
 
-    story.append(Paragraph("4. 진단 범위 및 방법론", H_SEC))
+    story.append(_section_heading_flowable("4", "진단 범위 및 방법론", F, CONTENT_W))
     story.append(Paragraph(
         "제로트러스트 가이드라인 2.0의 평가 확정사항(가이드 §3)에 따른 진단 전제와 범위입니다.",
         BODY))
@@ -1077,7 +1237,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.4 * cm))
 
     # 5. 점수 산정 방식
-    story.append(Paragraph("5. 점수 산정 방식", H_SEC))
+    story.append(_section_heading_flowable("5", "점수 산정 방식", F, CONTENT_W))
     story.append(Paragraph(
         "점수의 의미와 한계를 독자가 스스로 해석할 수 있도록 산정 로직을 명시합니다.", BODY))
     story.append(Spacer(1, 0.2 * cm))
@@ -1110,16 +1270,25 @@ def _make_pdf(data: dict) -> bytes:
 
     # 5.3 성숙도 4단계
     story.append(Paragraph("5.3 성숙도 4단계", H_SUB))
+    def _lvl_chip(name: str):
+        bg, fg = _LEVEL_BADGE_COLORS.get(name, ("#e5e7eb", "#475569"))
+        chip_sty = ParagraphStyle(
+            f"_lvl_{name}", fontName=F, fontSize=9, leading=12, alignment=1,
+            textColor=colors.HexColor(fg), backColor=colors.HexColor(bg),
+            borderPadding=(3, 8, 3, 8), borderRadius=6,
+        )
+        return Paragraph(f"<b>{name}</b>", chip_sty)
+
     mat_rows = [
         ["단계", "점수 구간"],
-        ["최적화", "3.5 이상"],
-        ["향상",   "2.5 이상 ~ 3.5 미만"],
-        ["초기",   "1.5 이상 ~ 2.5 미만"],
-        ["기존",   "1.5 미만"],
+        [_lvl_chip("최적화"), "3.5 이상"],
+        [_lvl_chip("향상"),   "2.5 이상 ~ 3.5 미만"],
+        [_lvl_chip("초기"),   "1.5 이상 ~ 2.5 미만"],
+        [_lvl_chip("기존"),   "1.5 미만"],
     ]
     story.append(_table(mat_rows, F,
         col_widths=[3 * cm, CONTENT_W - 3 * cm],
-        header=True, result_col=0))
+        header=True))
     story.append(Spacer(1, 0.15 * cm))
     next_level, gap = _next_level_gap(overall_score)
     story.append(Paragraph(
@@ -1144,11 +1313,10 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 4부 · 종합 결과
     # =====================================================================
-    story.append(Paragraph("4부 · 종합 결과", H_PART))
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.6,
-                            color=colors.HexColor(_COLORS["navy"]), spaceAfter=8))
+    story.append(_part_badge_flowable("4부 · 종합 결과", F))
+    story.append(Spacer(1, 0.4 * cm))
 
-    story.append(Paragraph("6. 종합 성숙도 분석", H_SEC))
+    story.append(_section_heading_flowable("6", "종합 성숙도 분석", F, CONTENT_W))
     story.append(Paragraph(
         "대시보드 종합 화면을 문서로 고정한 것으로, 6개 필러의 성숙도를 한눈에 비교합니다.",
         BODY))
@@ -1159,8 +1327,9 @@ def _make_pdf(data: dict) -> bytes:
     score_card_h = 4.6 * cm
     radar_w = CONTENT_W - score_card_w - 0.4 * cm
     radar_h = 6.4 * cm
+    _eval_text_local = f"{eval_capable} / {total_items}"
     score_card = _gradient_card_drawing(score_card_w, score_card_h, overall_score,
-                                        overall_level, confidence_pct, eval_text, F)
+                                        overall_level, confidence_pct, _eval_text_local, F)
     radar = _radar_drawing(radar_w, radar_h, ps, F) if ps else Paragraph(
         "(필러 데이터 없음)", SMALL)
 
@@ -1235,7 +1404,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(PageBreak())
 
     # 7. 목표 갭 분석
-    story.append(Paragraph("7. 목표 대비 갭 분석", H_SEC))
+    story.append(_section_heading_flowable("7", "목표 대비 갭 분석", F, CONTENT_W))
     story.append(Paragraph(
         "조직이 설정한 목표 성숙도(전체 3.0 가정)와 현재 점수의 격차를 큰 순으로 정렬했습니다.",
         BODY))
@@ -1265,7 +1434,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.4 * cm))
 
     # 8. 추이 / 이전 대비 비교
-    story.append(Paragraph("8. 진단 추이 / 이전 대비 비교", H_SEC))
+    story.append(_section_heading_flowable("8", "진단 추이 / 이전 대비 비교", F, CONTENT_W))
     story.append(Paragraph(
         "시간순 점수 변화와 직전 세션 대비 항목별 변화를 문서로 고정합니다.", BODY))
     story.append(Spacer(1, 0.2 * cm))
@@ -1314,11 +1483,10 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 5부 · 상세 결과 — 9. 필러별 상세
     # =====================================================================
-    story.append(Paragraph("5부 · 상세 결과", H_PART))
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.6,
-                            color=colors.HexColor(_COLORS["navy"]), spaceAfter=8))
+    story.append(_part_badge_flowable("5부 · 상세 결과", F))
+    story.append(Spacer(1, 0.4 * cm))
 
-    story.append(Paragraph("9. 필러별 상세", H_SEC))
+    story.append(_section_heading_flowable("9", "필러별 상세", F, CONTENT_W))
     story.append(Paragraph(
         "필러마다 ① 요약 박스 → ② 카테고리·단계별 항목 순으로 구성됩니다.", BODY))
     story.append(Spacer(1, 0.25 * cm))
@@ -1407,7 +1575,7 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 10. 체크리스트 세부 항목 (펼침)
     # =====================================================================
-    story.append(Paragraph("10. 체크리스트 세부 항목 (펼침)", H_SEC))
+    story.append(_section_heading_flowable("10", "체크리스트 세부 항목 (펼침)", F, CONTENT_W))
     story.append(Paragraph(
         "대시보드의 3단계 drill-down(필러 → 항목 → 증적)을 문서에서는 펼쳐진 상태로 "
         "전부 수록합니다. 미충족·부분충족·평가불가 항목 우선, 충족 항목은 요약합니다.", BODY))
@@ -1429,7 +1597,7 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 11. 미충족·부분충족·평가불가 집중 정리
     # =====================================================================
-    story.append(Paragraph("11. 미충족·부분충족·평가불가 집중 정리", H_SEC))
+    story.append(_section_heading_flowable("11", "미충족·부분충족·평가불가 집중 정리", F, CONTENT_W))
     story.append(Paragraph(
         "점수의 한계와 개선 여지를 한곳에 모아 감사·우선순위 판단을 돕습니다.", BODY))
     story.append(Spacer(1, 0.2 * cm))
@@ -1481,11 +1649,10 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 6부 · 개선 — 12. 개선 로드맵
     # =====================================================================
-    story.append(Paragraph("6부 · 개선", H_PART))
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.6,
-                            color=colors.HexColor(_COLORS["navy"]), spaceAfter=8))
+    story.append(_part_badge_flowable("6부 · 개선", F))
+    story.append(Spacer(1, 0.4 * cm))
 
-    story.append(Paragraph("12. 개선 로드맵 (30 / 60 / 90일)", H_SEC))
+    story.append(_section_heading_flowable("12", "개선 로드맵 (30 / 60 / 90일)", F, CONTENT_W))
     story.append(Paragraph(
         "위험-노력 매트릭스로 우선순위를 정하고, 기간별 과제와 완료 증거를 제시합니다.",
         BODY))
@@ -1579,12 +1746,11 @@ def _make_pdf(data: dict) -> bytes:
     # =====================================================================
     # 7부 · 부록
     # =====================================================================
-    story.append(Paragraph("7부 · 부록", H_PART))
-    story.append(HRFlowable(width=CONTENT_W, thickness=0.6,
-                            color=colors.HexColor(_COLORS["navy"]), spaceAfter=8))
+    story.append(_part_badge_flowable("7부 · 부록", F))
+    story.append(Spacer(1, 0.4 * cm))
 
     # 13. 표준 매핑
-    story.append(Paragraph("13. 표준 매핑", H_SEC))
+    story.append(_section_heading_flowable("13", "표준 매핑", F, CONTENT_W))
     story.append(Paragraph(
         "진단 항목을 국제 표준에 대응시켜 컴플라이언스 대응에 활용합니다. "
         "(내보내기: <b>JSON / CSV</b> — API <font face='Courier'>GET /api/report/standards/{session_id}</font>)",
@@ -1622,7 +1788,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.4 * cm))
 
     # 14. 증적 레지스터
-    story.append(Paragraph("14. 증적 레지스터", H_SEC))
+    story.append(_section_heading_flowable("14", "증적 레지스터", F, CONTENT_W))
     story.append(Paragraph(
         "각 판정의 근거 자료 목록입니다. (xlsx 내보내기: API "
         "<font face='Courier'>GET /api/report/evidence-register/{session_id}</font>)",
@@ -1651,7 +1817,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.3 * cm))
 
     # 15. 판정 로그
-    story.append(Paragraph("15. 판정 로그", H_SEC))
+    story.append(_section_heading_flowable("15", "판정 로그", F, CONTENT_W))
     story.append(Paragraph(
         "부분충족·평가불가 항목의 판정 사유입니다. "
         "(Markdown 내보내기: API <font face='Courier'>GET /api/report/decision-log/{session_id}</font>)",
@@ -1672,7 +1838,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.4 * cm))
 
     # 16. OCSF
-    story.append(Paragraph("16. OCSF 내보내기 안내", H_SEC))
+    story.append(_section_heading_flowable("16", "OCSF 내보내기 안내", F, CONTENT_W))
     story.append(Paragraph(
         "규제 대응을 위해 진단 결과를 OCSF(Open Cybersecurity Schema Framework) 형식 "
         "JSON으로 내보낼 수 있습니다. 대시보드 또는 API "
@@ -1680,7 +1846,7 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.4 * cm))
 
     # 17. 용어집
-    story.append(Paragraph("17. 용어집", H_SEC))
+    story.append(_section_heading_flowable("17", "용어집", F, CONTENT_W))
     glossary = [
         ["용어", "정의"],
         ["성숙도 4단계",         "기존(1.5↓) / 초기(1.5~2.5) / 향상(2.5~3.5) / 최적화(3.5↑)"],
@@ -1855,24 +2021,29 @@ def _callout_box(html: str, body_style, font, total_w,
 
 
 def _stat_cell(value, label, fg, bg, font):
-    """3.1 핵심 지표 카드 1개."""
+    """3.1 핵심 지표 카드 1개 — 흰 배경 + 색 숫자 + 회색 라벨 (샘플 매칭).
+    bg 인자는 backwards-compat 으로 받되 사용하지 않음 (샘플은 흰 배경).
+    """
     from reportlab.platypus import Table, TableStyle, Paragraph
     from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle
-    big = ParagraphStyle("big", fontName=font, fontSize=20, leading=22,
-                         alignment=1, textColor=colors.HexColor(fg))
-    lab = ParagraphStyle("lab", fontName=font, fontSize=8, leading=11,
-                         alignment=1, textColor=colors.HexColor("#6b7280"))
+    big = ParagraphStyle("big", fontName=font, fontSize=24, leading=28, alignment=1,
+                         textColor=colors.HexColor(fg))
+    lab = ParagraphStyle("lab", fontName=font, fontSize=9, leading=12, alignment=1,
+                         textColor=colors.HexColor("#64748b"))
+    # <font color> 명시 — 한글 폰트에 bold variant 없을 때 textColor가 누락되는 경우 방지.
     return Table(
-        [[Paragraph(f"<b>{value}</b>", big)],
+        [[Paragraph(f'<font color="{fg}">{value}</font>', big)],
          [Paragraph(label, lab)]],
         style=TableStyle([
-            ("BACKGROUND",   (0, 0), (-1, -1), colors.HexColor(bg)),
-            ("BOX",          (0, 0), (-1, -1), 0.5, colors.HexColor("#e5e7eb")),
+            ("BACKGROUND",   (0, 0), (-1, -1), colors.white),
+            ("BOX",          (0, 0), (-1, -1), 0.6, colors.HexColor("#cbd5e1")),
+            ("LINEBELOW",    (0, 0), (-1, 0), 0, colors.white),
+            ("ROUNDEDCORNERS",(2, 2, 2, 2)),
             ("LEFTPADDING",  (0, 0), (-1, -1), 4),
             ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING",   (0, 0), (-1, -1), 7),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 7),
+            ("TOPPADDING",   (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 10),
             ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
         ]),
     )
