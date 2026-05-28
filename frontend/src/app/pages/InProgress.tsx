@@ -58,6 +58,8 @@ const INITIAL_LOGS = [
   { time: "00:01", type: "success" as const, message: "백엔드 collector 연결 확인" },
 ];
 
+// Demo 모드(실제 collector 호출 없이 deterministic fake 결과) 에서만 사용하는 prefill 로그.
+// Live 모드에서는 폴링된 tool_progress 델타로 실제 수집 이벤트 로그를 즉시 생성한다.
 const DEMO_LOG_EVENTS = [
   { type: "info",    message: "Keycloak /admin/realms 사용자 목록 조회" },
   { type: "success", message: "Keycloak 사용자·역할 매핑 수집 완료" },
@@ -343,36 +345,52 @@ export function InProgress() {
     progressRef.current = progress;
   }, [progress]);
 
+  // 메트릭/areaData 는 더 이상 random 시뮬레이션을 만들지 않는다.
+  // 실시간 로그 볼륨은 backend 폴링 결과의 실수집 카운트 델타를 기록한다.
+  // (별도 useEffect 에서 status.collected_count 변화를 areaData 로 누적)
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (progressRef.current >= 100) return;
-      setMetrics((prev) => ({
-        totalItems:       prev.totalItems       + Math.floor(Math.random() * 18) + 5,
-        detectedEvents:   prev.detectedEvents   + Math.floor(Math.random() * 4),
-        policyViolations: prev.policyViolations + (Math.random() > 0.72 ? 1 : 0),
-        analyzedAssets:   prev.analyzedAssets   + Math.floor(Math.random() * 6) + 2,
-      }));
-      setAreaData((prev) => {
-        const prevVol = prev.at(-1)?.volume;
-        return [...prev.slice(-19), { time: formatTime(), volume: nextLogVolume(prevVol, progressRef.current) }];
-      });
-    }, 800);
-    return () => window.clearInterval(timer);
-  }, []);
+    const prev = areaData.at(-1);
+    if (!status) return;
+    const realCount = status.collected_count ?? 0;
+    if (prev && prev.volume === realCount) return;  // 변화 없으면 점 추가 안 함
+    setAreaData((p) => [...p.slice(-19), { time: formatTime(), volume: realCount }]);
+    // metrics 도 status 기반 실값으로 갱신
+    const tp = status.tool_progress ?? [];
+    setMetrics({
+      totalItems:       realCount,
+      detectedEvents:   tp.length,
+      policyViolations: (status.selected_tools ?? []).length,
+      analyzedAssets:   status.auto_total ?? 0,
+    });
+  }, [status]);
 
+  // 로그는 backend 폴링 결과의 도구별 collected 델타를 기반으로 즉시 emit.
+  // 이전: DEMO_LOG_EVENTS 를 500ms 마다 순환 출력 → 실 스캔 결과와 무관한 가짜 로그.
+  // 변경: 직전 status 의 tool_progress 와 비교해 새로 들어온 항목 수를 로그 한 줄로 표시.
+  const prevToolProgressRef = useRef<Record<string, number>>({});
   useEffect(() => {
-    let eventIndex = 0;
-    const timer = window.setInterval(() => {
-      if (progressRef.current >= 100) return;
-      const event = DEMO_LOG_EVENTS[eventIndex % DEMO_LOG_EVENTS.length];
-      eventIndex += 1;
-      setLogs((prev) => [
-        ...prev.slice(-140),
-        { time: formatTime(), type: event.type as LogEntry["type"], message: event.message },
-      ]);
-    }, 500);
-    return () => window.clearInterval(timer);
-  }, []);
+    if (!status) return;
+    const prevMap = prevToolProgressRef.current;
+    const nextMap: Record<string, number> = {};
+    const events: { type: LogEntry["type"]; message: string }[] = [];
+    (status.tool_progress ?? []).forEach((t) => {
+      nextMap[t.tool] = t.collected;
+      const delta = (t.collected ?? 0) - (prevMap[t.tool] ?? 0);
+      if (delta > 0) {
+        const label = TOOL_DISPLAY_NAME[t.tool as ToolKey] ?? t.tool;
+        events.push({
+          type: "success",
+          message: `${label} — ${delta}건 신규 수집 (누계 ${t.collected}/${t.expected})`,
+        });
+      }
+    });
+    prevToolProgressRef.current = nextMap;
+    if (events.length === 0) return;
+    setLogs((prev) => [
+      ...prev.slice(-140),
+      ...events.map((e) => ({ time: formatTime(), type: e.type, message: e.message })),
+    ]);
+  }, [status]);
 
   useEffect(() => {
     const el = logContainerRef.current;
@@ -443,10 +461,10 @@ export function InProgress() {
       {/* 메트릭 카드 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: "총 수집 항목", value: status?.collected_count ?? metrics.totalItems,       icon: Database,       color: "text-blue-600",   bg: "bg-blue-50",   border: "border-blue-100" },
-          { label: "탐지 이벤트",   value: metrics.detectedEvents,                              icon: AlertTriangle, color: "text-yellow-600", bg: "bg-yellow-50", border: "border-yellow-100" },
-          { label: "정책 위반",     value: metrics.policyViolations,                            icon: Shield,         color: "text-red-600",    bg: "bg-red-50",    border: "border-red-100" },
-          { label: "분석 자산",     value: metrics.analyzedAssets,                              icon: Server,         color: "text-green-600",  bg: "bg-green-50",  border: "border-green-100" },
+          { label: "수집 완료 항목",  value: status?.collected_count ?? 0,                       icon: Database,       color: "text-blue-600",   bg: "bg-blue-50",   border: "border-blue-100" },
+          { label: "전체 자동 항목",  value: status?.auto_total ?? 0,                            icon: AlertTriangle, color: "text-yellow-600", bg: "bg-yellow-50", border: "border-yellow-100" },
+          { label: "선택된 도구 수",  value: (status?.selected_tools ?? []).length,              icon: Shield,         color: "text-red-600",    bg: "bg-red-50",    border: "border-red-100" },
+          { label: "활성 필러 수",    value: (status?.pillar_progress ?? []).filter((p) => p.expected > 0).length, icon: Server, color: "text-green-600",  bg: "bg-green-50",  border: "border-green-100" },
         ].map(({ label, value, icon: Icon, color, bg, border }) => (
           <div key={label} className={`${bg} border ${border} rounded-xl p-4`}>
             <div className="flex items-center justify-between mb-2">
@@ -593,7 +611,7 @@ export function InProgress() {
         </div>
       </div>
 
-      {/* 실시간 진단 로그 (시뮬레이션) */}
+      {/* 실시간 진단 로그 — backend 폴링의 tool_progress 델타에서 실시간 emit */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-4">
           <div>

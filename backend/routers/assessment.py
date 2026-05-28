@@ -812,14 +812,19 @@ def finalize_assessment(
 
     # 수집 미완료 가드 — 데모 모드는 collector 완료 후 자동 채점되므로 일반적으로 여기 안 옴.
     # live 모드에서 사용자가 일찍 finalize 누른 경우만 막는다.
+    # expected 는 unique item_id 기준 (다중 매핑 도구가 같은 item_id 에 매핑돼도 1개로 계산).
+    # CollectedData 의 (session_id, check_id) 가 UNIQUE 이므로 다중 매핑은 덮어쓰기 발생 →
+    # mapping entry 합으로 expected 를 계산하면 영구히 collected < expected 가 되어 409 무한.
     tools = sorted(_selected_tools_set(session))
     if tools:
-        expected = 0
+        unique_iids: set[str] = set()
         for t in tools:
             try:
-                expected += len(_full_mapping(t))
+                for _fn, iid, _m in _full_mapping(t):
+                    unique_iids.add(iid)
             except Exception:
                 pass
+        expected = len(unique_iids)
         if expected > 0:
             collected = db.query(CollectedData).filter(
                 CollectedData.session_id == session_id
@@ -2219,6 +2224,19 @@ def _run_collectors(session_id: int, tools: list[str]):
             logger.error("[collector] DB write failed: %s", exc)
         finally:
             db.close()
+
+    # live 모드 collector 가 끝나면 즉시 채점 트리거 (demo 모드와 동일한 흐름).
+    # 이전: 사용자가 InProgress 에서 "완료" 누를 때 /finalize 가 호출되었으나, 다중 매핑으로
+    # collected < expected 가 발생하면 영구히 409 → status 가 "진행 중"에 머무는 버그.
+    # collector 가 한 번 루프를 완료했다는 것은 모든 도구 호출이 끝났다는 뜻이므로
+    # 여기서 채점하는 게 안전하다.
+    db_score = SessionLocal()
+    try:
+        _trigger_scoring(session_id, db_score)
+    except Exception as exc:
+        logger.warning("[live] scoring failed session=%s: %s", session_id, exc)
+    finally:
+        db_score.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

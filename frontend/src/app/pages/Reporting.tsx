@@ -36,7 +36,10 @@ import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem, Ev
 
 import { getStoredTargetScores } from "../lib/settingsStore";
 
-const DEFAULT_SCORES = [2.5, 3.0, 2.0, 2.2, 2.8, 1.5];
+// 초기 렌더 직전(데이터 fetch 완료 전)의 placeholder. 실제 API 응답이 도착하면
+// pillar_scores 에 있는 점수만 반영하고, API 가 비어있는 pillar 는 0 으로 채워 "평가 안 됨"
+// 으로 명시한다. 절대 이 상수 값으로 사용자에게 점수 표시되지 않아야 한다.
+const DEFAULT_SCORES = [0, 0, 0, 0, 0, 0];
 
 // 백엔드 enum → 프론트 카드용 결과 라벨로 매핑
 // 부분충족·미충족 둘 다 "미흡"으로 표시 (UI 구분이 단순)하되 색상은 result로 결정
@@ -414,11 +417,14 @@ export function Reporting() {
         });
         setIsDemo(Boolean(data.session.is_demo));
 
-        const scores = PILLARS.map((p, i) => {
+        // API 응답의 pillar_scores 만 반영. 누락된 pillar 는 0 으로(=평가 안 됨).
+        // 과거에는 DEFAULT_SCORES(2.5,3.0,...) 로 폴백했는데 채점 미완료 세션도
+        // 그럴듯한 점수가 표시되는 버그를 만들어 제거.
+        const scores = PILLARS.map((p) => {
           const match = data.pillar_scores.find((ps) =>
             (PILLAR_NAME_TO_KEY[ps.pillar] ?? ps.pillar) === p.key
           );
-          return match ? match.score : DEFAULT_SCORES[i];
+          return match ? match.score : 0;
         });
         setCurrentScores(scores);
 
