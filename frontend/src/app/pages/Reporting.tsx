@@ -33,6 +33,7 @@ import { toolLabel as sharedToolLabel } from "../lib/toolLabel";
 import {
   getAssessmentResult, getImprovement,
   downloadSessionManualTemplate, uploadManualExcel, finalizeAssessment, ApiError,
+  type ManualUploadResponse,
 } from "../../config/api";
 import { PILLAR_NAME_TO_KEY } from "../lib/pillar";
 import type { AssessmentResultResponse, ChecklistItemResult, ImprovementItem, EvaluationMeta } from "../../types/api";
@@ -365,6 +366,14 @@ export function Reporting() {
   const [manualDownloading, setManualDownloading] = useState(false);
   const [manualUploading, setManualUploading] = useState(false);
   const manualFileInputRef = useRef<HTMLInputElement>(null);
+  // 직전 업로드 결과 상세 — sessionStorage 에 보관해 자동 reload 후에도 표시.
+  const [lastUpload, setLastUpload] = useState<ManualUploadResponse | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = window.sessionStorage.getItem("zt_last_manual_upload");
+      return raw ? JSON.parse(raw) as ManualUploadResponse : null;
+    } catch { return null; }
+  });
   // OCSF (Open Cybersecurity Schema Framework) 변환 결과
   const [ocsfData, setOcsfData] = useState<OcsfSessionResponse | null>(null);
   const [ocsfLoading, setOcsfLoading] = useState(false);
@@ -1098,17 +1107,23 @@ export function Reporting() {
                 setManualUploading(true);
                 try {
                   const res = await uploadManualExcel(sessionId, file);
-                  toast.success(`수동 보완 ${res.parsed_count ?? 0}건 반영. 재채점 중...`);
+                  // 결과 상세 sessionStorage 보관 — reload 후에도 패널에 표시.
+                  try {
+                    window.sessionStorage.setItem(
+                      "zt_last_manual_upload", JSON.stringify(res),
+                    );
+                  } catch { /* quota 초과 등 무시 */ }
+                  setLastUpload(res);
+                  toast.success(
+                    `업로드 완료 — 반영 ${res.parsed_count ?? 0}건 · 매칭불가 ${res.unmatched_count ?? 0}건 · 건너뜀 ${res.skipped_count ?? 0}건`
+                  );
                   try {
                     await finalizeAssessment(sessionId);
                   } catch (finErr) {
                     console.warn("[reporting] finalize after upload:", finErr);
                   }
                   toast.success("점수가 갱신되었습니다. 결과를 다시 불러옵니다.");
-                  // pillarUnevaluable·errors·breakdown 등 모든 derived state 누락 없이
-                  // 갱신하려면 전체 페이지를 다시 로드하는 게 가장 안전.
-                  // 사용자가 토스트를 인지할 짧은 지연 후 리로드.
-                  setTimeout(() => window.location.reload(), 700);
+                  setTimeout(() => window.location.reload(), 1200);
                   return;
                 } catch (err) {
                   console.warn("[reporting] excel upload:", err);
@@ -1133,6 +1148,85 @@ export function Reporting() {
             </button>
           </div>
         </div>
+
+        {/* 직전 업로드 결과 상세 — sessionStorage 보관, reload 후에도 노출 */}
+        {lastUpload && (
+          <div className="mt-4 border-t border-gray-100 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-gray-700">
+                직전 업로드 결과
+                <span className="ml-2 inline-flex items-center gap-2 text-[11px] font-normal text-gray-500">
+                  <span>반영 <strong className="text-blue-700">{lastUpload.parsed_count ?? 0}</strong>건</span>
+                  <span>·</span>
+                  <span>매칭불가 <strong className="text-amber-700">{lastUpload.unmatched_count ?? 0}</strong>건</span>
+                  <span>·</span>
+                  <span>건너뜀 <strong className="text-gray-600">{lastUpload.skipped_count ?? 0}</strong>건</span>
+                </span>
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setLastUpload(null);
+                  try { window.sessionStorage.removeItem("zt_last_manual_upload"); } catch { /* ignore */ }
+                }}
+                className="text-[11px] text-gray-400 hover:text-gray-700"
+                title="이 결과 패널 닫기"
+              >
+                닫기
+              </button>
+            </div>
+            {/* Pillar 별 충족/미충족/평가불가 */}
+            {lastUpload.by_pillar && Object.keys(lastUpload.by_pillar).length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-3">
+                {Object.entries(lastUpload.by_pillar).map(([p, c]) => (
+                  <div key={p} className="border border-gray-200 rounded px-2 py-1.5 bg-gray-50/60">
+                    <p className="text-[11px] font-medium text-gray-700 truncate" title={p}>{p}</p>
+                    <p className="text-[10px] text-gray-500 tabular-nums">
+                      충 {c.pass} · 미 {c.fail} · 불가 {c.na}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* 항목 리스트 (스크롤) */}
+            {lastUpload.items && lastUpload.items.length > 0 && (
+              <div className="max-h-56 overflow-y-auto border border-gray-200 rounded">
+                <table className="w-full text-[11px]">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr className="text-gray-600">
+                      <th className="text-left px-2 py-1 font-medium">항목</th>
+                      <th className="text-left px-2 py-1 font-medium">성숙도</th>
+                      <th className="text-left px-2 py-1 font-medium">필러</th>
+                      <th className="text-left px-2 py-1 font-medium">결과</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lastUpload.items.map((it, i) => (
+                      <tr key={`${it.item_id}-${i}`} className="border-t border-gray-100">
+                        <td className="px-2 py-1 truncate max-w-[300px]" title={`${it.category} — ${it.item_name}`}>
+                          <span className="text-gray-400 mr-1">{it.item_id}</span>{it.item_name}
+                        </td>
+                        <td className="px-2 py-1 text-gray-600">{it.maturity}</td>
+                        <td className="px-2 py-1 text-gray-600 truncate max-w-[120px]">{it.pillar}</td>
+                        <td className={`px-2 py-1 font-medium ${
+                          it.result === "충족" ? "text-green-700" :
+                          it.result === "부분충족" ? "text-yellow-700" :
+                          it.result === "미충족" ? "text-red-700" : "text-gray-500"
+                        }`}>{it.result}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {(lastUpload.parsed_count ?? 0) > (lastUpload.items?.length ?? 0) && (
+                  <p className="px-2 py-1.5 text-[11px] text-gray-500 bg-gray-50 border-t">
+                    상위 {lastUpload.items.length}건 표시 — 총 {lastUpload.parsed_count}건 반영됨.
+                    전체는 [세부 항목] 탭에서 확인하세요.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Tabs */}

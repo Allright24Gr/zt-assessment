@@ -80,10 +80,21 @@ def _find_checklist(db: Session, item_no_str: str, maturity: str, question: str)
 
     q = (question or "").strip()
     if q:
+        # 1차: 완전 일치
         for c in candidates:
             if c.item_name and c.item_name.strip() == q:
                 return c
-    return candidates[0]
+        # 2차: 공백/특수문자 무시한 정규화 일치 — 양식에서 줄바꿈/탭이 섞이는 경우 대비
+        import re as _re
+        norm_q = _re.sub(r"\s+", "", q)
+        for c in candidates:
+            if c.item_name and _re.sub(r"\s+", "", c.item_name.strip()) == norm_q:
+                return c
+    # 후보가 1개뿐이면 매칭 실패해도 안전하게 채택. 2개 이상이고 매칭 실패면
+    # 잘못된 매칭으로 중복 결과를 만들 위험 — None 반환해 unmatched 로 분류.
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
 
 
 class ManualAnswer(BaseModel):
@@ -133,6 +144,11 @@ async def manual_upload(
     saved = 0
     unmatched = 0
     skipped = 0
+    # 같은 트랜잭션 내 중복 INSERT 방지 — _find_checklist 가 여러 xlsx 행을 같은
+    # checklist 로 폴백 매핑하는 경우(질문 텍스트 불일치 등) 같은 (session, check_id)
+    # 에 여러 번 add 되어 248행에 중복이 쌓이는 버그가 있었음. 이번 업로드에서 이미
+    # 처리한 check_id 는 update 만 하고 add 는 한 번만 한다.
+    processed_check_ids: set[int] = set()
 
     for r in range(4, ws.max_row + 1):
         row = [ws.cell(r, c).value for c in range(1, 9)]
@@ -161,7 +177,11 @@ async def manual_upload(
         check_id = checklist.check_id
         score = checklist.maturity_score * weight_map.get(verdict, 0.0)
 
-        # CollectedData upsert
+        # 같은 업로드 내 같은 check_id 두 번째 등장 — 첫 번째 결과를 덮어쓰기로 정정.
+        already_processed = check_id in processed_check_ids
+        processed_check_ids.add(check_id)
+
+        # CollectedData upsert (DB + 메모리 둘 다 검사해서 중복 add 방지)
         existing_cd = db.query(CollectedData).filter(
             CollectedData.session_id == session_id,
             CollectedData.check_id == check_id,
@@ -185,6 +205,7 @@ async def manual_upload(
                 raw_json={"manual": True, "choice": choice_str, "note": note_str},
                 error=None,
             ))
+            db.flush()  # 다음 iteration 의 existing_cd.first() 가 이 row 를 보도록 즉시 flush
 
         # DiagnosisResult upsert
         existing_dr = db.query(DiagnosisResult).filter(
@@ -202,6 +223,7 @@ async def manual_upload(
                 score=score,
                 recommendation="",
             ))
+            db.flush()
 
         if note_str:
             db.add(Evidence(
@@ -214,15 +236,55 @@ async def manual_upload(
                 impact=None,
             ))
 
-        saved += 1
+        if not already_processed:
+            saved += 1
+        # 첫 1회만 카운트 — 두 번째 등장은 덮어쓰기로 saved 증가 X
 
     db.commit()
+
+    # 업로드 결과 상세 (UI 가 토스트나 결과 요약 패널에 그대로 보여줄 수 있게).
+    # processed_check_ids 기준으로 pillar/maturity/result 분포 산출.
+    detail_rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(
+            DiagnosisResult.session_id == session_id,
+            DiagnosisResult.check_id.in_(processed_check_ids) if processed_check_ids else False,
+        )
+        .all()
+    ) if processed_check_ids else []
+    by_pillar: dict[str, dict] = {}
+    by_result: dict[str, int] = {}
+    sample_items: list[dict] = []
+    for dr, cl in detail_rows:
+        p = cl.pillar or "미분류"
+        bp = by_pillar.setdefault(p, {"pass": 0, "fail": 0, "na": 0})
+        if dr.result == "충족":
+            bp["pass"] += 1
+        elif dr.result in ("미충족", "부분충족"):
+            bp["fail"] += 1
+        else:
+            bp["na"] += 1
+        by_result[dr.result or "평가불가"] = by_result.get(dr.result or "평가불가", 0) + 1
+        if len(sample_items) < 50:
+            sample_items.append({
+                "item_id":   cl.item_id,
+                "category":  cl.category,
+                "maturity":  cl.maturity,
+                "item_name": cl.item_name,
+                "result":    dr.result,
+                "pillar":    cl.pillar,
+            })
+
     return {
         "status":          "ok",
         "session_id":      session_id,
         "parsed_count":    saved,
         "unmatched_count": unmatched,
         "skipped_count":   skipped,
+        "by_pillar":       by_pillar,
+        "by_result":       by_result,
+        "items":           sample_items,
     }
 
 

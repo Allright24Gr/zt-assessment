@@ -535,17 +535,32 @@ export function getAssessmentStatus(sessionId: number | string) {
   return apiFetch<AssessmentStatusResponse>(`/api/assessment/status/${sessionId}`);
 }
 
+export interface ManualUploadResponse {
+  status: string;
+  session_id: number;
+  parsed_count: number;
+  skipped_count?: number;
+  unmatched_count?: number;
+  by_pillar?: Record<string, { pass: number; fail: number; na: number }>;
+  by_result?: Record<string, number>;
+  items?: Array<{
+    item_id: string;
+    category: string;
+    maturity: string;
+    item_name: string;
+    result: string;
+    pillar: string;
+  }>;
+}
+
 export function uploadManualExcel(sessionId: number | string, file: File) {
   const form = new FormData();
   form.append("session_id", String(sessionId));
   form.append("file", file);
-  return apiFetch<{
-    status: string;
-    session_id: number;
-    parsed_count: number;
-    skipped_count?: number;
-    unmatched_count?: number;
-  }>(API_ENDPOINTS.MANUAL_UPLOAD, { method: "POST", body: form });
+  return apiFetch<ManualUploadResponse>(
+    API_ENDPOINTS.MANUAL_UPLOAD,
+    { method: "POST", body: form },
+  );
 }
 
 // ─── Evidence 업로드 (P1-7) ───────────────────────────────────────────────────
