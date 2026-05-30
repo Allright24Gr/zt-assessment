@@ -435,10 +435,11 @@ export function Dashboard() {
               목표 평균 {targetAvg}
             </div>
           </div>
-          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(180px,240px)] gap-4 items-center">
-            <div className="px-2">
-              <ResponsiveContainer width="100%" height={360}>
-                <RadarChart data={radarData} margin={{ top: 24, right: 28, bottom: 16, left: 28 }}>
+          {/* 지시서(노션) 반영: 차트(상) 크게·중앙 + 표(하) 가로형 2줄(현재/목표). */}
+          <div className="flex flex-col">
+            <div className="w-full mx-auto">
+              <ResponsiveContainer width="100%" height={410}>
+                <RadarChart data={radarData} margin={{ top: 28, right: 40, bottom: 16, left: 40 }}>
                   <PolarGrid stroke="#e5e7eb" />
                   <PolarAngleAxis dataKey="pillar" stroke="#6b7280" tick={{ fontSize: 12 }} />
                   <PolarRadiusAxis angle={90} domain={[0, 4]} tick={false} axisLine={false} />
@@ -452,23 +453,30 @@ export function Dashboard() {
                 </RadarChart>
               </ResponsiveContainer>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+            {/* 표(하): 구분 + 6개 필러 열, 현재/목표 2줄. 균등 너비. */}
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-xs table-fixed border border-gray-100 rounded-lg">
                 <thead>
                   <tr className="bg-gray-50 text-gray-500">
-                    <th className="text-left px-3 py-2 font-medium">필러</th>
-                    <th className="text-right px-3 py-2 font-medium">현재</th>
-                    <th className="text-right px-3 py-2 font-medium">목표</th>
+                    <th className="text-left px-2 py-2 font-medium w-14">구분</th>
+                    {PILLARS.map((p) => (
+                      <th key={p.key} className="text-center px-1 py-2 font-medium">{p.shortLabel}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {PILLARS.map((p, i) => (
-                    <tr key={p.key} className="border-t border-gray-100">
-                      <td className="px-3 py-1.5 text-gray-700">{p.shortLabel}</td>
-                      <td className="px-3 py-1.5 text-right font-semibold text-blue-600 tabular-nums">{pillarScores[i].toFixed(2)}</td>
-                      <td className="px-3 py-1.5 text-right text-emerald-600 tabular-nums">{TARGET_SCORES[i].toFixed(2)}</td>
-                    </tr>
-                  ))}
+                  <tr className="border-t border-gray-100">
+                    <td className="px-2 py-2 font-semibold text-blue-600">현재</td>
+                    {PILLARS.map((p, i) => (
+                      <td key={p.key} className="px-1 py-2 text-center font-semibold text-blue-600 tabular-nums">{pillarScores[i].toFixed(2)}</td>
+                    ))}
+                  </tr>
+                  <tr className="border-t border-gray-100">
+                    <td className="px-2 py-2 font-semibold text-emerald-600">목표</td>
+                    {PILLARS.map((p, i) => (
+                      <td key={p.key} className="px-1 py-2 text-center text-emerald-600 tabular-nums">{TARGET_SCORES[i].toFixed(2)}</td>
+                    ))}
+                  </tr>
                 </tbody>
               </table>
             </div>

@@ -90,6 +90,7 @@ export function History() {
   // 세션 삭제 확인 모달
   const [deleteTarget, setDeleteTarget] = useState<AssessmentSession | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [query, setQuery] = useState("");
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -119,8 +120,16 @@ export function History() {
       });
   }, [user?.role, user?.orgName]);
 
-  // 백엔드 호출이 org_name으로 이미 필터링되므로 클라이언트 필터링 불필요
-  const baseSessions = allSessions;
+  // SFR-IT-002 결과 검색 — 조직/담당자/레벨/상태/ID 부분 일치 (클라이언트 필터).
+  const baseSessions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return allSessions;
+    return allSessions.filter((s) =>
+      [s.id, s.org, s.manager, s.level, s.status]
+        .map((v) => String(v ?? "").toLowerCase())
+        .some((v) => v.includes(q)),
+    );
+  }, [allSessions, query]);
 
   const sessions = useMemo(() => {
     // 노션 2번 피드백 A-2: score 칼럼 추가 정렬. null 점수(진행중) 는 항상 맨 뒤로.
@@ -217,6 +226,14 @@ export function History() {
           </h2>
           {/* 노션 2번 피드백 A-4: 비교 버튼은 항상 표시하되 정확히 2개 선택 시에만 활성화. */}
           <div className="ml-auto flex items-center gap-2">
+            {/* SFR-IT-002 결과 검색 */}
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="조직·담당자·레벨 검색"
+              className="px-3 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 w-48"
+            />
             {selectedSessions.length > 0 && (
               <span className="text-sm text-blue-600 font-medium">{selectedSessions.length}개 선택됨</span>
             )}

@@ -4,7 +4,7 @@ import { Settings as SettingsIcon, Bell, Target, User, Save, Lock, X, Loader2, K
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { useAuth } from "../context/AuthContext";
-import { updateAuthProfile, changePassword, deleteAccount, ApiError, type ProfileFields } from "../../config/api";
+import { updateAuthProfile, changePassword, deleteAccount, putOrgTargets, ApiError, type ProfileFields } from "../../config/api";
 
 const STORAGE_KEY = "zt_settings";
 
@@ -343,13 +343,22 @@ export function Settings() {
     }
   }, []);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     try {
       localStorage.setItem(
         STORAGE_KEY,
         JSON.stringify({ ...settings, targetScores }),
       );
-      toast.success("설정이 저장되었습니다. (브라우저 로컬에 보관)");
+      // SFR-EVAL-004: 목표 성숙도를 백엔드(조직 단위)에도 저장 → 결과/리포트 gap 계산에 반영.
+      try {
+        const targets: Record<string, number> = {};
+        PILLARS.forEach((p, i) => { targets[p.label] = targetScores[i]; });
+        await putOrgTargets(targets);
+        toast.success("설정이 저장되었습니다. (목표 성숙도는 서버에 반영)");
+      } catch (be) {
+        console.warn("[settings] target backend save failed:", be);
+        toast.success("설정이 저장되었습니다. (브라우저 로컬에 보관)");
+      }
     } catch (err) {
       console.warn("[settings] save failed:", err);
       toast.error("설정 저장에 실패했습니다.");

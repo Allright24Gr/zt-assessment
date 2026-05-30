@@ -89,14 +89,39 @@ def _audit_db(
     if db is None:
         return
     try:
+        from services.integrity import audit_row_hash
+        # SER-006: 직전 행의 row_hash 를 prev_hash 로 묶어 해시 체인 구성.
+        last = (
+            db.query(AuthAuditLog)
+            .order_by(AuthAuditLog.audit_id.desc())
+            .first()
+        )
+        prev_hash = last.row_hash if last else None
+        # MySQL DATETIME 은 초 단위 저장 → 해시 입력도 microsecond 를 버려야 verify 일치.
+        created_at = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        success_int = 1 if success else 0
+        resolved_login = login_id or (user.login_id if user else None)
+        resolved_uid = user.user_id if user else None
+        row_hash = audit_row_hash(
+            prev_hash,
+            event_type=event_type,
+            user_id=resolved_uid,
+            login_id=resolved_login,
+            source_ip=source_ip,
+            success=success_int,
+            created_at=created_at.isoformat(),
+        )
         row = AuthAuditLog(
             event_type=event_type,
-            user_id=user.user_id if user else None,
-            login_id=login_id or (user.login_id if user else None),
+            user_id=resolved_uid,
+            login_id=resolved_login,
             source_ip=source_ip,
             user_agent=(user_agent or "")[:500] or None,
-            success=1 if success else 0,
+            success=success_int,
             detail=detail or None,
+            created_at=created_at,
+            prev_hash=prev_hash,
+            row_hash=row_hash,
         )
         db.add(row)
         db.commit()

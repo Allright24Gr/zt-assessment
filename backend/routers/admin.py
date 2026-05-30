@@ -6,15 +6,16 @@ POST   /api/admin/checklist            : 신규 항목 생성
 PUT    /api/admin/checklist/{check_id} : 수정 (item_name, criteria, maturity_score, threshold 등)
 DELETE /api/admin/checklist/{check_id} : 삭제 (참조하는 CollectedData/Result 있으면 거부)
 """
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Checklist, CollectedData, DiagnosisResult, User
+from models import AuthAuditLog, Checklist, CollectedData, DiagnosisResult, User
 from routers.auth import get_current_user
+from services import config_store
 
 router = APIRouter()
 
@@ -156,3 +157,167 @@ def delete_checklist(
     db.delete(row)
     db.commit()
     return {"status": "ok", "check_id": check_id}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SER-009 감사 로그 조회 / SER-006 해시 체인 검증
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/audit")
+def list_audit_logs(
+    event_type: Optional[str] = None,
+    login_id: Optional[str] = None,
+    success: Optional[int] = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """감사 로그 목록 (admin 전용). event_type/login_id/success 필터 + 페이지네이션."""
+    _require_admin(current_user)
+    q = db.query(AuthAuditLog)
+    if event_type:
+        q = q.filter(AuthAuditLog.event_type == event_type)
+    if login_id:
+        q = q.filter(AuthAuditLog.login_id == login_id)
+    if success is not None:
+        q = q.filter(AuthAuditLog.success == success)
+    total = q.count()
+    rows = q.order_by(AuthAuditLog.audit_id.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "audit_id":   r.audit_id,
+                "event_type": r.event_type,
+                "user_id":    r.user_id,
+                "login_id":   r.login_id,
+                "source_ip":  r.source_ip,
+                "user_agent": r.user_agent,
+                "success":    r.success,
+                "detail":     r.detail,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "row_hash":   r.row_hash,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/audit/verify")
+def verify_audit_chain(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SER-006: 감사 로그 해시 체인 무결성 검증.
+
+    audit_id 오름차순으로 각 행의 row_hash 를 재계산하고, prev_hash 가 직전 행의
+    row_hash 와 일치하는지 확인한다. 중간 행 변조/삭제 시 그 지점부터 깨진다.
+    SER-006 도입 전 평문 행(row_hash IS NULL)은 체인 시작점으로 리셋한다.
+    """
+    _require_admin(current_user)
+    from services.integrity import audit_row_hash
+    rows = db.query(AuthAuditLog).order_by(AuthAuditLog.audit_id.asc()).all()
+    prev: Optional[str] = None
+    checked = 0
+    verified = 0
+    broken: list[int] = []
+    for r in rows:
+        if not r.row_hash:
+            prev = None
+            continue
+        expected = audit_row_hash(
+            r.prev_hash,
+            event_type=r.event_type,
+            user_id=r.user_id,
+            login_id=r.login_id,
+            source_ip=r.source_ip,
+            success=r.success,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        link_ok = (prev is None) or (r.prev_hash == prev)
+        checked += 1
+        if expected == r.row_hash and link_ok:
+            verified += 1
+        else:
+            broken.append(r.audit_id)
+        prev = r.row_hash
+    return {
+        "total":        len(rows),
+        "checked":      checked,
+        "verified":     verified,
+        "broken_count": len(broken),
+        "broken_ids":   broken[:50],
+        "ok":           len(broken) == 0,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MAR-009 시스템 모니터링 / MAR-010 동적 설정 / MAR-014 백업
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/metrics")
+def admin_metrics(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """시스템 상태/운영 지표 (JSON). admin 대시보드용."""
+    _require_admin(current_user)
+    from services.metrics import collect_metrics
+    return collect_metrics(db)
+
+
+@router.get("/config")
+def get_runtime_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """동적 운영 설정 목록 (현재값 + 기본값 + env)."""
+    _require_admin(current_user)
+    return {"config": config_store.get_all(db)}
+
+
+class ConfigUpdate(BaseModel):
+    key: str = Field(min_length=1, max_length=100)
+    value: Any
+
+
+@router.put("/config")
+def set_runtime_config(
+    req: ConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """동적 운영 설정 변경 — 재시작 없이 즉시 반영 (다음 조회부터)."""
+    _require_admin(current_user)
+    try:
+        val = config_store.set_value(db, req.key, req.value, updated_by=current_user.login_id)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"알 수 없는 설정 키: {req.key}")
+    return {"status": "ok", "key": req.key, "value": val}
+
+
+@router.post("/backup")
+def trigger_backup(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """DB 논리 백업 생성 (gzip JSON). 최신 14개만 보존."""
+    _require_admin(current_user)
+    from scripts.backup_db import create_backup, prune_backups
+    meta = create_backup()
+    pruned = prune_backups(keep=14)
+    return {"status": "ok", "pruned": pruned, **meta}
+
+
+@router.get("/backups")
+def get_backups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """백업 파일 목록."""
+    _require_admin(current_user)
+    from scripts.backup_db import list_backups
+    return {"backups": list_backups()}

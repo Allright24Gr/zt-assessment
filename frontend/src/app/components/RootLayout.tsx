@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, Outlet, useLocation, useNavigate } from "react-router";
-import { Bell, CheckCheck, FileText, History, LayoutDashboard, LogOut, Settings, Trash2, User, X } from "lucide-react";
+import { Bell, CheckCheck, FileText, History, LayoutDashboard, LogOut, Settings, ShieldCheck, Trash2, User, X } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useNotifications } from "../context/NotificationContext";
 
@@ -44,6 +44,7 @@ export function RootLayout() {
   const navItems = user.role === "admin"
     ? [
         { path: "/history", label: "History", icon: History },
+        { path: "/admin", label: "운영 콘솔", icon: ShieldCheck },
         { path: "/settings", label: "Settings", icon: Settings },
       ]
     : [

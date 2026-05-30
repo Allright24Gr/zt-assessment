@@ -704,3 +704,112 @@ export function deleteAccount(current_password: string) {
     },
   );
 }
+
+// ─── 시스템 운영 (admin) — MAR-009 / MAR-010 / MAR-014 / SER-006 / SER-009 ────────
+export interface SystemMetrics {
+  uptime_seconds: number;
+  db_ok: boolean;
+  counts: Record<string, number>;
+  cache: { hits: number; misses: number; size: number; hit_rate: number };
+  encryption_enabled: boolean;
+  encryption_key_source: string;
+}
+export function getSystemMetrics() {
+  return apiFetch<SystemMetrics>("/api/admin/metrics");
+}
+
+export interface ConfigItem {
+  key: string; label: string; type: string; value: string | number | boolean;
+  default: string | number | boolean; env: string;
+}
+export function getRuntimeConfig() {
+  return apiFetch<{ config: ConfigItem[] }>("/api/admin/config");
+}
+export function setRuntimeConfig(key: string, value: string | number | boolean) {
+  return apiFetch<{ status: string; key: string; value: unknown }>("/api/admin/config", {
+    method: "PUT",
+    body: JSON.stringify({ key, value }),
+  });
+}
+
+export interface AuditLogItem {
+  audit_id: number; event_type: string; login_id: string | null;
+  source_ip: string | null; success: number; created_at: string | null;
+  row_hash: string | null; detail: unknown;
+}
+export function getAuditLogs(params?: { event_type?: string; login_id?: string; limit?: number; offset?: number }) {
+  return apiFetch<{ total: number; items: AuditLogItem[] }>("/api/admin/audit", { params });
+}
+export function verifyAuditChain() {
+  return apiFetch<{ total: number; checked: number; verified: number; broken_count: number; ok: boolean }>(
+    "/api/admin/audit/verify",
+  );
+}
+
+export function createBackup() {
+  return apiFetch<{ status: string; filename: string; rows: number; tables: number }>(
+    "/api/admin/backup", { method: "POST" },
+  );
+}
+export function listBackups() {
+  return apiFetch<{ backups: Array<{ filename: string; size_bytes: number; modified_at: string }> }>(
+    "/api/admin/backups",
+  );
+}
+
+// ─── 결과 무결성 검증 (SER-010) ───────────────────────────────────────────────
+export function verifyResultIntegrity(sessionId: number | string) {
+  return apiFetch<{ total: number; verified: number; unhashed: number; tampered_count: number; ok: boolean }>(
+    `/api/assessment/verify/${sessionId}`,
+  );
+}
+
+// ─── 조직 설정: 목표 성숙도 (SFR-EVAL-004) / 체크리스트 커스터마이징 (SFR-CUS-001) ──
+export function getOrgTargets() {
+  return apiFetch<{ org_id: number; targets: Record<string, number>; defaults: Record<string, number> }>(
+    "/api/settings/targets",
+  );
+}
+export function putOrgTargets(targets: Record<string, number>) {
+  return apiFetch<{ status: string; updated: number }>("/api/settings/targets", {
+    method: "PUT",
+    body: JSON.stringify({ targets }),
+  });
+}
+export interface ChecklistOverride {
+  check_id: number; enabled: boolean; weight: number | null;
+  item_id?: string | null; item_name?: string | null; pillar?: string | null;
+}
+export function getChecklistOverrides() {
+  return apiFetch<{ org_id: number; overrides: ChecklistOverride[] }>("/api/settings/checklist-overrides");
+}
+export function putChecklistOverrides(overrides: Array<{ check_id: number; enabled: boolean; weight?: number | null }>) {
+  return apiFetch<{ status: string; applied: number }>("/api/settings/checklist-overrides", {
+    method: "PUT",
+    body: JSON.stringify({ overrides }),
+  });
+}
+
+// ─── 주기 평가 스케줄 (MAR-004 / SFR-AUTO-005) ────────────────────────────────
+export interface ScheduleItem {
+  schedule_id: number; name: string; interval_hours: number; enabled: boolean;
+  next_run_at: string | null; last_run_at: string | null; last_session_id: number | null;
+}
+export function listSchedules() {
+  return apiFetch<{ schedules: ScheduleItem[]; total: number }>("/api/assessment/schedules");
+}
+export function createSchedule(payload: { name: string; interval_hours: number; run_now?: boolean; config?: Record<string, unknown> }) {
+  return apiFetch<ScheduleItem & { status: string }>("/api/assessment/schedules", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+export function updateSchedule(id: number, patch: { name?: string; interval_hours?: number; enabled?: boolean }) {
+  return apiFetch<ScheduleItem & { status: string }>(`/api/assessment/schedules/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+export function deleteSchedule(id: number) {
+  return apiFetch<{ status: string }>(`/api/assessment/schedules/${id}`, { method: "DELETE" });
+}

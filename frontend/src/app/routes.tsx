@@ -13,6 +13,7 @@ import { Reporting } from "./pages/Reporting";
 import { History } from "./pages/History";
 import { Compare } from "./pages/Compare";
 import { Settings } from "./pages/Settings";
+import { AdminConsole } from "./pages/AdminConsole";
 
 export const router = createBrowserRouter([
   // 공개 라우트 (인증 불필요)
@@ -49,6 +50,7 @@ export const router = createBrowserRouter([
       { path: "history", Component: History },
       { path: "compare", Component: Compare },
       { path: "settings", Component: Settings },
+      { path: "admin", Component: AdminConsole },
     ],
   },
 ]);

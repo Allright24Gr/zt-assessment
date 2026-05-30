@@ -1451,9 +1451,12 @@ async def upload_evidence(
 
     filename = f"{uuid.uuid4().hex}.{ext}"
     target_path = target_dir / filename
+    # SER-003: 디스크 저장 전에 at-rest 암호화 (키 없으면 평문 폴백).
+    from services.crypto import encrypt_bytes
+    stored_bytes, is_encrypted = encrypt_bytes(content)
     try:
         with open(target_path, "wb") as fp:
-            fp.write(content)
+            fp.write(stored_bytes)
     except OSError as exc:
         logger.error("[evidence] write failed: %s", exc)
         raise HTTPException(status_code=500, detail="증적 파일 저장에 실패했습니다.")
@@ -1475,6 +1478,7 @@ async def upload_evidence(
         existing.mime_type = mime
         existing.file_size = file_size
         existing.original_filename = original_filename
+        existing.encrypted = 1 if is_encrypted else 0
         evidence = existing
     else:
         evidence = Evidence(
@@ -1489,6 +1493,7 @@ async def upload_evidence(
             mime_type=mime,
             file_size=file_size,
             original_filename=original_filename,
+            encrypted=1 if is_encrypted else 0,
         )
         db.add(evidence)
 
@@ -1537,8 +1542,26 @@ def download_evidence(
         logger.warning("[evidence] file missing on disk: %s", evidence.file_path)
         raise HTTPException(status_code=410, detail="증적 파일이 디스크에서 사라졌습니다.")
 
+    media_type = evidence.mime_type or "application/octet-stream"
+    fname = evidence.original_filename or path.name
+    # SER-003: 암호화 저장본은 복호화해서 메모리로 응답 (디스크 평문 노출 없음).
+    if getattr(evidence, "encrypted", 0):
+        from urllib.parse import quote
+        from fastapi import Response
+        from services.crypto import decrypt_bytes
+        data = decrypt_bytes(path.read_bytes())
+        ascii_name = (fname.encode("ascii", "ignore").decode() or "evidence")
+        disposition = (
+            f"attachment; filename=\"{ascii_name}\"; "
+            f"filename*=UTF-8''{quote(fname)}"
+        )
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={"Content-Disposition": disposition},
+        )
     return FileResponse(
         path=str(path),
-        media_type=evidence.mime_type or "application/octet-stream",
-        filename=evidence.original_filename or path.name,
+        media_type=media_type,
+        filename=fname,
     )

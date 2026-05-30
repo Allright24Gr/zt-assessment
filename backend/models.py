@@ -137,6 +137,9 @@ class Evidence(Base):
     mime_type = Column(String(120), nullable=True)
     file_size = Column(Integer, nullable=True)
     original_filename = Column(String(255), nullable=True)
+    # SER-003: 디스크 저장 증적 파일을 Fernet(AES-128-CBC+HMAC)로 at-rest 암호화.
+    # 1 이면 file_path 의 바이트가 암호문 → 다운로드 시 복호화. 0/NULL 은 과거 평문 파일.
+    encrypted = Column(Integer, nullable=False, default=0)
 
     session = relationship("DiagnosisSession", back_populates="evidences")
     checklist = relationship("Checklist", back_populates="evidences")
@@ -152,6 +155,9 @@ class DiagnosisResult(Base):
     score = Column(Float, nullable=True)
     recommendation = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    # 평가 결과 위변조 방지 (SER-010): 작성 시점에 (session_id|check_id|result|score)
+    # 의 SHA-256 을 저장. /verify 가 재계산해 불일치 시 변조로 판정.
+    row_hash = Column(String(64), nullable=True)
 
     session = relationship("DiagnosisSession", back_populates="results")
     checklist = relationship("Checklist", back_populates="results")
@@ -241,6 +247,11 @@ class AuthAuditLog(Base):
     success = Column(Integer, nullable=False, default=1)
     detail = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    # SER-006 로그 위변조 방지 — 해시 체인. 각 행은 직전 행의 row_hash(prev_hash)와
+    # 자신의 정규화 필드를 함께 SHA-256 하여 row_hash 를 만든다. 중간 행을 변조·삭제하면
+    # 이후 체인이 전부 깨지므로 /audit/verify 가 위치까지 탐지한다.
+    prev_hash = Column(String(64), nullable=True)
+    row_hash = Column(String(64), nullable=True)
 
     __table_args__ = (
         Index("idx_audit_event_type", "event_type"),
@@ -287,4 +298,81 @@ class PasswordResetToken(Base):
 
     __table_args__ = (
         Index("idx_password_reset_user", "user_id"),
+    )
+
+
+# ─── 동적 시스템 설정 (MAR-010) ────────────────────────────────────────────────
+# 재시작 없이 운영 토글을 바꾸기 위한 key-value 저장소. config_store 가 30초 캐시로
+# 읽고, env 값을 fallback 으로 둔다. admin /api/admin/config 로 변경.
+
+class SystemConfig(Base):
+    __tablename__ = "SystemConfig"
+
+    config_key = Column(String(100), primary_key=True)
+    config_value = Column(Text, nullable=True)
+    updated_by = Column(String(100), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+# ─── 주기적 평가 스케줄 (MAR-004 / SFR-AUTO-005) ───────────────────────────────
+# next_run_at 이 도래하면 lifespan 스케줄러가 저장된 config(run 요청 payload)로 데모
+# 진단 세션을 자동 생성·실행한다. 자격이 필요한 live 모드는 비밀번호를 저장하지
+# 않으므로 데모 모드만 스케줄 가능 (정책).
+
+class ScheduledAssessment(Base):
+    __tablename__ = "ScheduledAssessment"
+
+    schedule_id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("Organization.org_id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("User.user_id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    interval_hours = Column(Integer, nullable=False, default=24)
+    enabled = Column(Integer, nullable=False, default=1)
+    config = Column(JSON, nullable=True)          # AssessmentRunRequest payload (자격 제외)
+    next_run_at = Column(DateTime, nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_session_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_sched_next_run", "next_run_at"),
+        Index("idx_sched_org", "org_id"),
+    )
+
+
+# ─── 조직별 체크리스트 커스터마이징 (SFR-CUS-001) ──────────────────────────────
+# 항목별 enable 토글 + 가중치(maturity_score) 오버라이드. 오버라이드가 없으면 기본
+# 동작과 100% 동일 (scoring 에서 default fall-through).
+
+class OrgChecklistOverride(Base):
+    __tablename__ = "OrgChecklistOverride"
+
+    override_id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("Organization.org_id"), nullable=False)
+    check_id = Column(Integer, ForeignKey("Checklist.check_id"), nullable=False)
+    enabled = Column(Integer, nullable=False, default=1)
+    weight = Column(Float, nullable=True)         # None 이면 기본 maturity_score 사용
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "check_id", name="uq_org_override"),
+        Index("idx_org_override_org", "org_id"),
+    )
+
+
+# ─── 조직별 목표 성숙도 (SFR-EVAL-004) ─────────────────────────────────────────
+# pillar 별 목표 점수(0~4). /result 가 현재 점수와 함께 gap 을 계산해 반환.
+
+class OrgTargetScore(Base):
+    __tablename__ = "OrgTargetScore"
+
+    target_id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("Organization.org_id"), nullable=False)
+    pillar = Column(String(100), nullable=False)
+    target_score = Column(Float, nullable=False, default=3.0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "pillar", name="uq_org_target"),
+        Index("idx_org_target_org", "org_id"),
     )

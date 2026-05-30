@@ -13,7 +13,7 @@ from database import SessionLocal, get_db
 from models import (
     DiagnosisSession, Checklist, CollectedData, Evidence,
     DiagnosisResult, MaturityScore, ScoreHistory, Organization, User,
-    SharedResult,
+    SharedResult, ScheduledAssessment,
 )
 from scoring.engine import score_session, determine_maturity_level
 from routers.auth import (
@@ -36,6 +36,7 @@ from routers.validators import (
     validate_uuid_field,
 )
 from services.ocsf_transformer import build_session_ocsf
+from services import cache as result_cache, config_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -842,6 +843,61 @@ def finalize_assessment(
     return {"status": "ok", "session_id": session_id}
 
 
+# ─── 목표 성숙도 (SFR-EVAL-004) / 소요시간 (MAR-017) / 캐시 버전 (MAR-016) ───────
+_DEFAULT_TARGETS = {
+    "식별자 및 신원":          3.5,
+    "기기 및 엔드포인트":       3.5,
+    "네트워크":                3.0,
+    "시스템":                  3.5,
+    "애플리케이션 및 워크로드":  3.5,
+    "데이터":                  3.0,
+}
+
+
+def _org_target_map(db: Session, org_id: Optional[int]) -> dict[str, float]:
+    """pillar → 목표 점수. 조직 설정이 없으면 기본 목표값."""
+    out = dict(_DEFAULT_TARGETS)
+    if org_id is None:
+        return out
+    from models import OrgTargetScore
+    for r in db.query(OrgTargetScore).filter(OrgTargetScore.org_id == org_id).all():
+        out[r.pillar] = r.target_score
+    return out
+
+
+def _session_cache_version(db: Session, session: DiagnosisSession) -> str:
+    """결과 캐시 키 버전. 세션 상태·점수·조직 커스터마이징/목표 변경 시 자동 무효화."""
+    from models import OrgChecklistOverride, OrgTargetScore
+    parts = [
+        str(session.status or ""),
+        session.completed_at.isoformat() if session.completed_at else "none",
+        str(session.total_score),
+    ]
+    ov_max = db.query(func.max(OrgChecklistOverride.updated_at)).filter(
+        OrgChecklistOverride.org_id == session.org_id
+    ).scalar()
+    tg_max = db.query(func.max(OrgTargetScore.updated_at)).filter(
+        OrgTargetScore.org_id == session.org_id
+    ).scalar()
+    parts.append(str(ov_max))
+    parts.append(str(tg_max))
+    return "|".join(parts)
+
+
+def _session_duration(db: Session, session: DiagnosisSession) -> dict:
+    """MAR-017: 평가 수행 소요시간 + SLA 충족 여부."""
+    sla = config_store.get("assessment_sla_seconds", db)
+    duration = None
+    within = None
+    if session.started_at and session.completed_at:
+        try:
+            duration = round((session.completed_at - session.started_at).total_seconds(), 1)
+            within = duration <= sla
+        except Exception:
+            duration = None
+    return {"duration_seconds": duration, "sla_seconds": sla, "within_sla": within}
+
+
 @router.get("/result")
 def get_result(
     session_id: int,
@@ -850,23 +906,38 @@ def get_result(
 ):
     session = _get_session_or_404(db, session_id)
     assert_session_access(current_user, session)
+
+    # MAR-016: 세션이 바뀌지 않았으면 캐시된 결과 페이로드 재사용.
+    cache_key = f"result:{session_id}:{_session_cache_version(db, session)}"
+    cached = result_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
     user = db.query(User).filter(User.user_id == session.user_id).first()
 
+    # SFR-CUS-001: 조직 설정에서 제외(disabled)된 항목은 결과 목록에서도 제외.
+    overrides = _org_overrides(db, session.org_id)
+    disabled_ids = {cid for cid, o in overrides.items() if not o["enabled"]}
+
+    # SFR-EVAL-004: pillar 별 목표 점수 + gap(목표-현재).
+    targets = _org_target_map(db, session.org_id)
     maturity_rows = db.query(MaturityScore).filter(
         MaturityScore.session_id == session_id
     ).all()
-    pillar_scores = [
-        {
+    pillar_scores = []
+    for m in maturity_rows:
+        t = targets.get(m.pillar)
+        pillar_scores.append({
             "pillar": m.pillar,
             "score":  round(m.score, 4),
             "level":  determine_maturity_level(m.score),
             "pass_cnt": m.pass_cnt,
             "fail_cnt": m.fail_cnt,
             "na_cnt":   m.na_cnt,
-        }
-        for m in maturity_rows
-    ]
+            "target":   t,
+            "gap":      round(m.score - t, 4) if t is not None else None,
+        })
 
     results = (
         db.query(DiagnosisResult, Checklist)
@@ -887,6 +958,8 @@ def get_result(
     checklist_results = []
     submitted_check_ids: set[int] = set()
     for dr, cl in results:
+        if cl.check_id in disabled_ids:
+            continue
         raw = collected_by_check.get(cl.check_id) or {}
         entry = {
             "id":             cl.item_id,
@@ -951,6 +1024,8 @@ def get_result(
     for cl in all_checklists:
         if cl.check_id in submitted_check_ids:
             continue
+        if cl.check_id in disabled_ids:
+            continue
         if cl.pillar not in active_pillars:
             continue
         is_manual = (cl.diagnosis_type or "").strip() == "수동" or (cl.tool or "").strip() == "수동"
@@ -979,7 +1054,15 @@ def get_result(
             "unevaluable_reason_label": reason_label,
         })
 
-    return {
+    # SFR-EVAL-004: 전체 목표/gap 요약 (pillar 별 목표의 평균 대비 총점).
+    present_targets = [ps["target"] for ps in pillar_scores if ps.get("target") is not None]
+    overall_target = round(sum(present_targets) / len(present_targets), 4) if present_targets else None
+    overall_gap = (
+        round(overall_target - (session.total_score or 0.0), 4)
+        if overall_target is not None else None
+    )
+
+    payload = {
         "session": {
             "id":      session.session_id,
             "org":     org.name if org else "",
@@ -993,13 +1076,64 @@ def get_result(
             "errors":  _build_session_errors(db, session_id),
             "extra":   _mask_creds(session.extra or {}),
             "is_demo": bool(org and org.name == DEMO_ORG_NAME),
+            # MAR-017 소요시간/SLA
+            **_session_duration(db, session),
         },
         "pillar_scores":     pillar_scores,
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
+        # SFR-EVAL-004 목표 대비
+        "overall_target":    overall_target,
+        "overall_gap":       overall_gap,
         "checklist_results": checklist_results,
         # SKT 가이드 §3 §4 §7 §9 — 보고서 머리 표기용 평가 메타
         "evaluation_meta":   build_evaluation_meta(session),
+    }
+    # MAR-016: 결과 캐시에 저장 (조직 커스터마이징/목표 변경 시 키가 바뀌어 자동 무효화).
+    result_cache.set(cache_key, payload, ttl=config_store.get("result_cache_ttl", db))
+    return payload
+
+
+@router.get("/verify/{session_id}")
+def verify_result_integrity(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SER-010: 저장된 평가 결과의 무결성 검증.
+
+    각 DiagnosisResult 의 (result, score) 로 row_hash 를 재계산해 저장값과 비교한다.
+    DB 에서 결과를 몰래 수정하면 해시가 어긋나 tampered 로 탐지된다.
+    """
+    from services.integrity import result_row_hash
+    session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
+    rows = db.query(DiagnosisResult).filter(
+        DiagnosisResult.session_id == session_id
+    ).all()
+    verified = 0
+    unhashed = 0
+    tampered: list[int] = []
+    for r in rows:
+        if not r.row_hash:
+            unhashed += 1
+            continue
+        expected = result_row_hash(
+            session_id=session_id, check_id=r.check_id,
+            result=r.result, score=r.score,
+        )
+        if expected == r.row_hash:
+            verified += 1
+        else:
+            tampered.append(r.check_id)
+    return {
+        "session_id":         session_id,
+        "total":              len(rows),
+        "verified":           verified,
+        "unhashed":           unhashed,
+        "tampered_count":     len(tampered),
+        "tampered_check_ids": tampered[:50],
+        "ok":                 len(tampered) == 0,
     }
 
 
@@ -1038,6 +1172,7 @@ def get_ocsf_events(
 def get_history(
     org_id: Optional[int] = None,
     org_name: Optional[str] = None,
+    q: Optional[str] = None,           # SFR-IT-002 결과 검색 (조직/담당자/레벨/상태/ID)
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1080,7 +1215,24 @@ def get_history(
             "score":   s.total_score,
             "errors":  _build_session_errors(db, s.session_id) if s.status == "완료" else [],
             "is_demo": bool(org_obj and org_obj.name == DEMO_ORG_NAME),
+            "duration_seconds": (
+                round((s.completed_at - s.started_at).total_seconds(), 1)
+                if s.started_at and s.completed_at else None
+            ),
         })
+
+    # SFR-IT-002: 검색어가 있으면 조직/담당자/레벨/상태/ID 전반에서 부분 일치 필터.
+    if q and q.strip():
+        needle = q.strip().lower()
+        items = [
+            it for it in items
+            if needle in str(it["id"]).lower()
+            or needle in (it["org"] or "").lower()
+            or needle in (it["manager"] or "").lower()
+            or needle in (it["level"] or "").lower()
+            or needle in (it["status"] or "").lower()
+        ]
+        completed_count = sum(1 for it in items if it["status"] == "완료")
 
     return {"sessions": items, "total": len(items), "completed_count": completed_count}
 
@@ -1108,6 +1260,20 @@ def _upsert_collected(db: Session, session_id: int, check_id: int, item: dict):
         existing.collected_at = datetime.now(timezone.utc)
     else:
         db.add(CollectedData(session_id=session_id, check_id=check_id, **fields))
+
+
+def _org_overrides(db: Session, org_id: Optional[int]) -> dict[int, dict]:
+    """조직별 체크리스트 커스터마이징(SFR-CUS-001). check_id → {enabled, weight}.
+
+    오버라이드가 없는 조직은 빈 dict → 기존 채점과 100% 동일.
+    """
+    if org_id is None:
+        return {}
+    from models import OrgChecklistOverride
+    rows = db.query(OrgChecklistOverride).filter(
+        OrgChecklistOverride.org_id == org_id
+    ).all()
+    return {r.check_id: {"enabled": bool(r.enabled), "weight": r.weight} for r in rows}
 
 
 def _trigger_scoring(session_id: int, db: Session):
@@ -1176,13 +1342,41 @@ def _trigger_scoring(session_id: int, db: Session):
     else:
         pillar_total_items = {p: int(c) for p, c in pillar_total_rows}
 
+    # SFR-CUS-001: 조직별 커스터마이징 적용 (비활성 항목 제외 + 가중치 오버라이드).
+    overrides = _org_overrides(db, session.org_id)
+    if overrides:
+        disabled_ids = {cid for cid, o in overrides.items() if not o["enabled"]}
+        if disabled_ids:
+            collected_results = [
+                r for r in collected_results if r.get("check_id") not in disabled_ids
+            ]
+            dis_rows = (
+                db.query(Checklist.pillar, func.count(Checklist.check_id))
+                .filter(Checklist.check_id.in_(disabled_ids))
+                .group_by(Checklist.pillar)
+                .all()
+            )
+            for p, c in dis_rows:
+                if p in pillar_total_items:
+                    pillar_total_items[p] = max(0, pillar_total_items[p] - int(c))
+        for m in checklist_meta:
+            ov = overrides.get(m.get("check_id"))
+            if ov and ov.get("weight") is not None:
+                m["maturity_score"] = ov["weight"]
+
     output = score_session(session_id, collected_results, checklist_meta,
                            pillar_total_items=pillar_total_items)
 
+    from services.integrity import result_row_hash
     for cr in output["checklist_results"]:
         check_id = cr.get("check_id")
         if not check_id:
             continue
+        # SER-010: 작성 시점 (result, score) 로 무결성 해시 고정.
+        rh = result_row_hash(
+            session_id=session_id, check_id=check_id,
+            result=cr["result"], score=cr["score"],
+        )
         existing = db.query(DiagnosisResult).filter(
             DiagnosisResult.session_id == session_id,
             DiagnosisResult.check_id == check_id,
@@ -1191,11 +1385,13 @@ def _trigger_scoring(session_id: int, db: Session):
             existing.result = cr["result"]
             existing.score = cr["score"]
             existing.recommendation = cr.get("recommendation", "")
+            existing.row_hash = rh
         else:
             db.add(DiagnosisResult(
                 session_id=session_id, check_id=check_id,
                 result=cr["result"], score=cr["score"],
                 recommendation=cr.get("recommendation", ""),
+                row_hash=rh,
             ))
 
     # 필러별 pass/fail/na 집계
@@ -1242,6 +1438,13 @@ def _trigger_scoring(session_id: int, db: Session):
     session.total_score = output["total_score"]
     session.completed_at = datetime.now(timezone.utc)
     db.commit()
+
+    # MAR-016: 세션 결과가 바뀌었으니 캐시 무효화.
+    try:
+        from services import cache as _cache
+        _cache.invalidate_prefix(f"result:{session_id}:")
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2621,3 +2824,213 @@ def delete_assessment_session(
 
     logger.info("[assessment] session %s deleted by user_id=%s", session_id, current_user.user_id)
     return {"status": "ok", "session_id": session_id}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MAR-004 / SFR-AUTO-005: 주기적 평가 자동 실행 (스케줄러)
+# ──────────────────────────────────────────────────────────────────────────────
+# next_run_at 이 도래한 스케줄을 lifespan 주기 태스크가 데모 모드로 자동 실행한다.
+# 자격(비밀번호)은 DB 에 저장하지 않으므로 스케줄은 데모 모드만 지원한다.
+
+_SCHED_CONFIG_KEYS = (
+    "org_name", "manager", "email", "department", "contact",
+    "org_type", "infra_type", "employees", "servers", "applications", "note",
+    "pillar_scope", "tool_scope", "profile_select",
+)
+
+
+def _sanitize_schedule_config(cfg: dict) -> dict:
+    """스케줄 저장용 config 정제 — 자격/토큰 제거, 데모 모드 고정."""
+    cfg = cfg or {}
+    out: dict = {}
+    for k in _SCHED_CONFIG_KEYS:
+        if k in cfg and cfg[k] is not None:
+            out[k] = cfg[k]
+    out["scan_mode"] = "demo"
+    return out
+
+
+def _create_session_from_config(db: Session, sched: ScheduledAssessment) -> tuple[int, list[str]]:
+    """스케줄 config 로 데모 진단 세션 생성. (session_id, selected_tools) 반환."""
+    cfg = sched.config if isinstance(sched.config, dict) else {}
+    profile_select = cfg.get("profile_select") if isinstance(cfg.get("profile_select"), dict) else {}
+    tool_scope = cfg.get("tool_scope") if isinstance(cfg.get("tool_scope"), dict) else {}
+    resolved = _resolve_supported_tools(profile_select, tool_scope)
+    selected_tools = sorted(t for t in ALL_TOOLS if resolved.get(t))
+    extra = {
+        "department":   cfg.get("department"),
+        "contact":      cfg.get("contact"),
+        "employees":    cfg.get("employees"),
+        "servers":      cfg.get("servers"),
+        "applications": cfg.get("applications"),
+        "note":         cfg.get("note"),
+        "pillar_scope": cfg.get("pillar_scope") or {},
+        "scan_mode":    "demo",
+        "scan_targets": {},
+        "profile_select": profile_select,
+        "scheduled":    True,
+        "schedule_id":  sched.schedule_id,
+    }
+    session = DiagnosisSession(
+        org_id=sched.org_id,
+        user_id=sched.user_id,
+        status="진행 중",
+        started_at=datetime.now(timezone.utc),
+        selected_tools={t: True for t in selected_tools},
+        extra=extra,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session.session_id, selected_tools
+
+
+def run_due_schedules() -> int:
+    """도래한 스케줄을 실행. lifespan 주기 태스크가 호출. 실행 건수 반환."""
+    db = SessionLocal()
+    fired = 0
+    try:
+        if not config_store.get("scheduler_enable", db):
+            return 0
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        due = (
+            db.query(ScheduledAssessment)
+            .filter(
+                ScheduledAssessment.enabled == 1,
+                ScheduledAssessment.next_run_at.isnot(None),
+                ScheduledAssessment.next_run_at <= now,
+            )
+            .all()
+        )
+        for sched in due:
+            try:
+                sid, tools = _create_session_from_config(db, sched)
+                if sid and tools:
+                    _run_collectors(sid, list(tools))  # demo 경로 — 동기 실행
+                interval = max(1, int(sched.interval_hours or 24))
+                sched.last_run_at = now
+                sched.last_session_id = sid or None
+                sched.next_run_at = now + _timedelta(hours=interval)
+                db.commit()
+                fired += 1
+                logger.info("[scheduler] schedule=%s fired → session=%s", sched.schedule_id, sid)
+            except Exception as exc:
+                db.rollback()
+                logger.warning("[scheduler] schedule=%s 실행 실패: %s", sched.schedule_id, exc)
+        return fired
+    finally:
+        db.close()
+
+
+class ScheduleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    interval_hours: int = Field(default=24, ge=1, le=8760)
+    run_now: bool = False                       # True 면 다음 틱에 즉시 실행
+    config: dict = Field(default_factory=dict)  # AssessmentRunRequest 형태 (자격 제외)
+
+
+class ScheduleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=200)
+    interval_hours: Optional[int] = Field(default=None, ge=1, le=8760)
+    enabled: Optional[bool] = None
+
+
+def _schedule_to_dict(s: ScheduledAssessment) -> dict:
+    return {
+        "schedule_id":     s.schedule_id,
+        "org_id":          s.org_id,
+        "name":            s.name,
+        "interval_hours":  s.interval_hours,
+        "enabled":         bool(s.enabled),
+        "next_run_at":     s.next_run_at.isoformat() if s.next_run_at else None,
+        "last_run_at":     s.last_run_at.isoformat() if s.last_run_at else None,
+        "last_session_id": s.last_session_id,
+        "config":          s.config or {},
+    }
+
+
+@router.post("/schedules")
+def create_schedule(
+    req: ScheduleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """주기 평가 스케줄 생성 (데모 모드). 본인 조직만."""
+    cfg = _sanitize_schedule_config(req.config)
+    # org_name 이 주어지면 본인 조직과 일치해야 함(일반 user). admin 은 자유.
+    org = db.query(Organization).filter(Organization.org_id == current_user.org_id).first()
+    if current_user.role != "admin":
+        cfg["org_name"] = org.name if org else cfg.get("org_name")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    first_run = now if req.run_now else now + _timedelta(hours=req.interval_hours)
+    sched = ScheduledAssessment(
+        org_id=current_user.org_id,
+        user_id=current_user.user_id,
+        name=req.name.strip(),
+        interval_hours=req.interval_hours,
+        enabled=1,
+        config=cfg,
+        next_run_at=first_run,
+    )
+    db.add(sched)
+    db.commit()
+    db.refresh(sched)
+    return {"status": "ok", **_schedule_to_dict(sched)}
+
+
+@router.get("/schedules")
+def list_schedules(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """본인 조직 스케줄 목록 (admin 은 전체)."""
+    q = db.query(ScheduledAssessment)
+    if current_user.role != "admin":
+        q = q.filter(ScheduledAssessment.org_id == current_user.org_id)
+    rows = q.order_by(ScheduledAssessment.schedule_id.desc()).all()
+    return {"schedules": [_schedule_to_dict(s) for s in rows], "total": len(rows)}
+
+
+@router.patch("/schedules/{schedule_id}")
+def update_schedule(
+    schedule_id: int,
+    req: ScheduleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """스케줄 활성/주기/이름 수정."""
+    sched = db.query(ScheduledAssessment).filter(
+        ScheduledAssessment.schedule_id == schedule_id
+    ).first()
+    if not sched:
+        raise HTTPException(status_code=404, detail="스케줄을 찾을 수 없습니다.")
+    assert_org_access(current_user, sched.org_id)
+    if req.name is not None:
+        sched.name = req.name.strip()[:200] or sched.name
+    if req.interval_hours is not None:
+        sched.interval_hours = req.interval_hours
+    if req.enabled is not None:
+        sched.enabled = 1 if req.enabled else 0
+        # 재활성화 시 next_run 이 과거면 다음 틱에 실행되도록 now 로 보정.
+        if req.enabled and (sched.next_run_at is None):
+            sched.next_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    db.refresh(sched)
+    return {"status": "ok", **_schedule_to_dict(sched)}
+
+
+@router.delete("/schedules/{schedule_id}")
+def delete_schedule(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sched = db.query(ScheduledAssessment).filter(
+        ScheduledAssessment.schedule_id == schedule_id
+    ).first()
+    if not sched:
+        raise HTTPException(status_code=404, detail="스케줄을 찾을 수 없습니다.")
+    assert_org_access(current_user, sched.org_id)
+    db.delete(sched)
+    db.commit()
+    return {"status": "ok", "schedule_id": schedule_id}

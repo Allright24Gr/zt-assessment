@@ -24,6 +24,13 @@ MIGRATIONS = [
     ("Evidence",         "original_filename", "VARCHAR(255) NULL"),
     # 세부 질문 텍스트 (xlsx '세부 질문' 컬럼) — 신규 볼륨 init.sql 누락 대응
     ("Checklist",        "question",          "TEXT NULL"),
+    # SER-006 감사 로그 해시 체인
+    ("AuthAuditLog",     "prev_hash",         "VARCHAR(64) NULL"),
+    ("AuthAuditLog",     "row_hash",          "VARCHAR(64) NULL"),
+    # SER-010 평가 결과 무결성 해시
+    ("DiagnosisResult",  "row_hash",          "VARCHAR(64) NULL"),
+    # SER-003 증적 파일 at-rest 암호화 플래그
+    ("Evidence",         "encrypted",         "INT NOT NULL DEFAULT 0"),
 ]
 
 
@@ -67,6 +74,67 @@ NEW_TABLES = [
               FOREIGN KEY (`session_id`) REFERENCES `DiagnosisSession`(`session_id`) ON DELETE CASCADE,
             CONSTRAINT `fk_shared_result_user`
               FOREIGN KEY (`created_by_user_id`) REFERENCES `User`(`user_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """),
+    # MAR-010 동적 시스템 설정
+    ("SystemConfig", """
+        CREATE TABLE IF NOT EXISTS `SystemConfig` (
+            `config_key`   VARCHAR(100) NOT NULL,
+            `config_value` TEXT NULL,
+            `updated_by`   VARCHAR(100) NULL,
+            `updated_at`   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`config_key`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """),
+    # MAR-004 / SFR-AUTO-005 주기적 평가 스케줄
+    ("ScheduledAssessment", """
+        CREATE TABLE IF NOT EXISTS `ScheduledAssessment` (
+            `schedule_id`     INT NOT NULL AUTO_INCREMENT,
+            `org_id`          INT NOT NULL,
+            `user_id`         INT NOT NULL,
+            `name`            VARCHAR(200) NOT NULL,
+            `interval_hours`  INT NOT NULL DEFAULT 24,
+            `enabled`         INT NOT NULL DEFAULT 1,
+            `config`          JSON NULL,
+            `next_run_at`     DATETIME NULL,
+            `last_run_at`     DATETIME NULL,
+            `last_session_id` INT NULL,
+            `created_at`      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`schedule_id`),
+            KEY `idx_sched_next_run` (`next_run_at`),
+            KEY `idx_sched_org` (`org_id`),
+            CONSTRAINT `fk_sched_org`  FOREIGN KEY (`org_id`)  REFERENCES `Organization`(`org_id`) ON DELETE CASCADE,
+            CONSTRAINT `fk_sched_user` FOREIGN KEY (`user_id`) REFERENCES `User`(`user_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """),
+    # SFR-CUS-001 조직별 체크리스트 커스터마이징
+    ("OrgChecklistOverride", """
+        CREATE TABLE IF NOT EXISTS `OrgChecklistOverride` (
+            `override_id` INT NOT NULL AUTO_INCREMENT,
+            `org_id`      INT NOT NULL,
+            `check_id`    INT NOT NULL,
+            `enabled`     INT NOT NULL DEFAULT 1,
+            `weight`      FLOAT NULL,
+            `updated_at`  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`override_id`),
+            UNIQUE KEY `uq_org_override` (`org_id`, `check_id`),
+            KEY `idx_org_override_org` (`org_id`),
+            CONSTRAINT `fk_override_org`   FOREIGN KEY (`org_id`)   REFERENCES `Organization`(`org_id`) ON DELETE CASCADE,
+            CONSTRAINT `fk_override_check` FOREIGN KEY (`check_id`) REFERENCES `Checklist`(`check_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """),
+    # SFR-EVAL-004 조직별 목표 성숙도
+    ("OrgTargetScore", """
+        CREATE TABLE IF NOT EXISTS `OrgTargetScore` (
+            `target_id`    INT NOT NULL AUTO_INCREMENT,
+            `org_id`       INT NOT NULL,
+            `pillar`       VARCHAR(100) NOT NULL,
+            `target_score` FLOAT NOT NULL DEFAULT 3.0,
+            `updated_at`   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`target_id`),
+            UNIQUE KEY `uq_org_target` (`org_id`, `pillar`),
+            KEY `idx_org_target_org` (`org_id`),
+            CONSTRAINT `fk_target_org` FOREIGN KEY (`org_id`) REFERENCES `Organization`(`org_id`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """),
     # 비밀번호 재설정 토큰 — 평문은 메일로 전송, DB에는 SHA-256 해시만 저장
