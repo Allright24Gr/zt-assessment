@@ -16,7 +16,7 @@ set -e
 # `reset` 인자를 주면 볼륨(DB)·외부 이미지까지 통째로 삭제 (시드 자동 재실행).
 #
 # 사전 조건:
-#   - 프로젝트 루트에 .env 파일 존재 (없으면 .env.example 복사 후 값 채우기)
+#   - .env 는 선택사항 — 없으면 데모 기본값으로 자동 생성/실행 (무설정 제출본 대응)
 #   - Docker / Docker Compose 설치
 #   - (EC2) 보안그룹에 8080, 8000 포트 0.0.0.0/0 인바운드 허용
 
@@ -47,12 +47,29 @@ else
   EC2_IP="${INPUT:-localhost}"
 fi
 
-# ─── .env 존재 확인 (모든 컨테이너의 자격이 여기서 옴) ─────────────────────
+# ─── .env (선택) — 없으면 데모 기본값으로 자동 생성 ──────────────────────────
+# .env 없이도 docker-compose.yml 의 기본값으로 그대로 동작하지만, 모든 컨테이너가
+# 동일한 자격을 쓰도록 데모 기본값 .env 를 자동 생성한다(무설정 제출본 실행 대응).
+# 실제 운영/외부 도구 연동 시에는 .env.example 을 참고해 값을 채워 넣으면 된다.
 if [ ! -f .env ]; then
-  echo "❌ .env 파일이 프로젝트 루트에 없습니다."
-  echo "   .env.example 을 복사해서 값을 채우거나, 팀에서 받은 .env 를 두세요:"
-  echo "     cp .env.example .env"
-  exit 1
+  echo "ℹ️  .env 가 없어 데모 기본값으로 자동 생성합니다 (운영 시 .env.example 참고)."
+  cat > .env <<'ENV_DEFAULT'
+# 자동 생성된 데모 기본값 — 운영 배포 시 반드시 교체할 것.
+SECRET_KEY=zt-demo-secret-key-change-me-in-production-0123456789
+CORS_ORIGINS=http://localhost:8080
+DB_HOST=mysql
+DB_PORT=3306
+DB_NAME=zt_assessment
+DB_USER=zt_user
+DB_PASSWORD=ztDemo1234
+MYSQL_ROOT_PASSWORD=ztRoot1234
+KEYCLOAK_ADMIN=admin
+KEYCLOAK_ADMIN_PASSWORD=admin
+WAZUH_USER=wazuh-wui
+WAZUH_PASSWORD=wazuhDemo1234
+NMAP_WRAPPER_URL=http://nmap-wrapper:8001
+TRIVY_WRAPPER_URL=http://trivy-wrapper:8002
+ENV_DEFAULT
 fi
 
 echo "배포 대상: $EC2_IP"

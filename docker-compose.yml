@@ -18,10 +18,21 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    # .env 는 선택사항 — 없으면 아래 기본값으로 그대로 동작한다(무설정 제출본 실행 대응).
+    # .env 를 두면 그 값이 우선한다.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
+      - DB_HOST=${DB_HOST:-mysql}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_NAME=${DB_NAME:-zt_assessment}
+      - DB_USER=${DB_USER:-zt_user}
+      - DB_PASSWORD=${DB_PASSWORD:-ztDemo1234}
+      - SECRET_KEY=${SECRET_KEY:-zt-demo-secret-key-change-me-in-production-0123456789}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8080}
+      - NMAP_WRAPPER_URL=${NMAP_WRAPPER_URL:-http://nmap-wrapper:8001}
+      - TRIVY_WRAPPER_URL=${TRIVY_WRAPPER_URL:-http://trivy-wrapper:8002}
     networks:
       - zt-network
     depends_on:
@@ -33,10 +44,10 @@ services:
   mysql:
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${DB_NAME}
-      MYSQL_USER: ${DB_USER}
-      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ztRoot1234}
+      MYSQL_DATABASE: ${DB_NAME:-zt_assessment}
+      MYSQL_USER: ${DB_USER:-zt_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-ztDemo1234}
     volumes:
       - mysql-data:/var/lib/mysql
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -52,8 +63,8 @@ services:
     image: quay.io/keycloak/keycloak:24.0
     command: start-dev --http-port=8443
     environment:
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
     ports:
       - "8443:8443"
     networks:
@@ -62,8 +73,8 @@ services:
   wazuh:
     image: wazuh/wazuh-manager:4.7.0
     environment:
-      WAZUH_API_USER: ${WAZUH_USER}
-      WAZUH_API_PASSWORD: ${WAZUH_PASSWORD}
+      WAZUH_API_USER: ${WAZUH_USER:-wazuh-wui}
+      WAZUH_API_PASSWORD: ${WAZUH_PASSWORD:-wazuhDemo1234}
     ports:
       - "55000:55000"
     volumes:
