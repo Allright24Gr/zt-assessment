@@ -358,6 +358,149 @@ def scan_risk():
     return jsonify(result)
 
 
+@app.post("/scan/repo")
+def scan_repo():
+    """GitHub repo 취약점 스캔: 소스 코드 의존성·SBOM의 심각도별 취약점 수를 반환한다.
+
+    body: {"repo_url": "https://github.com/owner/repo" | "owner/repo", "item_id": "..."}
+    trivy CLI는 repo 서브커맨드로 git URL 을 직접 처리한다(`trivy repo <url>`).
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    repo_url = body.get("repo_url", "")
+
+    result = _base_result("repo_vuln_count")
+    result["item_id"] = body.get("item_id", "")
+    result["threshold"] = 0
+
+    if not repo_url:
+        result["error"] = "repo_url 파라미터가 필요합니다."
+        return jsonify(result), 400
+
+    # owner/repo 단축형은 https URL로 정규화
+    target = repo_url
+    if not target.startswith("http://") and not target.startswith("https://"):
+        target = f"https://github.com/{target}"
+
+    raw, err = _run_trivy(["repo", target], timeout=300)
+    if err:
+        result["error"] = err
+        return jsonify(result), 500
+
+    counts = _count_by_severity(raw)
+    component_count = sum(len(r.get("Vulnerabilities") or []) for r in raw.get("Results", []))
+    result["metric_value"] = counts["CRITICAL"] + counts["HIGH"]
+    result["raw_json"] = {
+        "severity_counts": counts,
+        "component_count": component_count,
+        "results_count": len(raw.get("Results", [])),
+        "trivy_output": raw,
+    }
+    return jsonify(result)
+
+
+@app.post("/scan/config")
+def scan_config():
+    """IaC misconfiguration 스캔: Dockerfile/k8s/Terraform 등 설정 파일의 위반 수를 반환한다.
+
+    body: {"target": "https://github.com/owner/repo" | "/local/path" | "owner/repo"}
+    repo URL인 경우 trivy repo --scanners misconfig 으로 처리.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    target = (body.get("target") or "").strip()
+
+    result = _base_result("iac_misconfig_count")
+    result["item_id"] = body.get("item_id", "")
+    result["threshold"] = 0
+
+    if not target:
+        result["error"] = "target 파라미터가 필요합니다."
+        return jsonify(result), 400
+
+    is_repo = "github.com" in target.lower() or (
+        target.count("/") == 1 and "://" not in target and ":" not in target
+    )
+    if is_repo:
+        url = target if target.startswith("http") else f"https://github.com/{target}"
+        cmd = ["repo", "--scanners", "misconfig", url]
+    else:
+        cmd = ["config", target]
+
+    raw, err = _run_trivy(cmd, timeout=300)
+    if err:
+        result["error"] = err
+        return jsonify(result), 500
+
+    high_critical = 0
+    total = 0
+    by_severity = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "UNKNOWN": 0}
+    for r in raw.get("Results", []):
+        for mis in (r.get("Misconfigurations") or []):
+            sev = (mis.get("Severity") or "UNKNOWN").upper()
+            by_severity[sev] = by_severity.get(sev, 0) + 1
+            total += 1
+            if sev in ("CRITICAL", "HIGH"):
+                high_critical += 1
+
+    result["metric_value"] = high_critical
+    result["raw_json"] = {
+        "misconfig_count": total,
+        "high_critical_count": high_critical,
+        "severity_counts": by_severity,
+        "trivy_output": raw,
+    }
+    return jsonify(result)
+
+
+@app.post("/scan/secret")
+def scan_secret():
+    """소스 코드 내 노출된 secret 스캔(API key, credential, token 등).
+
+    body: {"target": "https://github.com/owner/repo" | "/local/path" | "owner/repo"}
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    target = (body.get("target") or "").strip()
+
+    result = _base_result("secret_count")
+    result["item_id"] = body.get("item_id", "")
+    result["threshold"] = 0
+
+    if not target:
+        result["error"] = "target 파라미터가 필요합니다."
+        return jsonify(result), 400
+
+    is_repo = "github.com" in target.lower() or (
+        target.count("/") == 1 and "://" not in target and ":" not in target
+    )
+    if is_repo:
+        url = target if target.startswith("http") else f"https://github.com/{target}"
+        cmd = ["repo", "--scanners", "secret", url]
+    else:
+        cmd = ["fs", "--scanners", "secret", target]
+
+    raw, err = _run_trivy(cmd, timeout=300)
+    if err:
+        result["error"] = err
+        return jsonify(result), 500
+
+    secrets = []
+    for r in raw.get("Results", []):
+        for sec in (r.get("Secrets") or []):
+            secrets.append({
+                "rule_id": sec.get("RuleID", ""),
+                "category": sec.get("Category", ""),
+                "severity": sec.get("Severity", ""),
+                "target": r.get("Target", ""),
+            })
+
+    result["metric_value"] = len(secrets)
+    result["raw_json"] = {
+        "secret_count": len(secrets),
+        "secrets": secrets[:50],  # 상위 50건만 응답에 포함
+        "trivy_output": raw,
+    }
+    return jsonify(result)
+
+
 @app.post("/scan/supply-chain")
 def scan_supply_chain():
     """공급망 SBOM 기반 스캔: SBOM 생성 후 취약점 스캔 수행 여부를 반환한다."""

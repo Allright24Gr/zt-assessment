@@ -7,8 +7,8 @@ import os, pymysql
 pymysql.connect(
     host=os.getenv('DB_HOST','mysql'),
     port=int(os.getenv('DB_PORT',3306)),
-    user=os.getenv('DB_USER','readyz'),
-    password=os.getenv('DB_PASSWORD',''),
+    user=os.getenv('DB_USER','zt_user'),
+    password=os.getenv('DB_PASSWORD','ztDemo1234'),
     database=os.getenv('DB_NAME','zt_assessment'),
 )" 2>/dev/null; do
   echo "  MySQL 미준비 — 3초 후 재시도..."

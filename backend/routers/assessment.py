@@ -1,10 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Any, Optional
 from datetime import datetime, timezone
-import httpx
 import logging
 import os
 import threading
@@ -14,7 +13,7 @@ from database import SessionLocal, get_db
 from models import (
     DiagnosisSession, Checklist, CollectedData, Evidence,
     DiagnosisResult, MaturityScore, ScoreHistory, Organization, User,
-    SharedResult,
+    SharedResult, ScheduledAssessment,
 )
 from scoring.engine import score_session, determine_maturity_level
 from routers.auth import (
@@ -25,29 +24,26 @@ from routers.auth import (
 from routers.validators import (
     validate_nmap_target,
     validate_trivy_image,
+    validate_trivy_target,
     validate_https_url,
     validate_cred_field,
+    validate_web_probe_target,
+    validate_supabase_ref,
+    validate_supabase_pat,
+    validate_jwt_field,
+    validate_vercel_token,
+    validate_vercel_id,
+    validate_uuid_field,
 )
 from services.ocsf_transformer import build_session_ocsf
+from services import cache as result_cache, config_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-SHUFFLE_URL     = os.getenv("SHUFFLE_URL", "")
-SHUFFLE_API_KEY = os.getenv("SHUFFLE_API_KEY", "")
-SELF_BASE_URL   = os.getenv("SELF_BASE_URL", "http://zt-backend:8000")
-INTERNAL_TOKEN  = os.getenv("INTERNAL_API_TOKEN", "")
-
 # seed_demo가 만드는 데모 조직의 정확한 이름. 결과/이력 응답에 is_demo 플래그로 노출.
 DEMO_ORG_NAME = "데모_조직"
 
-# 도구별 개별 워크플로우 ID (Shuffle UI에서 워크플로우 만든 후 입력)
-SHUFFLE_WF = {
-    "keycloak": os.getenv("SHUFFLE_WORKFLOW_KEYCLOAK", ""),
-    "wazuh":    os.getenv("SHUFFLE_WORKFLOW_WAZUH",    ""),
-    "nmap":     os.getenv("SHUFFLE_WORKFLOW_NMAP",     ""),
-    "trivy":    os.getenv("SHUFFLE_WORKFLOW_TRIVY",    ""),
-}
 # 학생 프로젝트 — 라이선스 비용 없이 실제 검증 가능한 4개 오픈소스만 사용.
 # IdP=Keycloak / SIEM=Wazuh / 외부 스캔=Nmap, Trivy.
 ALL_TOOLS = (
@@ -55,26 +51,22 @@ ALL_TOOLS = (
     "wazuh",
     "nmap",
     "trivy",
+    # 도구 무관 외부 probe — IdP/SIEM 제품 종류와 관계없이 공개 도메인 하나로 측정.
+    # T-Markov(Google Workspace + Vercel + Railway, SIEM 없음) 같은 SaaS-only 환경에서도
+    # 자동 진단 항목을 늘리기 위해 추가. OIDC/DNS/HTTP/TLS/CT log 5영역 24개 항목.
+    "web_probe",
+    # T-Markov 같은 Supabase + Vercel + Railway 스택 자동 진단 (IdP/배포/플랫폼).
+    # supabase: IdP 카테고리 (Keycloak 대체) — profile_select.idp_type=supabase 일 때 활성.
+    # vercel/railway: 배포 플랫폼 — tool_scope 에서 독립 토글.
+    "supabase",
+    "vercel",
+    "railway",
 )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _verify_internal_token(x_internal_token: Optional[str]):
-    """X-Internal-Token 헤더 검증. fail-closed: 토큰 미설정 시 503.
-
-    개발 편의를 위해 ZTA_DEV_ALLOW_UNAUTH_WEBHOOK=true 환경변수가 설정된 경우에만
-    토큰 검증을 스킵한다. 운영 기본값은 fail-closed.
-    """
-    if not INTERNAL_TOKEN:
-        if os.getenv("ZTA_DEV_ALLOW_UNAUTH_WEBHOOK", "").lower() == "true":
-            return
-        raise HTTPException(status_code=503, detail="INTERNAL_API_TOKEN not configured")
-    if x_internal_token != INTERNAL_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid internal token")
-
 
 def _get_session_or_404(db: Session, session_id: int) -> DiagnosisSession:
     s = db.query(DiagnosisSession).filter(DiagnosisSession.session_id == session_id).first()
@@ -99,6 +91,15 @@ def _mask_creds(extra: dict) -> dict:
             for pw_field in ("admin_pass", "api_pass", "password"):
                 if masked.get(pw_field):
                     masked[pw_field] = "***"
+            safe[key] = masked
+    # Supabase / Vercel / Railway 자격 (DB 평문 저장 금지 정책 + 응답 마스킹).
+    for key in ("supabase_creds", "vercel_creds", "railway_creds"):
+        val = safe.get(key)
+        if isinstance(val, dict):
+            masked = dict(val)
+            for secret_field in ("pat", "service_role", "anon_key", "token"):
+                if masked.get(secret_field):
+                    masked[secret_field] = "***"
             safe[key] = masked
     return safe
 
@@ -158,12 +159,22 @@ def _store_session_secrets(
     session_id: int,
     kc_creds: dict,
     wz_creds: dict,
+    sb_creds: Optional[dict] = None,
+    vc_creds: Optional[dict] = None,
+    rw_creds: Optional[dict] = None,
 ) -> None:
-    """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성."""
+    """run_assessment 가 호출. {} 가 들어와도 일관성 위해 키는 항상 생성.
+
+    Supabase/Vercel/Railway 자격(토큰/PAT/JWT)도 DB 평문 저장 금지 정책에 따라
+    메모리 dict 로만 보관한다. BackgroundTask 가 사용 후 즉시 폐기.
+    """
     with _session_creds_lock:
         _session_creds_store[session_id] = {
             "keycloak": dict(kc_creds or {}),
             "wazuh":    dict(wz_creds or {}),
+            "supabase": dict(sb_creds or {}),
+            "vercel":   dict(vc_creds or {}),
+            "railway":  dict(rw_creds or {}),
         }
 
 
@@ -277,7 +288,7 @@ class ProfileSelect(BaseModel):
       ot_segment_present — 'yes'|'no'|'unknown'. OT 세그먼트 존재 여부. 'yes' 면
         해당 자산은 별도 트랙으로 분리(평가불가 사유 ot_segment_excluded).
     """
-    idp_type:   Optional[str] = None  # keycloak | none
+    idp_type:   Optional[str] = None  # keycloak | supabase | none
     siem_type:  Optional[str] = None  # wazuh | none
     windows_audit_policy_enabled: Optional[str] = None  # yes | no | unknown
     sysmon_deployed:              Optional[str] = None  # yes | no | unknown
@@ -309,6 +320,16 @@ class AssessmentRunRequest(BaseModel):
     keycloak_creds: Optional[dict] = None
     # 예: {"url": "https://wazuh.example.com:55000", "api_user": "...", "api_pass": "..."}
     wazuh_creds: Optional[dict] = None
+    # Supabase 자격 — Management PAT 권장. service_role/anon 은 보조.
+    # 예: {"project_ref": "abc123...", "pat": "sbp_...",
+    #      "service_role": "eyJ...", "anon_key": "eyJ..."}
+    supabase_creds: Optional[dict] = None
+    # Vercel 자격 — Personal/Team token + project/team id.
+    # 예: {"token": "vcp_...", "team_id": "team_...", "project_id": "prj_..."}
+    vercel_creds: Optional[dict] = None
+    # Railway 자격 — API token + project/service/environment UUID.
+    # 예: {"token": "uuid", "project_id": "uuid", "service_id": "uuid", "environment_id": "uuid"}
+    railway_creds: Optional[dict] = None
     # 시연/실 스캔 토글 — "demo" 면 collector 실호출 없이 fake 결과 생성, "live" 면 실제 외부 호출.
     # frontend의 scanMode 토글(NewAssessment Step 1)에서 전달.
     scan_mode: Optional[str] = "demo"
@@ -334,16 +355,18 @@ class AssessmentRunRequest(BaseModel):
     skip_collector: Optional[bool] = False
 
 
-# 4 오픈소스 도구만 운영. 사용자 IdP/SIEM 선택 ↔ 자동 도구 매핑.
+# IdP/SIEM 사용자 선택 ↔ 자동 도구 매핑.
+# 같은 카테고리 내 도구는 상호 배타 — 사용자가 선택한 1개만 활성.
 _IDP_TOOL_OF = {
     "keycloak": "keycloak",
+    "supabase": "supabase",
     # "none" / 미선택 → IdP 자동 도구 비활성 (수동 폴백)
 }
 _SIEM_TOOL_OF = {
     "wazuh": "wazuh",
     # "none" / 미선택 → SIEM 자동 도구 비활성 (수동 폴백)
 }
-_IDP_AUTO_TOOLS = {"keycloak"}
+_IDP_AUTO_TOOLS = {"keycloak", "supabase"}
 _SIEM_AUTO_TOOLS = {"wazuh"}
 
 
@@ -371,26 +394,6 @@ def _resolve_supported_tools(profile_select: Optional[dict], requested: dict) ->
     return result
 
 
-class WebhookResultItem(BaseModel):
-    item_id: Optional[str] = None
-    tool: Optional[str] = None
-    metric_key: Optional[str] = None
-    metric_value: Optional[float] = None
-    threshold: Optional[float] = None
-    raw_json: Optional[dict] = None
-    error: Optional[str] = None
-    result: Optional[str] = None
-
-
-class WebhookPayload(BaseModel):
-    session_id: int
-    results: list[WebhookResultItem] = Field(default_factory=list)
-
-
-class InternalCollectPayload(BaseModel):
-    session_id: int
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ──────────────────────────────────────────────────────────────────────────────
@@ -410,7 +413,10 @@ def run_assessment(
         if "nmap" in scan_targets_in:
             scan_targets_in["nmap"] = validate_nmap_target(scan_targets_in.get("nmap") or "")
         if "trivy" in scan_targets_in:
-            scan_targets_in["trivy"] = validate_trivy_image(scan_targets_in.get("trivy") or "")
+            # image / github repo URL 둘 다 허용 (validate_trivy_target가 자동 판별)
+            scan_targets_in["trivy"] = validate_trivy_target(scan_targets_in.get("trivy") or "")
+        if "web_probe" in scan_targets_in:
+            scan_targets_in["web_probe"] = validate_web_probe_target(scan_targets_in.get("web_probe") or "")
 
         kc_in = dict(req.keycloak_creds or {}) if req.keycloak_creds else {}
         if kc_in:
@@ -430,6 +436,41 @@ def run_assessment(
             )
             wz_in["api_pass"] = validate_cred_field(
                 wz_in.get("api_pass") or "", "wazuh_creds.api_pass"
+            )
+
+        # Supabase 자격 — Management PAT 권장. service_role/anon 은 보조 (JWT).
+        sb_in = dict(req.supabase_creds or {}) if req.supabase_creds else {}
+        if sb_in:
+            sb_in["project_ref"] = validate_supabase_ref(sb_in.get("project_ref") or "")
+            sb_in["pat"]          = validate_supabase_pat(sb_in.get("pat") or "")
+            sb_in["service_role"] = validate_jwt_field(
+                sb_in.get("service_role") or "", "supabase_creds.service_role"
+            )
+            sb_in["anon_key"]     = validate_jwt_field(
+                sb_in.get("anon_key") or "", "supabase_creds.anon_key"
+            )
+
+        # Vercel 자격 — token + project/team id.
+        vc_in = dict(req.vercel_creds or {}) if req.vercel_creds else {}
+        if vc_in:
+            vc_in["token"]      = validate_vercel_token(vc_in.get("token") or "")
+            vc_in["team_id"]    = validate_vercel_id(vc_in.get("team_id") or "", "vercel_creds.team_id")
+            vc_in["project_id"] = validate_vercel_id(
+                vc_in.get("project_id") or "", "vercel_creds.project_id"
+            )
+
+        # Railway 자격 — UUID 토큰/ID.
+        rw_in = dict(req.railway_creds or {}) if req.railway_creds else {}
+        if rw_in:
+            rw_in["token"]          = validate_uuid_field(rw_in.get("token") or "", "railway_creds.token")
+            rw_in["project_id"]     = validate_uuid_field(
+                rw_in.get("project_id") or "", "railway_creds.project_id"
+            )
+            rw_in["service_id"]     = validate_uuid_field(
+                rw_in.get("service_id") or "", "railway_creds.service_id"
+            )
+            rw_in["environment_id"] = validate_uuid_field(
+                rw_in.get("environment_id") or "", "railway_creds.environment_id"
             )
 
     except ValueError as exc:
@@ -474,10 +515,19 @@ def run_assessment(
     live_mode = (req.scan_mode or "demo").strip().lower() == "live"
     if live_mode:
         creds_required = {
-            "keycloak": bool(kc_in.get("url") and kc_in.get("admin_pass")),
-            "wazuh":    bool(wz_in.get("url") and wz_in.get("api_pass")),
-            "nmap":     bool((scan_targets_in.get("nmap") or "").strip()),
-            "trivy":    bool((scan_targets_in.get("trivy") or "").strip()),
+            "keycloak":  bool(kc_in.get("url") and kc_in.get("admin_pass")),
+            "wazuh":     bool(wz_in.get("url") and wz_in.get("api_pass")),
+            "nmap":      bool((scan_targets_in.get("nmap") or "").strip()),
+            "trivy":     bool((scan_targets_in.get("trivy") or "").strip()),
+            # web_probe 는 별도 target 또는 nmap target 으로 폴백 → 둘 중 하나면 OK.
+            "web_probe": bool(
+                (scan_targets_in.get("web_probe") or "").strip()
+                or (scan_targets_in.get("nmap") or "").strip()
+            ),
+            # Supabase: project_ref + (PAT or anon_key) 둘 다 있어야 동작.
+            "supabase":  bool(sb_in.get("project_ref") and (sb_in.get("pat") or sb_in.get("anon_key"))),
+            "vercel":    bool(vc_in.get("token")),
+            "railway":   bool(rw_in.get("token")),
         }
         missing = [t for t in selected_tools if not creds_required.get(t, True)]
         if missing:
@@ -494,6 +544,11 @@ def run_assessment(
     # URL/사용자명만 extra에 남기고, 비밀번호는 _store_session_secrets 로 메모리에만 보관.
     kc_meta = {k: v for k, v in kc_in.items() if k in ("url", "admin_user") and v}
     wz_meta = {k: v for k, v in wz_in.items() if k in ("url", "api_user") and v}
+    # 새 도구들의 비민감 메타 (project_ref/team_id 등은 노출 OK, 토큰/PAT/key 는 메모리만).
+    sb_meta = {k: v for k, v in sb_in.items() if k in ("project_ref",) and v}
+    vc_meta = {k: v for k, v in vc_in.items() if k in ("team_id", "project_id") and v}
+    rw_meta = {k: v for k, v in rw_in.items()
+               if k in ("project_id", "service_id", "environment_id") and v}
     # scan_mode 정규화. frontend의 demo/live 토글. 미지정 시 안전한 demo.
     scan_mode = (req.scan_mode or "demo").strip().lower()
     if scan_mode not in ("demo", "live"):
@@ -564,6 +619,9 @@ def run_assessment(
         "scan_consent": sc_meta,
         "keycloak_creds": kc_meta,
         "wazuh_creds":    wz_meta,
+        "supabase_creds": sb_meta,
+        "vercel_creds":   vc_meta,
+        "railway_creds":  rw_meta,
         # Step 0 결과 — manual.py /items 가 폴백 항목 산출에 사용
         "profile_select": profile_select_dict,
         # SKT 가이드 §3 평가 착수 전 확정사항 4종
@@ -588,15 +646,12 @@ def run_assessment(
     db.commit()
     db.refresh(session)
 
-    # 자격 비밀번호는 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
-    _store_session_secrets(session.session_id, kc_in, wz_in)
+    # 자격 비밀번호/토큰은 메모리에만 보관 → _run_collectors 가 pop 해서 사용 후 폐기.
+    _store_session_secrets(session.session_id, kc_in, wz_in,
+                           sb_creds=sb_in, vc_creds=vc_in, rw_creds=rw_in)
 
     if not req.skip_collector:
-        # Shuffle 경로 우선, 미설정 시 직접 collector 실행
-        has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
-        if has_shuffle:
-            background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)
-        elif selected_tools:
+        if selected_tools:
             background.add_task(_run_collectors, session.session_id, list(selected_tools))
         message = "진단이 시작되었습니다."
     else:
@@ -644,10 +699,7 @@ def start_prepared_assessment(
     db.commit()
 
     selected_tools = sorted(_selected_tools_set(session))
-    has_shuffle = bool(SHUFFLE_URL) and any(SHUFFLE_WF.get(t) for t in selected_tools)
-    if has_shuffle:
-        background.add_task(_trigger_shuffle_workflows, session.session_id, selected_tools)
-    elif selected_tools:
+    if selected_tools:
         background.add_task(_run_collectors, session.session_id, list(selected_tools))
 
     return {
@@ -761,14 +813,19 @@ def finalize_assessment(
 
     # 수집 미완료 가드 — 데모 모드는 collector 완료 후 자동 채점되므로 일반적으로 여기 안 옴.
     # live 모드에서 사용자가 일찍 finalize 누른 경우만 막는다.
+    # expected 는 unique item_id 기준 (다중 매핑 도구가 같은 item_id 에 매핑돼도 1개로 계산).
+    # CollectedData 의 (session_id, check_id) 가 UNIQUE 이므로 다중 매핑은 덮어쓰기 발생 →
+    # mapping entry 합으로 expected 를 계산하면 영구히 collected < expected 가 되어 409 무한.
     tools = sorted(_selected_tools_set(session))
     if tools:
-        expected = 0
+        unique_iids: set[str] = set()
         for t in tools:
             try:
-                expected += len(_full_mapping(t))
+                for _fn, iid, _m in _full_mapping(t):
+                    unique_iids.add(iid)
             except Exception:
                 pass
+        expected = len(unique_iids)
         if expected > 0:
             collected = db.query(CollectedData).filter(
                 CollectedData.session_id == session_id
@@ -786,44 +843,59 @@ def finalize_assessment(
     return {"status": "ok", "session_id": session_id}
 
 
-@router.post("/internal/collect/{tool}")
-def internal_collect(
-    tool: str,
-    payload: InternalCollectPayload,
-    background: BackgroundTasks,
-    x_internal_token: Optional[str] = Header(default=None),
-    db: Session = Depends(get_db),
-):
-    """Shuffle 워크플로우가 호출하는 단일 도구 수집 엔드포인트."""
-    _verify_internal_token(x_internal_token)
-    if tool not in ALL_TOOLS:
-        raise HTTPException(status_code=400, detail=f"지원하지 않는 도구입니다: {tool}")
-    _get_session_or_404(db, payload.session_id)
-    background.add_task(_run_collectors, payload.session_id, [tool])
-    return {"status": "ok", "tool": tool, "session_id": payload.session_id}
+# ─── 목표 성숙도 (SFR-EVAL-004) / 소요시간 (MAR-017) / 캐시 버전 (MAR-016) ───────
+_DEFAULT_TARGETS = {
+    "식별자 및 신원":          3.5,
+    "기기 및 엔드포인트":       3.5,
+    "네트워크":                3.0,
+    "시스템":                  3.5,
+    "애플리케이션 및 워크로드":  3.5,
+    "데이터":                  3.0,
+}
 
 
-@router.post("/webhook")
-def assessment_webhook(
-    payload: WebhookPayload,
-    x_internal_token: Optional[str] = Header(default=None),
-    db: Session = Depends(get_db),
-):
-    _verify_internal_token(x_internal_token)
-    _get_session_or_404(db, payload.session_id)
+def _org_target_map(db: Session, org_id: Optional[int]) -> dict[str, float]:
+    """pillar → 목표 점수. 조직 설정이 없으면 기본 목표값."""
+    out = dict(_DEFAULT_TARGETS)
+    if org_id is None:
+        return out
+    from models import OrgTargetScore
+    for r in db.query(OrgTargetScore).filter(OrgTargetScore.org_id == org_id).all():
+        out[r.pillar] = r.target_score
+    return out
 
-    saved = 0
-    for item in payload.results:
-        if not item.item_id:
-            continue
-        checklist = db.query(Checklist).filter(Checklist.item_id == item.item_id).first()
-        if not checklist:
-            continue
-        _upsert_collected(db, payload.session_id, checklist.check_id, item.model_dump())
-        saved += 1
 
-    db.commit()
-    return {"status": "ok", "saved": saved}
+def _session_cache_version(db: Session, session: DiagnosisSession) -> str:
+    """결과 캐시 키 버전. 세션 상태·점수·조직 커스터마이징/목표 변경 시 자동 무효화."""
+    from models import OrgChecklistOverride, OrgTargetScore
+    parts = [
+        str(session.status or ""),
+        session.completed_at.isoformat() if session.completed_at else "none",
+        str(session.total_score),
+    ]
+    ov_max = db.query(func.max(OrgChecklistOverride.updated_at)).filter(
+        OrgChecklistOverride.org_id == session.org_id
+    ).scalar()
+    tg_max = db.query(func.max(OrgTargetScore.updated_at)).filter(
+        OrgTargetScore.org_id == session.org_id
+    ).scalar()
+    parts.append(str(ov_max))
+    parts.append(str(tg_max))
+    return "|".join(parts)
+
+
+def _session_duration(db: Session, session: DiagnosisSession) -> dict:
+    """MAR-017: 평가 수행 소요시간 + SLA 충족 여부."""
+    sla = config_store.get("assessment_sla_seconds", db)
+    duration = None
+    within = None
+    if session.started_at and session.completed_at:
+        try:
+            duration = round((session.completed_at - session.started_at).total_seconds(), 1)
+            within = duration <= sla
+        except Exception:
+            duration = None
+    return {"duration_seconds": duration, "sla_seconds": sla, "within_sla": within}
 
 
 @router.get("/result")
@@ -834,23 +906,38 @@ def get_result(
 ):
     session = _get_session_or_404(db, session_id)
     assert_session_access(current_user, session)
+
+    # MAR-016: 세션이 바뀌지 않았으면 캐시된 결과 페이로드 재사용.
+    cache_key = f"result:{session_id}:{_session_cache_version(db, session)}"
+    cached = result_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     org = db.query(Organization).filter(Organization.org_id == session.org_id).first()
     user = db.query(User).filter(User.user_id == session.user_id).first()
 
+    # SFR-CUS-001: 조직 설정에서 제외(disabled)된 항목은 결과 목록에서도 제외.
+    overrides = _org_overrides(db, session.org_id)
+    disabled_ids = {cid for cid, o in overrides.items() if not o["enabled"]}
+
+    # SFR-EVAL-004: pillar 별 목표 점수 + gap(목표-현재).
+    targets = _org_target_map(db, session.org_id)
     maturity_rows = db.query(MaturityScore).filter(
         MaturityScore.session_id == session_id
     ).all()
-    pillar_scores = [
-        {
+    pillar_scores = []
+    for m in maturity_rows:
+        t = targets.get(m.pillar)
+        pillar_scores.append({
             "pillar": m.pillar,
             "score":  round(m.score, 4),
             "level":  determine_maturity_level(m.score),
             "pass_cnt": m.pass_cnt,
             "fail_cnt": m.fail_cnt,
             "na_cnt":   m.na_cnt,
-        }
-        for m in maturity_rows
-    ]
+            "target":   t,
+            "gap":      round(m.score - t, 4) if t is not None else None,
+        })
 
     results = (
         db.query(DiagnosisResult, Checklist)
@@ -871,6 +958,8 @@ def get_result(
     checklist_results = []
     submitted_check_ids: set[int] = set()
     for dr, cl in results:
+        if cl.check_id in disabled_ids:
+            continue
         raw = collected_by_check.get(cl.check_id) or {}
         entry = {
             "id":             cl.item_id,
@@ -935,6 +1024,8 @@ def get_result(
     for cl in all_checklists:
         if cl.check_id in submitted_check_ids:
             continue
+        if cl.check_id in disabled_ids:
+            continue
         if cl.pillar not in active_pillars:
             continue
         is_manual = (cl.diagnosis_type or "").strip() == "수동" or (cl.tool or "").strip() == "수동"
@@ -963,7 +1054,15 @@ def get_result(
             "unevaluable_reason_label": reason_label,
         })
 
-    return {
+    # SFR-EVAL-004: 전체 목표/gap 요약 (pillar 별 목표의 평균 대비 총점).
+    present_targets = [ps["target"] for ps in pillar_scores if ps.get("target") is not None]
+    overall_target = round(sum(present_targets) / len(present_targets), 4) if present_targets else None
+    overall_gap = (
+        round(overall_target - (session.total_score or 0.0), 4)
+        if overall_target is not None else None
+    )
+
+    payload = {
         "session": {
             "id":      session.session_id,
             "org":     org.name if org else "",
@@ -977,13 +1076,64 @@ def get_result(
             "errors":  _build_session_errors(db, session_id),
             "extra":   _mask_creds(session.extra or {}),
             "is_demo": bool(org and org.name == DEMO_ORG_NAME),
+            # MAR-017 소요시간/SLA
+            **_session_duration(db, session),
         },
         "pillar_scores":     pillar_scores,
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
+        # SFR-EVAL-004 목표 대비
+        "overall_target":    overall_target,
+        "overall_gap":       overall_gap,
         "checklist_results": checklist_results,
         # SKT 가이드 §3 §4 §7 §9 — 보고서 머리 표기용 평가 메타
         "evaluation_meta":   build_evaluation_meta(session),
+    }
+    # MAR-016: 결과 캐시에 저장 (조직 커스터마이징/목표 변경 시 키가 바뀌어 자동 무효화).
+    result_cache.set(cache_key, payload, ttl=config_store.get("result_cache_ttl", db))
+    return payload
+
+
+@router.get("/verify/{session_id}")
+def verify_result_integrity(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SER-010: 저장된 평가 결과의 무결성 검증.
+
+    각 DiagnosisResult 의 (result, score) 로 row_hash 를 재계산해 저장값과 비교한다.
+    DB 에서 결과를 몰래 수정하면 해시가 어긋나 tampered 로 탐지된다.
+    """
+    from services.integrity import result_row_hash
+    session = _get_session_or_404(db, session_id)
+    assert_session_access(current_user, session)
+    rows = db.query(DiagnosisResult).filter(
+        DiagnosisResult.session_id == session_id
+    ).all()
+    verified = 0
+    unhashed = 0
+    tampered: list[int] = []
+    for r in rows:
+        if not r.row_hash:
+            unhashed += 1
+            continue
+        expected = result_row_hash(
+            session_id=session_id, check_id=r.check_id,
+            result=r.result, score=r.score,
+        )
+        if expected == r.row_hash:
+            verified += 1
+        else:
+            tampered.append(r.check_id)
+    return {
+        "session_id":         session_id,
+        "total":              len(rows),
+        "verified":           verified,
+        "unhashed":           unhashed,
+        "tampered_count":     len(tampered),
+        "tampered_check_ids": tampered[:50],
+        "ok":                 len(tampered) == 0,
     }
 
 
@@ -1022,6 +1172,7 @@ def get_ocsf_events(
 def get_history(
     org_id: Optional[int] = None,
     org_name: Optional[str] = None,
+    q: Optional[str] = None,           # SFR-IT-002 결과 검색 (조직/담당자/레벨/상태/ID)
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1064,7 +1215,24 @@ def get_history(
             "score":   s.total_score,
             "errors":  _build_session_errors(db, s.session_id) if s.status == "완료" else [],
             "is_demo": bool(org_obj and org_obj.name == DEMO_ORG_NAME),
+            "duration_seconds": (
+                round((s.completed_at - s.started_at).total_seconds(), 1)
+                if s.started_at and s.completed_at else None
+            ),
         })
+
+    # SFR-IT-002: 검색어가 있으면 조직/담당자/레벨/상태/ID 전반에서 부분 일치 필터.
+    if q and q.strip():
+        needle = q.strip().lower()
+        items = [
+            it for it in items
+            if needle in str(it["id"]).lower()
+            or needle in (it["org"] or "").lower()
+            or needle in (it["manager"] or "").lower()
+            or needle in (it["level"] or "").lower()
+            or needle in (it["status"] or "").lower()
+        ]
+        completed_count = sum(1 for it in items if it["status"] == "완료")
 
     return {"sessions": items, "total": len(items), "completed_count": completed_count}
 
@@ -1094,28 +1262,18 @@ def _upsert_collected(db: Session, session_id: int, check_id: int, item: dict):
         db.add(CollectedData(session_id=session_id, check_id=check_id, **fields))
 
 
-def _trigger_shuffle_workflows(session_id: int, selected_tools: list[str]):
-    """선택된 도구에 해당하는 Shuffle 워크플로우만 개별 트리거 (BackgroundTasks 내에서 동기 실행)."""
-    payload = {
-        "execution_argument": {
-            "session_id":  session_id,
-            "webhook_url": f"{SELF_BASE_URL}/api/assessment/webhook",
-            "internal_token": INTERNAL_TOKEN or None,
-        }
-    }
-    with httpx.Client(timeout=10.0) as client:
-        for tool in selected_tools:
-            wf_id = SHUFFLE_WF.get(tool, "")
-            if not wf_id:
-                continue
-            try:
-                client.post(
-                    f"{SHUFFLE_URL}/api/v1/workflows/{wf_id}/execute",
-                    headers={"Authorization": f"Bearer {SHUFFLE_API_KEY}"},
-                    json=payload,
-                )
-            except Exception as exc:
-                logger.warning("[shuffle] %s workflow trigger failed: %s", tool, exc)
+def _org_overrides(db: Session, org_id: Optional[int]) -> dict[int, dict]:
+    """조직별 체크리스트 커스터마이징(SFR-CUS-001). check_id → {enabled, weight}.
+
+    오버라이드가 없는 조직은 빈 dict → 기존 채점과 100% 동일.
+    """
+    if org_id is None:
+        return {}
+    from models import OrgChecklistOverride
+    rows = db.query(OrgChecklistOverride).filter(
+        OrgChecklistOverride.org_id == org_id
+    ).all()
+    return {r.check_id: {"enabled": bool(r.enabled), "weight": r.weight} for r in rows}
 
 
 def _trigger_scoring(session_id: int, db: Session):
@@ -1154,12 +1312,71 @@ def _trigger_scoring(session_id: int, db: Session):
         }
         for r in collected_rows
     ]
-    output = score_session(session_id, collected_results, checklist_meta)
+    # pillar 별 전체 체크리스트 항목 수 — scoring 의 커버리지 가드용.
+    # (collected_results 에 없는 pillar 항목까지 분모에 포함해야 한 두 개만 충족돼도
+    # 최적화로 잘못 잡히는 거짓 만점을 막을 수 있다.)
+    # ★ pillar_scope 를 존중 — 사용자가 진단 범위에서 선택하지 않은 pillar 는 분모에 포함하지 않음.
+    #   (그 pillar 는 아예 점수에서 제외되므로 커버리지 가드도 의미 없음.)
+    extra_meta = session.extra if isinstance(session.extra, dict) else {}
+    pillar_scope_dict = extra_meta.get("pillar_scope") if isinstance(extra_meta.get("pillar_scope"), dict) else {}
+    _PILLAR_KEY_TO_NAME = {
+        "identify":    "식별자 및 신원",
+        "identity":    "식별자 및 신원",
+        "device":      "기기 및 엔드포인트",
+        "network":     "네트워크",
+        "system":      "시스템",
+        "application": "애플리케이션 및 워크로드",
+        "data":        "데이터",
+    }
+    active_pillars_for_coverage: set[str] = set()
+    if pillar_scope_dict:
+        for k, v in pillar_scope_dict.items():
+            if not v:
+                continue
+            nm = _PILLAR_KEY_TO_NAME.get(str(k).lower())
+            if nm:
+                active_pillars_for_coverage.add(nm)
+    pillar_total_rows = db.query(Checklist.pillar, func.count(Checklist.check_id)).group_by(Checklist.pillar).all()
+    if active_pillars_for_coverage:
+        pillar_total_items = {p: int(c) for p, c in pillar_total_rows if p in active_pillars_for_coverage}
+    else:
+        pillar_total_items = {p: int(c) for p, c in pillar_total_rows}
 
+    # SFR-CUS-001: 조직별 커스터마이징 적용 (비활성 항목 제외 + 가중치 오버라이드).
+    overrides = _org_overrides(db, session.org_id)
+    if overrides:
+        disabled_ids = {cid for cid, o in overrides.items() if not o["enabled"]}
+        if disabled_ids:
+            collected_results = [
+                r for r in collected_results if r.get("check_id") not in disabled_ids
+            ]
+            dis_rows = (
+                db.query(Checklist.pillar, func.count(Checklist.check_id))
+                .filter(Checklist.check_id.in_(disabled_ids))
+                .group_by(Checklist.pillar)
+                .all()
+            )
+            for p, c in dis_rows:
+                if p in pillar_total_items:
+                    pillar_total_items[p] = max(0, pillar_total_items[p] - int(c))
+        for m in checklist_meta:
+            ov = overrides.get(m.get("check_id"))
+            if ov and ov.get("weight") is not None:
+                m["maturity_score"] = ov["weight"]
+
+    output = score_session(session_id, collected_results, checklist_meta,
+                           pillar_total_items=pillar_total_items)
+
+    from services.integrity import result_row_hash
     for cr in output["checklist_results"]:
         check_id = cr.get("check_id")
         if not check_id:
             continue
+        # SER-010: 작성 시점 (result, score) 로 무결성 해시 고정.
+        rh = result_row_hash(
+            session_id=session_id, check_id=check_id,
+            result=cr["result"], score=cr["score"],
+        )
         existing = db.query(DiagnosisResult).filter(
             DiagnosisResult.session_id == session_id,
             DiagnosisResult.check_id == check_id,
@@ -1168,11 +1385,13 @@ def _trigger_scoring(session_id: int, db: Session):
             existing.result = cr["result"]
             existing.score = cr["score"]
             existing.recommendation = cr.get("recommendation", "")
+            existing.row_hash = rh
         else:
             db.add(DiagnosisResult(
                 session_id=session_id, check_id=check_id,
                 result=cr["result"], score=cr["score"],
                 recommendation=cr.get("recommendation", ""),
+                row_hash=rh,
             ))
 
     # 필러별 pass/fail/na 집계
@@ -1220,9 +1439,16 @@ def _trigger_scoring(session_id: int, db: Session):
     session.completed_at = datetime.now(timezone.utc)
     db.commit()
 
+    # MAR-016: 세션 결과가 바뀌었으니 캐시 무효화.
+    try:
+        from services import cache as _cache
+        _cache.invalidate_prefix(f"result:{session_id}:")
+    except Exception:
+        pass
+
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Collector dispatcher (Shuffle 미사용 시 fallback)
+# Collector dispatcher
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _kc_mapping():
@@ -1368,6 +1594,71 @@ def _nm_mapping():
 
 
 
+def _wp_mapping():
+    """web_probe base mapping. 모든 함수는 docstring autodiscover 로 자동 등록되므로
+    base 는 빈 리스트로 두고 _autodiscover 가 collect_* 함수들을 찾아 추가한다."""
+    return []
+
+
+def _sb_mapping():
+    """Supabase base mapping. Keycloak 과 같은 item_id 를 다중 매핑 — IdP 카테고리
+    배타이므로 둘 다 동시에 활성화되지 않는다 (_resolve_supported_tools)."""
+    from collectors.supabase_collector import (
+        collect_user_inventory, collect_idp_inventory, collect_idp_registered,
+        collect_active_idp_multi, collect_mfa_required, collect_otp_flow,
+        collect_webauthn_status, collect_session_policy, collect_password_policy,
+        collect_rbac_policy, collect_abac_policy, collect_data_abac_policy,
+        collect_mfa_required_actions, collect_role_change_events,
+    )
+    return [
+        (collect_user_inventory,         "1.1.1.2_1",  "초기"),
+        (collect_idp_inventory,          "1.1.1.3_1",  "향상"),
+        (collect_idp_registered,         "1.1.2.1_1",  "기존"),
+        (collect_active_idp_multi,       "1.1.2.2_1",  "초기"),
+        (collect_mfa_required,           "1.2.1.1_1",  "기존"),
+        (collect_otp_flow,               "1.2.1.2_1",  "초기"),
+        (collect_webauthn_status,        "1.2.1.2_2",  "초기"),
+        (collect_session_policy,         "1.2.2.1_1",  "기존"),
+        (collect_password_policy,        "1.4.2.2_1",  "초기"),
+        (collect_role_change_events,     "1.4.2.2_2",  "초기"),
+        (collect_rbac_policy,            "1.4.1.2_1",  "초기"),
+        (collect_abac_policy,            "4.1.1.3_1",  "향상"),
+        (collect_mfa_required_actions,   "4.2.2.2_2",  "초기"),
+        (collect_data_abac_policy,       "6.2.1.3_1",  "향상"),
+    ]
+
+
+def _vc_mapping():
+    """Vercel base mapping. web_probe/Trivy 와 일부 다중 매핑 (보강 증거)."""
+    from collectors.vercel_collector import (
+        collect_deployment_history, collect_env_separation, collect_team_rbac,
+        collect_domain_ssl, collect_secrets_management, collect_audit_log_retention,
+    )
+    return [
+        (collect_deployment_history,    "5.4.1.2_2",  "초기"),
+        (collect_env_separation,        "5.5.1.3_2",  "향상"),
+        (collect_team_rbac,             "4.1.1.4_2",  "최적화"),
+        (collect_domain_ssl,            "3.3.1.1_1",  "기존"),
+        (collect_secrets_management,    "5.5.1.2_3",  "초기"),
+        (collect_audit_log_retention,   "5.2.1.1_2",  "기존"),
+    ]
+
+
+def _rw_mapping():
+    """Railway base mapping. Trivy/Wazuh 와 일부 다중 매핑."""
+    from collectors.railway_collector import (
+        collect_deployment_status, collect_env_var_separation,
+        collect_project_members, collect_service_uptime, collect_restart_policy,
+    )
+    return [
+        (collect_deployment_status,     "5.4.1.2_4",  "초기"),
+        (collect_env_var_separation,    "5.5.1.3_1",  "향상"),
+        (collect_project_members,       "4.1.1.4_2",  "최적화"),
+        (collect_service_uptime,        "3.5.1.3_1",  "향상"),
+        (collect_restart_policy,        "3.5.1.1_2",  "기존"),
+    ]
+
+
 def _tr_mapping():
     from collectors.trivy_collector import (
         collect_image_scan, collect_cicd_scan_ratio, collect_integrity_check,
@@ -1445,18 +1736,26 @@ def _autodiscover(module_name: str, base: list) -> list:
 
 
 _TOOL_MODULE = {
-    "keycloak": "collectors.keycloak_collector",
-    "wazuh":    "collectors.wazuh_collector",
-    "nmap":     "collectors.nmap_collector",
-    "trivy":    "collectors.trivy_collector",
+    "keycloak":  "collectors.keycloak_collector",
+    "wazuh":     "collectors.wazuh_collector",
+    "nmap":      "collectors.nmap_collector",
+    "trivy":     "collectors.trivy_collector",
+    "web_probe": "collectors.web_probe_collector",
+    "supabase":  "collectors.supabase_collector",
+    "vercel":    "collectors.vercel_collector",
+    "railway":   "collectors.railway_collector",
 }
 
-# 명시 매핑 함수 캐시(원본 함수) — 4 오픈소스 도구만
+# 명시 매핑 함수 캐시(원본 함수) — 4 오픈소스 도구 + web_probe + Supabase/Vercel/Railway
 _BASE_MAPPING_FNS = {
-    "keycloak": _kc_mapping,
-    "wazuh":    _wz_mapping,
-    "nmap":     _nm_mapping,
-    "trivy":    _tr_mapping,
+    "keycloak":  _kc_mapping,
+    "wazuh":     _wz_mapping,
+    "nmap":      _nm_mapping,
+    "trivy":     _tr_mapping,
+    "web_probe": _wp_mapping,
+    "supabase":  _sb_mapping,
+    "vercel":    _vc_mapping,
+    "railway":   _rw_mapping,
 }
 
 
@@ -1501,10 +1800,14 @@ def _full_mapping(tool: str) -> list:
 
 # 외부 노출용: 기존 _TOOL_DISPATCH 구조 유지 (mapping_fn, takes_args)
 _TOOL_DISPATCH = {
-    "keycloak": (lambda: _full_mapping("keycloak"), True),
-    "wazuh":    (lambda: _full_mapping("wazuh"),    True),
-    "nmap":     (lambda: _full_mapping("nmap"),     False),
-    "trivy":    (lambda: _full_mapping("trivy"),    False),
+    "keycloak":  (lambda: _full_mapping("keycloak"),  True),
+    "wazuh":     (lambda: _full_mapping("wazuh"),     True),
+    "nmap":      (lambda: _full_mapping("nmap"),      False),
+    "trivy":     (lambda: _full_mapping("trivy"),     False),
+    "web_probe": (lambda: _full_mapping("web_probe"), False),
+    "supabase":  (lambda: _full_mapping("supabase"),  True),
+    "vercel":    (lambda: _full_mapping("vercel"),    True),
+    "railway":   (lambda: _full_mapping("railway"),   True),
 }
 
 
@@ -1589,6 +1892,36 @@ def _tool_configured(tool: str) -> Optional[str]:
             return f"Trivy 미연결: TRIVY_TARGET이 placeholder('{target or 'empty'}'). .env에 진단 대상 이미지/경로 설정 필요"
         return None
 
+    if tool == "web_probe":
+        # 외부 공개 도메인 1개만 있으면 동작. 세션 단위 set_session_target 으로 주입.
+        # 환경변수 fallback 없으면 미설정으로 본다 (run-time 에서 explicit target 우선).
+        target = os.getenv("WEB_PROBE_TARGET", "").strip()
+        if not target:
+            return "web_probe 미연결: WEB_PROBE_TARGET 미설정 — 도메인 입력 필요"
+        return None
+
+    if tool == "supabase":
+        ref = os.getenv("SUPABASE_PROJECT_REF", "").strip()
+        pat = os.getenv("SUPABASE_MGMT_PAT", "").strip()
+        anon = os.getenv("SUPABASE_ANON_KEY", "").strip()
+        if not ref:
+            return "Supabase 미연결: SUPABASE_PROJECT_REF 미설정 (대시보드 ref 또는 NewAssessment 입력 필요)"
+        if not pat and not anon:
+            return "Supabase 미연결: Management PAT 또는 anon key 중 하나는 필수"
+        return None
+
+    if tool == "vercel":
+        token = os.getenv("VERCEL_TOKEN", "").strip()
+        if not token:
+            return "Vercel 미연결: VERCEL_TOKEN 미설정 — NewAssessment 에서 입력 필요"
+        return None
+
+    if tool == "railway":
+        token = os.getenv("RAILWAY_TOKEN", "").strip()
+        if not token:
+            return "Railway 미연결: RAILWAY_TOKEN 미설정 — NewAssessment 에서 입력 필요"
+        return None
+
     return f"unknown tool: {tool}"
 
 
@@ -1610,6 +1943,16 @@ def _tool_health(tool: str) -> Optional[str]:
         return _probe_tcp(os.getenv("NMAP_WRAPPER_URL", "http://localhost:8001"))
     if tool == "trivy":
         return _probe_tcp(os.getenv("TRIVY_WRAPPER_URL", "http://localhost:8002"))
+    if tool == "web_probe":
+        # web_probe 는 외부 도메인을 HTTPS 로 직접 조회 — backend egress 만 있으면 OK.
+        # 별도 wrapper 가 없으므로 TCP probe 는 생략(_tool_configured 에서 target 확인).
+        return None
+    if tool == "supabase":
+        return _probe_tcp("https://api.supabase.com")
+    if tool == "vercel":
+        return _probe_tcp("https://api.vercel.com")
+    if tool == "railway":
+        return _probe_tcp("https://backboard.railway.app")
     return f"unknown tool: {tool}"
 
 
@@ -1863,6 +2206,9 @@ def _run_collectors(session_id: int, tools: list[str]):
     scan_targets: dict = {}
     keycloak_creds: dict = {}
     wazuh_creds: dict = {}
+    supabase_creds: dict = {}
+    vercel_creds: dict = {}
+    railway_creds: dict = {}
     profile_select_runtime: dict = {}
     db_pre = SessionLocal()
     try:
@@ -1879,6 +2225,15 @@ def _run_collectors(session_id: int, tools: list[str]):
             wz_meta = sess.extra.get("wazuh_creds") or {}
             if isinstance(wz_meta, dict):
                 wazuh_creds = {k: v for k, v in wz_meta.items() if v}
+            sb_meta = sess.extra.get("supabase_creds") or {}
+            if isinstance(sb_meta, dict):
+                supabase_creds = {k: v for k, v in sb_meta.items() if v}
+            vc_meta = sess.extra.get("vercel_creds") or {}
+            if isinstance(vc_meta, dict):
+                vercel_creds = {k: v for k, v in vc_meta.items() if v}
+            rw_meta = sess.extra.get("railway_creds") or {}
+            if isinstance(rw_meta, dict):
+                railway_creds = {k: v for k, v in rw_meta.items() if v}
             ps_meta = sess.extra.get("profile_select") or {}
             if isinstance(ps_meta, dict):
                 profile_select_runtime = ps_meta
@@ -1887,10 +2242,13 @@ def _run_collectors(session_id: int, tools: list[str]):
     finally:
         db_pre.close()
 
-    # 메모리에 보관된 자격 비번 합류 (사용 후 폐기 보장)
+    # 메모리에 보관된 자격 비번/토큰 합류 (사용 후 폐기 보장)
     secrets_blob = _pop_session_secrets(session_id)
     kc_secret = secrets_blob.get("keycloak") if isinstance(secrets_blob, dict) else None
     wz_secret = secrets_blob.get("wazuh") if isinstance(secrets_blob, dict) else None
+    sb_secret = secrets_blob.get("supabase") if isinstance(secrets_blob, dict) else None
+    vc_secret = secrets_blob.get("vercel") if isinstance(secrets_blob, dict) else None
+    rw_secret = secrets_blob.get("railway") if isinstance(secrets_blob, dict) else None
     if isinstance(kc_secret, dict):
         for k, v in kc_secret.items():
             if v:
@@ -1899,6 +2257,18 @@ def _run_collectors(session_id: int, tools: list[str]):
         for k, v in wz_secret.items():
             if v:
                 wazuh_creds[k] = v
+    if isinstance(sb_secret, dict):
+        for k, v in sb_secret.items():
+            if v:
+                supabase_creds[k] = v
+    if isinstance(vc_secret, dict):
+        for k, v in vc_secret.items():
+            if v:
+                vercel_creds[k] = v
+    if isinstance(rw_secret, dict):
+        for k, v in rw_secret.items():
+            if v:
+                railway_creds[k] = v
 
     with _collector_lock:
         results: list[dict] = []
@@ -1914,7 +2284,14 @@ def _run_collectors(session_id: int, tools: list[str]):
                     continue
 
                 # 사용자 입력 target / 자격 우선. 모듈-전역에 주입.
-                explicit_target = scan_targets.get(tool) if tool in ("nmap", "trivy") else None
+                # web_probe 는 별도 키가 있으면 우선, 없으면 nmap target 으로 폴백
+                # (둘 다 도메인/URL 형식이라 호환).
+                if tool == "web_probe":
+                    explicit_target = scan_targets.get("web_probe") or scan_targets.get("nmap")
+                elif tool in ("nmap", "trivy"):
+                    explicit_target = scan_targets.get(tool)
+                else:
+                    explicit_target = None
                 explicit_creds: Optional[dict] = None
                 if tool == "nmap":
                     from collectors import nmap_collector as _nm
@@ -1922,6 +2299,9 @@ def _run_collectors(session_id: int, tools: list[str]):
                 elif tool == "trivy":
                     from collectors import trivy_collector as _tr
                     _tr.set_session_target(explicit_target)
+                elif tool == "web_probe":
+                    from collectors import web_probe_collector as _wp
+                    _wp.set_session_target(explicit_target)
                 elif tool == "keycloak":
                     from collectors import keycloak_collector as _kc
                     explicit_creds = keycloak_creds or None
@@ -1930,16 +2310,39 @@ def _run_collectors(session_id: int, tools: list[str]):
                     from collectors import wazuh_collector as _wz
                     explicit_creds = wazuh_creds or None
                     _wz.set_session_creds(explicit_creds)
+                elif tool == "supabase":
+                    from collectors import supabase_collector as _sb
+                    explicit_creds = supabase_creds or None
+                    _sb.set_session_creds(explicit_creds)
+                elif tool == "vercel":
+                    from collectors import vercel_collector as _vc
+                    explicit_creds = vercel_creds or None
+                    _vc.set_session_creds(explicit_creds)
+                elif tool == "railway":
+                    from collectors import railway_collector as _rw
+                    explicit_creds = railway_creds or None
+                    _rw.set_session_creds(explicit_creds)
 
                 # 가용성 체크:
                 # - nmap/trivy: 사용자가 target을 직접 줬으면 wrapper TCP 도달성만 확인.
                 # - keycloak/wazuh: 사용자가 URL을 직접 줬으면 그 URL TCP probe만 확인
                 #   (placeholder 가드는 .env 디폴트값에만 의미가 있으므로 우회).
+                # - web_probe: 사용자가 target 을 줬으면 별도 health probe 불필요
+                #   (외부 도메인 직접 호출이므로 .env placeholder 가드 우회).
                 if tool in ("nmap", "trivy") and explicit_target:
                     wrapper_env = "NMAP_WRAPPER_URL" if tool == "nmap" else "TRIVY_WRAPPER_URL"
                     health_err = _probe_tcp(os.getenv(wrapper_env, ""))
                 elif tool in ("keycloak", "wazuh") and explicit_creds and explicit_creds.get("url"):
                     health_err = _probe_tcp(explicit_creds["url"])
+                elif tool == "web_probe" and explicit_target:
+                    health_err = None
+                elif tool == "supabase" and explicit_creds and explicit_creds.get("project_ref"):
+                    # 자격 있으면 api.supabase.com 만 TCP probe.
+                    health_err = _probe_tcp("https://api.supabase.com")
+                elif tool == "vercel" and explicit_creds and explicit_creds.get("token"):
+                    health_err = _probe_tcp("https://api.vercel.com")
+                elif tool == "railway" and explicit_creds and explicit_creds.get("token"):
+                    health_err = _probe_tcp("https://backboard.railway.app")
                 else:
                     health_err = _tool_health(tool)
 
@@ -2006,6 +2409,11 @@ def _run_collectors(session_id: int, tools: list[str]):
             except Exception:
                 pass
             try:
+                from collectors import web_probe_collector as _wp
+                _wp.set_session_target(None)
+            except Exception:
+                pass
+            try:
                 from collectors import keycloak_collector as _kc
                 _kc.set_session_creds(None)
             except Exception:
@@ -2013,6 +2421,21 @@ def _run_collectors(session_id: int, tools: list[str]):
             try:
                 from collectors import wazuh_collector as _wz
                 _wz.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import supabase_collector as _sb
+                _sb.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import vercel_collector as _vc
+                _vc.set_session_creds(None)
+            except Exception:
+                pass
+            try:
+                from collectors import railway_collector as _rw
+                _rw.set_session_creds(None)
             except Exception:
                 pass
 
@@ -2035,6 +2458,19 @@ def _run_collectors(session_id: int, tools: list[str]):
             logger.error("[collector] DB write failed: %s", exc)
         finally:
             db.close()
+
+    # live 모드 collector 가 끝나면 즉시 채점 트리거 (demo 모드와 동일한 흐름).
+    # 이전: 사용자가 InProgress 에서 "완료" 누를 때 /finalize 가 호출되었으나, 다중 매핑으로
+    # collected < expected 가 발생하면 영구히 409 → status 가 "진행 중"에 머무는 버그.
+    # collector 가 한 번 루프를 완료했다는 것은 모든 도구 호출이 끝났다는 뜻이므로
+    # 여기서 채점하는 게 안전하다.
+    db_score = SessionLocal()
+    try:
+        _trigger_scoring(session_id, db_score)
+    except Exception as exc:
+        logger.warning("[live] scoring failed session=%s: %s", session_id, exc)
+    finally:
+        db_score.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2388,3 +2824,213 @@ def delete_assessment_session(
 
     logger.info("[assessment] session %s deleted by user_id=%s", session_id, current_user.user_id)
     return {"status": "ok", "session_id": session_id}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MAR-004 / SFR-AUTO-005: 주기적 평가 자동 실행 (스케줄러)
+# ──────────────────────────────────────────────────────────────────────────────
+# next_run_at 이 도래한 스케줄을 lifespan 주기 태스크가 데모 모드로 자동 실행한다.
+# 자격(비밀번호)은 DB 에 저장하지 않으므로 스케줄은 데모 모드만 지원한다.
+
+_SCHED_CONFIG_KEYS = (
+    "org_name", "manager", "email", "department", "contact",
+    "org_type", "infra_type", "employees", "servers", "applications", "note",
+    "pillar_scope", "tool_scope", "profile_select",
+)
+
+
+def _sanitize_schedule_config(cfg: dict) -> dict:
+    """스케줄 저장용 config 정제 — 자격/토큰 제거, 데모 모드 고정."""
+    cfg = cfg or {}
+    out: dict = {}
+    for k in _SCHED_CONFIG_KEYS:
+        if k in cfg and cfg[k] is not None:
+            out[k] = cfg[k]
+    out["scan_mode"] = "demo"
+    return out
+
+
+def _create_session_from_config(db: Session, sched: ScheduledAssessment) -> tuple[int, list[str]]:
+    """스케줄 config 로 데모 진단 세션 생성. (session_id, selected_tools) 반환."""
+    cfg = sched.config if isinstance(sched.config, dict) else {}
+    profile_select = cfg.get("profile_select") if isinstance(cfg.get("profile_select"), dict) else {}
+    tool_scope = cfg.get("tool_scope") if isinstance(cfg.get("tool_scope"), dict) else {}
+    resolved = _resolve_supported_tools(profile_select, tool_scope)
+    selected_tools = sorted(t for t in ALL_TOOLS if resolved.get(t))
+    extra = {
+        "department":   cfg.get("department"),
+        "contact":      cfg.get("contact"),
+        "employees":    cfg.get("employees"),
+        "servers":      cfg.get("servers"),
+        "applications": cfg.get("applications"),
+        "note":         cfg.get("note"),
+        "pillar_scope": cfg.get("pillar_scope") or {},
+        "scan_mode":    "demo",
+        "scan_targets": {},
+        "profile_select": profile_select,
+        "scheduled":    True,
+        "schedule_id":  sched.schedule_id,
+    }
+    session = DiagnosisSession(
+        org_id=sched.org_id,
+        user_id=sched.user_id,
+        status="진행 중",
+        started_at=datetime.now(timezone.utc),
+        selected_tools={t: True for t in selected_tools},
+        extra=extra,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session.session_id, selected_tools
+
+
+def run_due_schedules() -> int:
+    """도래한 스케줄을 실행. lifespan 주기 태스크가 호출. 실행 건수 반환."""
+    db = SessionLocal()
+    fired = 0
+    try:
+        if not config_store.get("scheduler_enable", db):
+            return 0
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        due = (
+            db.query(ScheduledAssessment)
+            .filter(
+                ScheduledAssessment.enabled == 1,
+                ScheduledAssessment.next_run_at.isnot(None),
+                ScheduledAssessment.next_run_at <= now,
+            )
+            .all()
+        )
+        for sched in due:
+            try:
+                sid, tools = _create_session_from_config(db, sched)
+                if sid and tools:
+                    _run_collectors(sid, list(tools))  # demo 경로 — 동기 실행
+                interval = max(1, int(sched.interval_hours or 24))
+                sched.last_run_at = now
+                sched.last_session_id = sid or None
+                sched.next_run_at = now + _timedelta(hours=interval)
+                db.commit()
+                fired += 1
+                logger.info("[scheduler] schedule=%s fired → session=%s", sched.schedule_id, sid)
+            except Exception as exc:
+                db.rollback()
+                logger.warning("[scheduler] schedule=%s 실행 실패: %s", sched.schedule_id, exc)
+        return fired
+    finally:
+        db.close()
+
+
+class ScheduleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    interval_hours: int = Field(default=24, ge=1, le=8760)
+    run_now: bool = False                       # True 면 다음 틱에 즉시 실행
+    config: dict = Field(default_factory=dict)  # AssessmentRunRequest 형태 (자격 제외)
+
+
+class ScheduleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=200)
+    interval_hours: Optional[int] = Field(default=None, ge=1, le=8760)
+    enabled: Optional[bool] = None
+
+
+def _schedule_to_dict(s: ScheduledAssessment) -> dict:
+    return {
+        "schedule_id":     s.schedule_id,
+        "org_id":          s.org_id,
+        "name":            s.name,
+        "interval_hours":  s.interval_hours,
+        "enabled":         bool(s.enabled),
+        "next_run_at":     s.next_run_at.isoformat() if s.next_run_at else None,
+        "last_run_at":     s.last_run_at.isoformat() if s.last_run_at else None,
+        "last_session_id": s.last_session_id,
+        "config":          s.config or {},
+    }
+
+
+@router.post("/schedules")
+def create_schedule(
+    req: ScheduleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """주기 평가 스케줄 생성 (데모 모드). 본인 조직만."""
+    cfg = _sanitize_schedule_config(req.config)
+    # org_name 이 주어지면 본인 조직과 일치해야 함(일반 user). admin 은 자유.
+    org = db.query(Organization).filter(Organization.org_id == current_user.org_id).first()
+    if current_user.role != "admin":
+        cfg["org_name"] = org.name if org else cfg.get("org_name")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    first_run = now if req.run_now else now + _timedelta(hours=req.interval_hours)
+    sched = ScheduledAssessment(
+        org_id=current_user.org_id,
+        user_id=current_user.user_id,
+        name=req.name.strip(),
+        interval_hours=req.interval_hours,
+        enabled=1,
+        config=cfg,
+        next_run_at=first_run,
+    )
+    db.add(sched)
+    db.commit()
+    db.refresh(sched)
+    return {"status": "ok", **_schedule_to_dict(sched)}
+
+
+@router.get("/schedules")
+def list_schedules(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """본인 조직 스케줄 목록 (admin 은 전체)."""
+    q = db.query(ScheduledAssessment)
+    if current_user.role != "admin":
+        q = q.filter(ScheduledAssessment.org_id == current_user.org_id)
+    rows = q.order_by(ScheduledAssessment.schedule_id.desc()).all()
+    return {"schedules": [_schedule_to_dict(s) for s in rows], "total": len(rows)}
+
+
+@router.patch("/schedules/{schedule_id}")
+def update_schedule(
+    schedule_id: int,
+    req: ScheduleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """스케줄 활성/주기/이름 수정."""
+    sched = db.query(ScheduledAssessment).filter(
+        ScheduledAssessment.schedule_id == schedule_id
+    ).first()
+    if not sched:
+        raise HTTPException(status_code=404, detail="스케줄을 찾을 수 없습니다.")
+    assert_org_access(current_user, sched.org_id)
+    if req.name is not None:
+        sched.name = req.name.strip()[:200] or sched.name
+    if req.interval_hours is not None:
+        sched.interval_hours = req.interval_hours
+    if req.enabled is not None:
+        sched.enabled = 1 if req.enabled else 0
+        # 재활성화 시 next_run 이 과거면 다음 틱에 실행되도록 now 로 보정.
+        if req.enabled and (sched.next_run_at is None):
+            sched.next_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    db.refresh(sched)
+    return {"status": "ok", **_schedule_to_dict(sched)}
+
+
+@router.delete("/schedules/{schedule_id}")
+def delete_schedule(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sched = db.query(ScheduledAssessment).filter(
+        ScheduledAssessment.schedule_id == schedule_id
+    ).first()
+    if not sched:
+        raise HTTPException(status_code=404, detail="스케줄을 찾을 수 없습니다.")
+    assert_org_access(current_user, sched.org_id)
+    db.delete(sched)
+    db.commit()
+    return {"status": "ok", "schedule_id": schedule_id}

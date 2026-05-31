@@ -37,9 +37,11 @@ import {
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
 import { maturityLabel } from "../lib/maturity";
+import { formatSessionDate } from "../lib/datetime";
 import type { AssessmentSession } from "../../types/api";
 
-type SortKey = "org" | "date" | "manager";
+// 노션 2번 피드백 A-2: 점수 칼럼 정렬 추가 — date/org/manager 외 score 도 정렬 가능.
+type SortKey = "org" | "date" | "manager" | "score";
 type SortDir = "asc" | "desc";
 
 const COMPARE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
@@ -51,9 +53,11 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
     : <ArrowDown size={13} className="text-blue-500" />;
 }
 
+// 노션 2번 피드백 D-1: maturity 단계 색상 통일 — 기존(빨강)/초기(노랑)/향상(파랑)/최적화(초록).
+// MATURITY_COLOR 와 같은 톤이지만 History는 단순 클래스만 필요해 분리.
 function getLevelBadgeClass(level: string) {
   if (level === "기존") return "bg-red-100 text-red-700";
-  if (level === "초기") return "bg-yellow-100 text-yellow-700";
+  if (level === "초기") return "bg-yellow-100 text-yellow-800";
   if (level === "향상") return "bg-blue-100 text-blue-700";
   if (level === "최적화") return "bg-green-100 text-green-700";
   return "bg-blue-100 text-blue-700";
@@ -86,6 +90,7 @@ export function History() {
   // 세션 삭제 확인 모달
   const [deleteTarget, setDeleteTarget] = useState<AssessmentSession | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [query, setQuery] = useState("");
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -115,14 +120,33 @@ export function History() {
       });
   }, [user?.role, user?.orgName]);
 
-  // 백엔드 호출이 org_name으로 이미 필터링되므로 클라이언트 필터링 불필요
-  const baseSessions = allSessions;
+  // SFR-IT-002 결과 검색 — 조직/담당자/레벨/상태/ID 부분 일치 (클라이언트 필터).
+  const baseSessions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return allSessions;
+    return allSessions.filter((s) =>
+      [s.id, s.org, s.manager, s.level, s.status]
+        .map((v) => String(v ?? "").toLowerCase())
+        .some((v) => v.includes(q)),
+    );
+  }, [allSessions, query]);
 
   const sessions = useMemo(() => {
+    // 노션 2번 피드백 A-2: score 칼럼 추가 정렬. null 점수(진행중) 는 항상 맨 뒤로.
     return [...baseSessions].sort((a, b) => {
+      if (sortKey === "score") {
+        const sa = a.score;
+        const sb = b.score;
+        if (sa == null && sb == null) return 0;
+        if (sa == null) return 1;
+        if (sb == null) return -1;
+        return sortDir === "asc" ? sa - sb : sb - sa;
+      }
       const va = a[sortKey] ?? "";
       const vb = b[sortKey] ?? "";
-      return sortDir === "asc" ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+      return sortDir === "asc"
+        ? String(va).localeCompare(String(vb), "ko")
+        : String(vb).localeCompare(String(va), "ko");
     });
   }, [baseSessions, sortKey, sortDir]);
 
@@ -186,13 +210,9 @@ export function History() {
 
   return (
     <div className="max-w-screen-2xl mx-auto space-y-6">
+      {/* 노션 2번 피드백 A-1: 우측 파란 배지 삭제 + 페이지 제목을 역할별로 분기. */}
       <div className="flex items-center justify-between">
-        <h1>진단 이력</h1>
-        {user?.role === "admin" && (
-          <span className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm font-medium">
-            전체 기관 이력 조회
-          </span>
-        )}
+        <h1>{user?.role === "admin" ? "전체 기관 진단 이력" : "내 조직 진단 이력"}</h1>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">
@@ -204,36 +224,54 @@ export function History() {
               총 {sessions.length}개 / 완료 {completedCount}개
             </span>
           </h2>
-          {selectedSessions.length > 0 && (
-            <div className="ml-auto flex items-center gap-2">
+          {/* 노션 2번 피드백 A-4: 비교 버튼은 항상 표시하되 정확히 2개 선택 시에만 활성화. */}
+          <div className="ml-auto flex items-center gap-2">
+            {/* SFR-IT-002 결과 검색 */}
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="조직·담당자·레벨 검색"
+              className="px-3 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 w-48"
+            />
+            {selectedSessions.length > 0 && (
               <span className="text-sm text-blue-600 font-medium">{selectedSessions.length}개 선택됨</span>
-              {selectedSessions.length === 2 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const [a, b] = selectedSessions;
-                    // 날짜순으로 from=오래된, to=최신
-                    const sa = sessions.find((s) => Number(s.id) === a);
-                    const sb = sessions.find((s) => Number(s.id) === b);
-                    const fromId = (sa && sb && sa.date <= sb.date) ? a : b;
-                    const toId = fromId === a ? b : a;
-                    navigate(`/compare?from=${fromId}&to=${toId}`);
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-xs font-medium"
-                  title="선택한 2개 진단의 차이를 비교합니다"
-                >
-                  <GitCompare size={12} />
-                  비교 모드
-                </button>
-              )}
+            )}
+            <button
+              type="button"
+              disabled={selectedSessions.length !== 2}
+              onClick={() => {
+                if (selectedSessions.length !== 2) return;
+                const [a, b] = selectedSessions;
+                const sa = sessions.find((s) => Number(s.id) === a);
+                const sb = sessions.find((s) => Number(s.id) === b);
+                const fromId = (sa && sb && sa.date <= sb.date) ? a : b;
+                const toId = fromId === a ? b : a;
+                navigate(`/compare?from=${fromId}&to=${toId}`);
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium ${
+                selectedSessions.length === 2
+                  ? "bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
+                  : "bg-gray-100 text-gray-400 cursor-not-allowed"
+              }`}
+              title={
+                selectedSessions.length === 2
+                  ? "선택한 2개 진단의 차이를 비교합니다"
+                  : `비교는 정확히 2개 선택 시 활성화됩니다 (현재 ${selectedSessions.length}개)`
+              }
+            >
+              <GitCompare size={12} />
+              비교 모드
+            </button>
+            {selectedSessions.length > 0 && (
               <button
                 onClick={() => setSelectedSessions([])}
                 className="text-xs text-gray-400 hover:text-gray-600 underline"
               >
                 전체 해제
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -253,7 +291,16 @@ export function History() {
                   </th>
                 ))}
                 <th className="py-3 px-4 text-sm font-medium text-gray-500">성숙도 등급</th>
-                <th className="py-3 px-4 text-sm font-medium text-gray-500">점수</th>
+                {/* 노션 2번 피드백 A-2: 점수 칼럼 정렬 가능 */}
+                <th className="py-3 px-4">
+                  <button
+                    onClick={() => toggleSort("score")}
+                    className="flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-gray-800"
+                  >
+                    점수
+                    <SortIcon active={sortKey === "score"} dir={sortDir} />
+                  </button>
+                </th>
                 <th className="py-3 px-4 text-sm font-medium text-gray-500">상태</th>
                 {user?.role === "admin" && (
                   <th className="py-3 px-4 text-sm font-medium text-gray-500">위험 영역</th>
@@ -304,7 +351,8 @@ export function History() {
                           )}
                         </span>
                       </td>
-                      <td className="py-3 px-4 text-gray-600">{session.date}</td>
+                      {/* 노션 2번 피드백 A-3: ISO 날짜의 T 제거 → 스페이스 2칸 */}
+                      <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{formatSessionDate(session.date)}</td>
                       <td className="py-3 px-4 text-gray-600">{session.manager}</td>
                       <td className="py-3 px-4">
                         <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getLevelBadgeClass(session.level)}`}>
@@ -413,9 +461,30 @@ export function History() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" horizontal={false} />
                 <XAxis type="number" domain={[0, 4]} tick={{ fontSize: 12 }} stroke="#9ca3af" />
                 <YAxis type="category" dataKey="org" tick={{ fontSize: 11 }} stroke="#9ca3af" width={90} />
+                {/* 노션 2번 피드백 A-5: 막대 색 따라가는 반투명 배경 + 소수점 둘째 자리 */}
                 <Tooltip
-                  formatter={(v: number) => [`${v} / 4.0`, "종합 점수"]}
-                  contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb" }}
+                  cursor={{ fill: "rgba(0,0,0,0.04)" }}
+                  formatter={(v: number) => [`${Number(v).toFixed(2)} / 4.00`, "종합 점수"]}
+                  content={({ active, payload }) => {
+                    if (!active || !payload || payload.length === 0) return null;
+                    const p = payload[0];
+                    const color = (p.payload && (p.payload as { color?: string }).color) ?? (p.color as string) ?? "#3b82f6";
+                    const val = typeof p.value === "number" ? p.value : Number(p.value);
+                    const row = p.payload as { org?: string; date?: string };
+                    return (
+                      <div
+                        style={{
+                          backgroundColor: `${color}D9`,  // alpha ~0.85
+                          borderColor: color,
+                        }}
+                        className="rounded-md border px-3 py-2 text-xs text-white shadow-lg"
+                      >
+                        <div className="font-semibold">{row.org}</div>
+                        <div className="opacity-90">{formatSessionDate(row.date)}</div>
+                        <div className="mt-1 font-semibold">{val.toFixed(2)} / 4.00</div>
+                      </div>
+                    );
+                  }}
                 />
                 <Bar dataKey="score" radius={[0, 4, 4, 0]}>
                   {barData.map((_, i) => (
@@ -426,26 +495,65 @@ export function History() {
             </ResponsiveContainer>
           </div>
 
+          {/* 노션 2번 피드백 A-6, A-7: 레이더 차트 옆에 필러별 점수 테이블 + 차트 패딩 보강(시스템 글자 겹침 해소) */}
           <div>
             <h3 className="text-sm font-semibold text-gray-600 mb-3">필러별 비교</h3>
-            <ResponsiveContainer width="100%" height={380}>
-              <RadarChart data={radarData}>
-                <PolarGrid stroke="#e5e7eb" />
-                <PolarAngleAxis dataKey="pillar" stroke="#6b7280" tick={{ fontSize: 12 }} />
-                {selectedData.map((session, idx) => (
-                  <Radar
-                    key={session.id}
-                    name={`${session.org} (${session.date})`}
-                    dataKey={`${session.org} (${session.date})`}
-                    stroke={COMPARE_COLORS[idx % COMPARE_COLORS.length]}
-                    fill={COMPARE_COLORS[idx % COMPARE_COLORS.length]}
-                    fillOpacity={0.15}
-                    strokeWidth={2}
-                  />
-                ))}
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-              </RadarChart>
-            </ResponsiveContainer>
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(280px,420px)] gap-6 items-center">
+              <div className="px-2 pb-4">
+                <ResponsiveContainer width="100%" height={380}>
+                  <RadarChart data={radarData} margin={{ top: 24, right: 28, bottom: 24, left: 28 }}>
+                    <PolarGrid stroke="#e5e7eb" />
+                    <PolarAngleAxis dataKey="pillar" stroke="#6b7280" tick={{ fontSize: 12 }} />
+                    {selectedData.map((session, idx) => (
+                      <Radar
+                        key={session.id}
+                        name={`${session.org} (${formatSessionDate(session.date)})`}
+                        dataKey={`${session.org} (${session.date})`}
+                        stroke={COMPARE_COLORS[idx % COMPARE_COLORS.length]}
+                        fill={COMPARE_COLORS[idx % COMPARE_COLORS.length]}
+                        fillOpacity={0.15}
+                        strokeWidth={2}
+                      />
+                    ))}
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-500">
+                      <th className="text-left px-3 py-2 font-medium">필러</th>
+                      {selectedData.map((s, idx) => (
+                        <th
+                          key={s.id}
+                          className="text-right px-3 py-2 font-medium whitespace-nowrap"
+                          style={{ color: COMPARE_COLORS[idx % COMPARE_COLORS.length] }}
+                        >
+                          세션 {idx + 1}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {PILLARS.map((p, i) => (
+                      <tr key={p.key} className="border-t border-gray-100">
+                        <td className="px-3 py-1.5 text-gray-700">{p.shortLabel}</td>
+                        {selectedData.map((s, idx) => (
+                          <td
+                            key={s.id}
+                            className="px-3 py-1.5 text-right font-semibold tabular-nums"
+                            style={{ color: COMPARE_COLORS[idx % COMPARE_COLORS.length] }}
+                          >
+                            {(pillarScoresFor(s)[i] ?? 0).toFixed(2)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       )}

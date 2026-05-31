@@ -8,10 +8,12 @@ import { SharedResult } from "./pages/SharedResult";
 import { Dashboard } from "./pages/Dashboard";
 import { NewAssessment } from "./pages/NewAssessment";
 import { InProgress } from "./pages/InProgress";
+import { AssessmentNext } from "./pages/AssessmentNext";
 import { Reporting } from "./pages/Reporting";
 import { History } from "./pages/History";
 import { Compare } from "./pages/Compare";
 import { Settings } from "./pages/Settings";
+import { AdminConsole } from "./pages/AdminConsole";
 
 export const router = createBrowserRouter([
   // 공개 라우트 (인증 불필요)
@@ -43,10 +45,12 @@ export const router = createBrowserRouter([
       { index: true, Component: Dashboard },
       { path: "new-assessment", Component: NewAssessment },
       { path: "in-progress/:sessionId?", Component: InProgress },
+      { path: "assessment/next/:sessionId", Component: AssessmentNext },
       { path: "reporting/:sessionId?", Component: Reporting },
       { path: "history", Component: History },
       { path: "compare", Component: Compare },
       { path: "settings", Component: Settings },
+      { path: "admin", Component: AdminConsole },
     ],
   },
 ]);

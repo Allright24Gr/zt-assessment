@@ -34,7 +34,7 @@ DEFAULT_DAYS = int(os.getenv("ZTA_SESSION_RETENTION_DAYS", "90"))
 
 # auth.py 의 _PROTECTED_ORG_NAMES 와 동일해야 한다.
 _DEMO_ORG_NAMES = {
-    "시스템관리", "세종대학교",
+    "시스템관리", "세종대학교", "T-Markov Framework",
     "ABC 핀테크", "XYZ 메디컬", "국가데이터센터", "스타트업 K",
 }
 

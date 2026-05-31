@@ -18,11 +18,21 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    # .env 는 선택사항 — 없으면 아래 기본값으로 그대로 동작한다(무설정 제출본 실행 대응).
+    # .env 를 두면 그 값이 우선한다.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
-      - SELF_BASE_URL=http://zt-backend:8000
+      - DB_HOST=${DB_HOST:-mysql}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_NAME=${DB_NAME:-zt_assessment}
+      - DB_USER=${DB_USER:-zt_user}
+      - DB_PASSWORD=${DB_PASSWORD:-ztDemo1234}
+      - SECRET_KEY=${SECRET_KEY:-zt-demo-secret-key-change-me-in-production-0123456789}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8080}
+      - NMAP_WRAPPER_URL=${NMAP_WRAPPER_URL:-http://nmap-wrapper:8001}
+      - TRIVY_WRAPPER_URL=${TRIVY_WRAPPER_URL:-http://trivy-wrapper:8002}
     networks:
       - zt-network
     depends_on:
@@ -34,10 +44,10 @@ services:
   mysql:
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${DB_NAME}
-      MYSQL_USER: ${DB_USER}
-      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ztRoot1234}
+      MYSQL_DATABASE: ${DB_NAME:-zt_assessment}
+      MYSQL_USER: ${DB_USER:-zt_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-ztDemo1234}
     volumes:
       - mysql-data:/var/lib/mysql
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -53,8 +63,8 @@ services:
     image: quay.io/keycloak/keycloak:24.0
     command: start-dev --http-port=8443
     environment:
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
     ports:
       - "8443:8443"
     networks:
@@ -63,8 +73,8 @@ services:
   wazuh:
     image: wazuh/wazuh-manager:4.7.0
     environment:
-      WAZUH_API_USER: ${WAZUH_USER}
-      WAZUH_API_PASSWORD: ${WAZUH_PASSWORD}
+      WAZUH_API_USER: ${WAZUH_USER:-wazuh-wui}
+      WAZUH_API_PASSWORD: ${WAZUH_PASSWORD:-wazuhDemo1234}
     ports:
       - "55000:55000"
     volumes:
@@ -82,85 +92,6 @@ services:
       - "9201:9200"
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
-    networks:
-      - zt-network
-
-  # ── Shuffle SOAR ───────────────────────────────────────────────────────────
-  # 기본 `docker compose up`에는 포함되지 않음 (profiles).
-  # Shuffle 워크플로우 연동이 필요하면:  docker compose --profile shuffle up -d
-  shuffle-backend:
-    image: ghcr.io/shuffle/shuffle-backend:latest
-    container_name: shuffle-backend
-    restart: unless-stopped
-    profiles: ["shuffle"]
-    depends_on:
-      - shuffle-database
-    environment:
-      - DATASTORE_EMULATOR_HOST=shuffle-database:8000
-      - SHUFFLE_APP_HOTLOAD_FOLDER=/shuffle-apps
-      - SHUFFLE_FILE_LOCATION=/shuffle-files
-      - ORG_ID=Shuffle
-      - SHUFFLE_OPENSEARCH_INDEX_PREFIX=shuffle
-      # shuffle-backend의 기본값은 shuffle-opensearch:9200(존재 X). 우리 컨테이너명에 맞춰 명시.
-      - SHUFFLE_OPENSEARCH_URL=http://shuffle-database:9200
-      - SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY=true
-    volumes:
-      - shuffle-apps:/shuffle-apps
-      - shuffle-files:/shuffle-files
-    ports:
-      - "5001:5001"
-    networks:
-      - zt-network
-
-  shuffle-frontend:
-    image: ghcr.io/shuffle/shuffle-frontend:latest
-    container_name: shuffle-frontend
-    restart: unless-stopped
-    profiles: ["shuffle"]
-    depends_on:
-      - shuffle-backend
-    environment:
-      - BACKEND_HOSTNAME=shuffle-backend
-    ports:
-      - "3001:80"
-    networks:
-      - zt-network
-
-  shuffle-orborus:
-    image: ghcr.io/shuffle/shuffle-orborus:latest
-    container_name: shuffle-orborus
-    restart: unless-stopped
-    profiles: ["shuffle"]
-    depends_on:
-      - shuffle-backend
-    environment:
-      # Shuffle 워크플로우 노드를 docker container 로 spawn 하는 worker.
-      # 누락 시 backend trigger 만 되고 노드(HTTP/Webhook/Custom 등)는 EXECUTING 상태에서 멈춤.
-      - ENVIRONMENT_NAME=onprem
-      - ORG_ID=Shuffle
-      - BASE_URL=http://shuffle-backend:5001
-      - DOCKER_HOST=unix:///var/run/docker.sock
-      - SHUFFLE_PASS_WORKER_PROXY=true
-      - SHUFFLE_BASE_IMAGE_NAME=ghcr.io/shuffle
-      - SHUFFLE_BASE_IMAGE_TAG_SUFFIX=latest
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - zt-network
-
-  shuffle-database:
-    image: opensearchproject/opensearch:2.11.0
-    container_name: shuffle-database
-    restart: unless-stopped
-    profiles: ["shuffle"]
-    environment:
-      - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-      - "DISABLE_INSTALL_DEMO_CONFIG=true"
-      - "DISABLE_SECURITY_PLUGIN=true"
-    volumes:
-      - shuffle-database:/usr/share/opensearch/data
     networks:
       - zt-network
 
@@ -198,7 +129,4 @@ volumes:
   mysql-data:
   wazuh-data:
   elasticsearch-data:
-  shuffle-apps:
-  shuffle-files:
-  shuffle-database:
   trivy-cache:

@@ -6,6 +6,7 @@
 2) 인증 가능한 기본 계정 생성/업데이트:
    - admin / admin   (관리자, '시스템관리' 조직)
    - user1 / user1   (박기웅, '세종대학교' 조직)
+   - user2 / user2   (서진우, 'T-Markov Framework' 조직)
 3) 관리자 시점에 보일 다양한 조직의 완료된 예시 세션 4건
 4) user1(세종대학교) 완료 세션 3건 + 진행 중 세션 1건
 
@@ -28,6 +29,30 @@ from routers.auth import _hash_password
 
 
 RESULT_WEIGHT = {"충족": 1.0, "부분충족": 0.5, "미충족": 0.0, "평가불가": 0.0}
+
+USER2_PROFILE = {
+    "org_name":     "T-Markov Framework",
+    "department":   "보안연구팀",
+    "contact":      "",
+    "org_type":     "IT",
+    "infra_type":   "퍼블릭",
+    "employees":    20,
+    "servers":      12,
+    "applications": 8,
+    "note":         "제로트러스트 성숙도 진단 프레임워크 자체 검증",
+}
+
+
+def _ensure_user2(db) -> User:
+    """T-Markov Framework 조직 + user2(서진우) 계정 idempotent 생성."""
+    org_tmarkov = _upsert_org(
+        db, "T-Markov Framework",
+        industry="IT", size="중소기업", cloud_type="퍼블릭",
+    )
+    return _upsert_auth_user(
+        db, login_id="user2", password="user2", name="서진우",
+        role="user", org=org_tmarkov, profile=USER2_PROFILE,
+    )
 
 RECOMMENDATION = {
     "충족": "",
@@ -144,7 +169,10 @@ def _create_completed_session(
     selected_tools: dict | None = None,
 ) -> DiagnosisSession:
     """완료된 세션 1건 + 모든 관련 데이터 생성."""
-    selected_tools = selected_tools or {"keycloak": True, "wazuh": True, "nmap": True, "trivy": True}
+    selected_tools = selected_tools or {
+        "keycloak": True, "wazuh": True, "nmap": True, "trivy": True,
+        "web_probe": True,
+    }
 
     session = DiagnosisSession(
         org_id=org.org_id,
@@ -225,7 +253,10 @@ def _create_inprogress_session(
     session = DiagnosisSession(
         org_id=org.org_id, user_id=user.user_id,
         status="진행 중", started_at=started_at,
-        selected_tools={"keycloak": True, "wazuh": True, "nmap": True, "trivy": True},
+        selected_tools={
+            "keycloak": True, "wazuh": True, "nmap": True, "trivy": True,
+            "web_probe": True,
+        },
         extra=extra,
     )
     db.add(session)
@@ -250,28 +281,37 @@ def seed(force: bool = False):
             print("[seed] Checklist가 비어있음. seed_checklist.py 먼저 실행하세요.")
             return
 
-        # idempotent: admin/user1 상태에 따른 분기
-        # - 2개 모두 존재: 스킵 (정상 운영)
+        # idempotent: admin/user1/user2 상태에 따른 분기
+        # - 3개 모두 존재: 스킵 (정상 운영)
         # - 0개: 신규 시드 (안전한 fresh install)
-        # - 1개만 존재: 부분 손상. 그대로 wipe하면 가입한 일반 사용자까지 다 날아가므로 강제 중단.
+        # - 1~2개만 존재: 부분 손상. 그대로 wipe하면 가입한 일반 사용자까지 다 날아가므로 강제 중단.
         #   --force 플래그가 있을 때만 진행.
+        REQUIRED_SEED_LOGINS = {"admin", "user1", "user2"}
         if not force:
             existing_logins = {
                 u.login_id for u in
-                db.query(User).filter(User.login_id.in_(["admin", "user1"])).all()
+                db.query(User).filter(User.login_id.in_(list(REQUIRED_SEED_LOGINS))).all()
             }
-            if len(existing_logins) >= 2:
-                print("[seed] admin/user1이 이미 존재 — 스킵 (--force로 강제 재생성)")
+            if existing_logins == REQUIRED_SEED_LOGINS:
+                print("[seed] admin/user1/user2가 이미 존재 — 스킵 (--force로 강제 재생성)")
                 return
-            if len(existing_logins) == 1:
-                missing = {"admin", "user1"} - existing_logins
+            # 마이그레이션: 기존 EC2 가 admin+user1 만 있는 상태에서 user2 만 추가하는 경우.
+            # 다른 데이터는 손대지 않고 user2 만 in-place upsert.
+            if existing_logins == {"admin", "user1"}:
+                print("[seed] user2 누락 감지 — 기존 데이터 보존 + user2 만 추가합니다.")
+                u2 = _ensure_user2(db)
+                db.commit()
+                print(f"user2 / user2 → 서진우 (T-Markov Framework), user_id={u2.user_id}")
+                return
+            if existing_logins:
+                missing = REQUIRED_SEED_LOGINS - existing_logins
                 total_users = db.query(User).count()
                 print(
                     f"[seed] WARNING: 부분 손상 감지 — {existing_logins} 존재, {missing} 누락.\n"
                     f"       현재 DB 전체 User 수: {total_users}건.\n"
                     f"       그대로 진행하면 모든 User/Organization이 삭제됩니다.\n"
                     f"       의도된 재시드라면 `python seed_demo_examples.py --force` 로 재실행하세요.\n"
-                    f"       (실수로 admin/user1 중 하나만 삭제된 상황이면 해당 계정만 수동 복구 권장.)"
+                    f"       (실수로 시드 계정 중 일부만 삭제된 상황이면 해당 계정만 수동 복구 권장.)"
                 )
                 return
 
@@ -302,6 +342,9 @@ def seed(force: bool = False):
             db, login_id="user1", password="user1", name="박기웅",
             role="user", org=org_sejong, profile=user1_profile,
         )
+
+        user2 = _ensure_user2(db)
+        org_tmarkov = _upsert_org(db, "T-Markov Framework")
 
         # 3) 관리자 시점 예시 — 다양한 조직/점수 분포 4건
         now = datetime.now(timezone.utc)
@@ -373,6 +416,7 @@ def seed(force: bool = False):
         print("──── 시드 결과 ────")
         print(f"admin / admin → org={org_admin.org_id}, user_id={admin.user_id}")
         print(f"user1 / user1 → 박기웅 ({org_sejong.name}), user_id={user1.user_id}")
+        print(f"user2 / user2 → 서진우 ({org_tmarkov.name}), user_id={user2.user_id}")
         print(f"관리자 예시 세션: {len(admin_examples)}건")
         print(f"user1 완료 세션: {len(user1_completed)}건 + 진행 중 {inprogress.session_id}")
         total = db.query(DiagnosisSession).count()

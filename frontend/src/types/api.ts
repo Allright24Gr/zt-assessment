@@ -78,6 +78,9 @@ export interface AssessmentSession {
 export interface ScanTargets {
   nmap?: string;
   trivy?: string;
+  // 도구 무관 외부 probe (OIDC/DNS/HTTP/TLS/CT log). 도메인 또는 https URL.
+  // 미입력 시 백엔드는 nmap target 으로 폴백한다.
+  web_probe?: string;
 }
 
 export interface KeycloakCreds {
@@ -90,6 +93,29 @@ export interface WazuhCreds {
   url?: string;
   api_user?: string;
   api_pass?: string;
+}
+
+// Supabase 자격 — Management PAT 권장. service_role/anon 은 보조.
+export interface SupabaseCreds {
+  project_ref?: string;  // 대시보드 ref (20자 lowercase 영숫자)
+  pat?: string;          // sbp_ 로 시작하는 Management PAT
+  service_role?: string; // service_role JWT (RLS bypass, 강력)
+  anon_key?: string;     // anon JWT (제한적, 공개 auth settings 만)
+}
+
+// Vercel 자격 — Personal/Team API Token + project/team id.
+export interface VercelCreds {
+  token?: string;       // vcp_/vcl_/vca_ 접두
+  team_id?: string;     // team_xxx (개인 계정은 빈 값)
+  project_id?: string;  // prj_xxx
+}
+
+// Railway 자격 — API token + project/service/environment UUID.
+export interface RailwayCreds {
+  token?: string;
+  project_id?: string;
+  service_id?: string;
+  environment_id?: string;
 }
 
 // 인증 토큰 (P0-1) — 백엔드 login/register 응답의 tokens 필드 형식
@@ -215,6 +241,7 @@ export interface ManualEvidenceUploadResponse {
 // (SKT T-Markov 등 SaaS형 평가 대비: Google/Entra/Okta/Splunk/Elastic 등도 선택만 가능)
 export type IdpType =
   | "keycloak"
+  | "supabase"
   | "google_workspace"
   | "entra"
   | "okta"
@@ -295,6 +322,9 @@ export interface AssessmentRunRequest {
   scan_targets?: ScanTargets;
   keycloak_creds?: KeycloakCreds;
   wazuh_creds?: WazuhCreds;
+  supabase_creds?: SupabaseCreds;
+  vercel_creds?: VercelCreds;
+  railway_creds?: RailwayCreds;
   profile_select?: ProfileSelect;
   /** "demo" | "live" — NewAssessment 토글. demo면 backend가 collector 실호출 없이 fake 결과 생성 */
   scan_mode?: "demo" | "live";
@@ -331,6 +361,7 @@ export interface EvaluationMeta {
   scan_targets?: {
     nmap?: string;
     trivy?: string;
+    web_probe?: string;
   };
   scan_consent?: ScanConsent;
   // SKT 가이드 §3 평가 착수 전 확정사항

@@ -6,31 +6,44 @@ import {
   Radar, RadarChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  AlertTriangle, CheckCircle, ChevronDown, Clock, Database, Download,
-  FileText, Loader2, Paperclip, Server, Shield, Upload,
+  AlertTriangle, CheckCircle, Clock, Database, Loader2, Server, Shield,
 } from "lucide-react";
-import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
-import { EVIDENCE_GUIDE } from "../data/evidenceGuide";
 import {
-  getAssessmentStatus, finalizeAssessment, getManualItems, uploadManualExcel, uploadEvidence,
-  evidenceDownloadUrl, downloadSessionManualTemplate, ApiError,
+  getAssessmentStatus,
   type AssessmentStatusResponse,
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
-import { useNotifications } from "../context/NotificationContext";
-import type { ManualItemDetail } from "../../types/api";
+import { toolLongLabel } from "../lib/toolLabel";
 
-const TOOL_NAMES = ["Keycloak", "Wazuh", "Nmap", "Trivy"] as const;
-const TOOL_KEY_MAP: Record<string, typeof TOOL_NAMES[number]> = {
-  keycloak: "Keycloak", wazuh: "Wazuh", nmap: "Nmap", trivy: "Trivy",
+// 도구 식별자 (백엔드 collector.tool 필드와 매칭되는 소문자 키).
+// 새 도구 추가 시: ① TOOL_KEYS 에 키 추가, ② TOOL_DISPLAY_NAME / TOOL_COLORS 추가,
+// ③ frontend/src/app/lib/toolLabel.ts 의 TOOL_LABEL/TOOL_LONG_LABEL 도 보강.
+const TOOL_KEYS = [
+  "keycloak", "wazuh", "nmap", "trivy", "web_probe",
+  "supabase", "vercel", "railway",
+] as const;
+type ToolKey = typeof TOOL_KEYS[number];
+const TOOL_DISPLAY_NAME: Record<ToolKey, string> = {
+  keycloak: "Keycloak",
+  wazuh: "Wazuh",
+  nmap: "Nmap",
+  trivy: "Trivy",
+  web_probe: "웹 Probe",
+  supabase: "Supabase",
+  vercel: "Vercel",
+  railway: "Railway",
 };
 const PILLAR_COLORS = ["#2563eb", "#059669", "#f59e0b", "#0891b2", "#7c3aed", "#dc2626"];
-const TOOL_COLORS: Record<string, string> = {
-  Keycloak: PILLAR_COLORS[1],
-  Wazuh:    PILLAR_COLORS[0],
-  Nmap:     PILLAR_COLORS[3],
-  Trivy:    PILLAR_COLORS[2],
+const TOOL_COLORS: Record<ToolKey, string> = {
+  keycloak:  PILLAR_COLORS[1], // green
+  wazuh:     PILLAR_COLORS[0], // blue
+  nmap:      PILLAR_COLORS[3], // cyan
+  trivy:     PILLAR_COLORS[2], // amber
+  web_probe: PILLAR_COLORS[4], // purple
+  supabase:  "#3ecf8e",        // Supabase brand green
+  vercel:    "#000000",        // Vercel brand black
+  railway:   "#9333ea",        // Railway purple
 };
 
 const PIPELINE_STEPS = [
@@ -45,6 +58,8 @@ const INITIAL_LOGS = [
   { time: "00:01", type: "success" as const, message: "백엔드 collector 연결 확인" },
 ];
 
+// Demo 모드(실제 collector 호출 없이 deterministic fake 결과) 에서만 사용하는 prefill 로그.
+// Live 모드에서는 폴링된 tool_progress 델타로 실제 수집 이벤트 로그를 즉시 생성한다.
 const DEMO_LOG_EVENTS = [
   { type: "info",    message: "Keycloak /admin/realms 사용자 목록 조회" },
   { type: "success", message: "Keycloak 사용자·역할 매핑 수집 완료" },
@@ -52,8 +67,13 @@ const DEMO_LOG_EVENTS = [
   { type: "warning", message: "Wazuh 인증 실패 이벤트 일부 탐지" },
   { type: "info",    message: "Nmap 네트워크 세그먼테이션 스캔" },
   { type: "success", message: "Nmap 포트 노출 후보 분류 완료" },
-  { type: "info",    message: "Trivy 컨테이너 이미지 취약점 DB 동기화" },
+  { type: "info",    message: "Trivy 컨테이너 이미지/Repo 취약점 DB 동기화" },
   { type: "warning", message: "Trivy HIGH 등급 취약점 탐지" },
+  { type: "info",    message: "Trivy IaC/Secret 스캔 수행" },
+  { type: "info",    message: "웹 Probe OIDC Discovery 검사" },
+  { type: "info",    message: "웹 Probe DNS(SPF·DMARC·CAA) 조회" },
+  { type: "success", message: "웹 Probe TLS 1.3 / 인증서 만료 검증 완료" },
+  { type: "info",    message: "웹 Probe HTTP 보안 헤더 (HSTS/CSP) 점검" },
   { type: "info",    message: "Wazuh SIEM 룰 활성 상태 확인" },
   { type: "success", message: "Keycloak MFA 정책 검증 완료" },
 ] as const;
@@ -75,19 +95,24 @@ function nextLogVolume(previous: number | undefined, progress: number) {
   return Math.max(8, Math.min(92, Math.round(current + drift + jitter)));
 }
 
-function getLogTool(message: string) {
-  return TOOL_NAMES.find((tool) => message.includes(tool));
+// 로그 메시지에서 도구명을 찾아 하이라이트 — display 이름(영문/한글) 어느 쪽이든 매칭.
+function getLogTool(message: string): { key: ToolKey; display: string } | null {
+  for (const key of TOOL_KEYS) {
+    const display = TOOL_DISPLAY_NAME[key];
+    if (message.includes(display)) return { key, display };
+  }
+  return null;
 }
 
 function renderLogMessage(message: string) {
-  const tool = getLogTool(message);
-  if (!tool) return message;
-  const [before, ...afterParts] = message.split(tool);
+  const found = getLogTool(message);
+  if (!found) return message;
+  const [before, ...afterParts] = message.split(found.display);
   return (
     <>
       {before}
-      <span className="font-semibold" style={{ color: TOOL_COLORS[tool] }}>{tool}</span>
-      {afterParts.join(tool)}
+      <span className="font-semibold" style={{ color: TOOL_COLORS[found.key] }}>{found.display}</span>
+      {afterParts.join(found.display)}
     </>
   );
 }
@@ -149,8 +174,7 @@ export function InProgress() {
   const navigate = useNavigate();
   const { sessionId } = useParams();
   const location = useLocation();
-  const { addNotification } = useNotifications();
-  const { excludedTools = "", orgName = "", manager = "" } = (location.state ?? {}) as {
+  const { orgName = "", manager = "" } = (location.state ?? {}) as {
     excludedTools?: string; orgName?: string; manager?: string;
   };
 
@@ -158,14 +182,6 @@ export function InProgress() {
 
   // 백엔드 상태
   const [status, setStatus] = useState<AssessmentStatusResponse | null>(null);
-  const [manualCount, setManualCount] = useState(0);
-  const [manualItems, setManualItems] = useState<ManualItemDetail[]>([]);
-
-  // 증적 업로드 상태 (P1-7)
-  const [evidenceShow, setEvidenceShow] = useState(false);
-  const [evidenceGuideShow, setEvidenceGuideShow] = useState(false);
-  const [evidenceUploading, setEvidenceUploading] = useState<Record<number, boolean>>({});
-  const [uploadedEvidence, setUploadedEvidence] = useState<Record<number, { id: number; name: string }>>({});
 
   // UI
   const [logs, setLogs] = useState<LogEntry[]>(INITIAL_LOGS);
@@ -173,13 +189,8 @@ export function InProgress() {
   const [metrics, setMetrics] = useState({
     totalItems: 0, detectedEvents: 0, policyViolations: 0, analyzedAssets: 0,
   });
-  const [uploading, setUploading] = useState(false);
-  const [finalizing, setFinalizing] = useState(false);
-  const [finalized, setFinalized] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const finalizeNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const progressRef = useRef(0);
   const tickStopRef = useRef(false);
 
@@ -278,9 +289,8 @@ export function InProgress() {
 
   // 도구별 진행률도 동일하게 smooth progress 따라가게 cap
   const toolProgress = useMemo(() => (
-    TOOL_NAMES.map((toolName, idx) => {
-      const lowerKey = toolName.toLowerCase();
-      const found = status?.tool_progress.find((t) => t.tool === lowerKey);
+    TOOL_KEYS.map((toolKey, idx) => {
+      const found = status?.tool_progress.find((t) => t.tool === toolKey);
       const backendCollected = found?.collected ?? 0;
       const expected = found?.expected ?? 0;
       const backendPct = expected > 0 ? (backendCollected / expected) * 100 : 0;
@@ -290,11 +300,13 @@ export function InProgress() {
       const displayPct = Math.min(backendPct, displayCap);
       const displayCollected = expected > 0 ? Math.round((displayPct / 100) * expected) : 0;
       return {
-        name: toolName,
+        key:       toolKey,
+        name:      TOOL_DISPLAY_NAME[toolKey],
+        longLabel: toolLongLabel(toolKey),
         collected: displayCollected,
         total:     expected,
-        fill:      TOOL_COLORS[toolName],
-        selected:  status?.selected_tools.includes(lowerKey) ?? false,
+        fill:      TOOL_COLORS[toolKey],
+        selected:  status?.selected_tools.includes(toolKey) ?? false,
       };
     })
   ), [status, progress]);
@@ -305,57 +317,6 @@ export function InProgress() {
     : pillars.findIndex((p) => p.progress < 100);
 
   // ── 데이터 로드 ──────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!sid) return;
-    getManualItems(sid, excludedTools)
-      .then((res) => {
-        setManualCount(res.items.length);
-        setManualItems(res.items);
-      })
-      .catch((err) => console.warn("[in-progress] manual items:", err));
-  }, [sid, excludedTools]);
-
-  // 항목별 증적 파일 업로드 핸들러 (P1-7)
-  const handleEvidenceUpload = async (
-    checkId: number,
-    file: File,
-  ) => {
-    if (!sid) return;
-    // 클라이언트 검증: 10MB 제한
-    const MAX_BYTES = 10 * 1024 * 1024;
-    if (file.size > MAX_BYTES) {
-      toast.error("증적 파일은 10MB 이하만 업로드 가능합니다.");
-      return;
-    }
-    // 클라이언트 검증: 허용 타입 (pdf/image)
-    const isPdf = file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf";
-    const isImage = file.type.startsWith("image/");
-    if (!isPdf && !isImage) {
-      toast.error("PDF 또는 이미지 파일만 업로드 가능합니다.");
-      return;
-    }
-    setEvidenceUploading((prev) => ({ ...prev, [checkId]: true }));
-    try {
-      const res = await uploadEvidence(sid, checkId, file);
-      setUploadedEvidence((prev) => ({
-        ...prev,
-        [checkId]: { id: res.evidence_id, name: res.filename },
-      }));
-      toast.success(`증적이 업로드되었습니다: ${res.filename}`);
-    } catch (err) {
-      console.warn("[in-progress] evidence upload:", err);
-      if (err instanceof ApiError) {
-        if (err.status === 413) toast.error("파일 크기가 너무 큽니다.");
-        else if (err.status === 415) toast.error("지원하지 않는 파일 형식입니다.");
-        else toast.error("증적 업로드에 실패했습니다.");
-      } else {
-        toast.error("증적 업로드에 실패했습니다.");
-      }
-    } finally {
-      setEvidenceUploading((prev) => ({ ...prev, [checkId]: false }));
-    }
-  };
-
   // 백엔드 폴링 (즉시 + 3초 간격)
   useEffect(() => {
     if (!sid) return;
@@ -384,112 +345,60 @@ export function InProgress() {
     progressRef.current = progress;
   }, [progress]);
 
+  // 메트릭/areaData 는 더 이상 random 시뮬레이션을 만들지 않는다.
+  // 실시간 로그 볼륨은 backend 폴링 결과의 실수집 카운트 델타를 기록한다.
+  // (별도 useEffect 에서 status.collected_count 변화를 areaData 로 누적)
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (progressRef.current >= 100) return;
-      setMetrics((prev) => ({
-        totalItems:       prev.totalItems       + Math.floor(Math.random() * 18) + 5,
-        detectedEvents:   prev.detectedEvents   + Math.floor(Math.random() * 4),
-        policyViolations: prev.policyViolations + (Math.random() > 0.72 ? 1 : 0),
-        analyzedAssets:   prev.analyzedAssets   + Math.floor(Math.random() * 6) + 2,
-      }));
-      setAreaData((prev) => {
-        const prevVol = prev.at(-1)?.volume;
-        return [...prev.slice(-19), { time: formatTime(), volume: nextLogVolume(prevVol, progressRef.current) }];
-      });
-    }, 800);
-    return () => window.clearInterval(timer);
-  }, []);
+    const prev = areaData.at(-1);
+    if (!status) return;
+    const realCount = status.collected_count ?? 0;
+    if (prev && prev.volume === realCount) return;  // 변화 없으면 점 추가 안 함
+    setAreaData((p) => [...p.slice(-19), { time: formatTime(), volume: realCount }]);
+    // metrics 도 status 기반 실값으로 갱신
+    const tp = status.tool_progress ?? [];
+    setMetrics({
+      totalItems:       realCount,
+      detectedEvents:   tp.length,
+      policyViolations: (status.selected_tools ?? []).length,
+      analyzedAssets:   status.auto_total ?? 0,
+    });
+  }, [status]);
 
+  // 로그는 backend 폴링 결과의 도구별 collected 델타를 기반으로 즉시 emit.
+  // 이전: DEMO_LOG_EVENTS 를 500ms 마다 순환 출력 → 실 스캔 결과와 무관한 가짜 로그.
+  // 변경: 직전 status 의 tool_progress 와 비교해 새로 들어온 항목 수를 로그 한 줄로 표시.
+  const prevToolProgressRef = useRef<Record<string, number>>({});
   useEffect(() => {
-    let eventIndex = 0;
-    const timer = window.setInterval(() => {
-      if (progressRef.current >= 100) return;
-      const event = DEMO_LOG_EVENTS[eventIndex % DEMO_LOG_EVENTS.length];
-      eventIndex += 1;
-      setLogs((prev) => [
-        ...prev.slice(-140),
-        { time: formatTime(), type: event.type as LogEntry["type"], message: event.message },
-      ]);
-    }, 500);
-    return () => window.clearInterval(timer);
-  }, []);
+    if (!status) return;
+    const prevMap = prevToolProgressRef.current;
+    const nextMap: Record<string, number> = {};
+    const events: { type: LogEntry["type"]; message: string }[] = [];
+    (status.tool_progress ?? []).forEach((t) => {
+      nextMap[t.tool] = t.collected;
+      const delta = (t.collected ?? 0) - (prevMap[t.tool] ?? 0);
+      if (delta > 0) {
+        const label = TOOL_DISPLAY_NAME[t.tool as ToolKey] ?? t.tool;
+        events.push({
+          type: "success",
+          message: `${label} — ${delta}건 신규 수집 (누계 ${t.collected}/${t.expected})`,
+        });
+      }
+    });
+    prevToolProgressRef.current = nextMap;
+    if (events.length === 0) return;
+    setLogs((prev) => [
+      ...prev.slice(-140),
+      ...events.map((e) => ({ time: formatTime(), type: e.type, message: e.message })),
+    ]);
+  }, [status]);
 
   useEffect(() => {
     const el = logContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [logs]);
 
-  // 완료 시 자동 finalize → /reporting (수동 항목 없을 때만 자동 이동)
-  // 수동 항목 있으면 [수동 건너뛰고 결과 보기] 버튼으로 사용자가 명시적으로 트리거.
-  useEffect(() => {
-    if (!sid || !collectionDone || progress < 100 || finalized || finalizing || manualCount > 0) return;
-    setFinalizing(true);
-    finalizeAssessment(sid)
-      .then(() => {
-        setFinalized(true);
-        toast.success("자동 진단이 완료되었습니다.");
-        addNotification(`진단 #${sid} 자동 수집이 완료되어 결과 페이지로 이동합니다.`, "success");
-        finalizeNavTimerRef.current = setTimeout(() => navigate(`/reporting/${sid}`), 1500);
-      })
-      .catch((err) => {
-        console.warn("[in-progress] finalize:", err);
-        toast.error("결과 확정 중 오류가 발생했습니다.");
-      })
-      .finally(() => setFinalizing(false));
-  }, [sid, collectionDone, progress, manualCount, finalized, finalizing, navigate]);
-
-  // 사용자가 명시적으로 *수동 건너뛰고 결과 보기* — 진행률 100% + 수동 미작성 시 노출.
-  const handleSkipManualAndFinalize = async () => {
-    if (!sid || finalizing) return;
-    setFinalizing(true);
-    try {
-      await finalizeAssessment(sid);
-      setFinalized(true);
-      toast.success("결과 페이지로 이동합니다 (수동 항목은 나중에 보강 가능).");
-      addNotification(`진단 #${sid} 완료 (수동 항목 일부 미작성).`, "warning");
-      navigate(`/reporting/${sid}`);
-    } catch (err) {
-      console.warn("[in-progress] skip-manual finalize:", err);
-      toast.error("결과 확정 중 오류가 발생했습니다.");
-    } finally {
-      setFinalizing(false);
-    }
-  };
-
-  // 언마운트 시 finalize navigate 타이머 정리
-  useEffect(() => {
-    return () => {
-      if (finalizeNavTimerRef.current) {
-        clearTimeout(finalizeNavTimerRef.current);
-        finalizeNavTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  // ── Excel 업로드 핸들러 ──────────────────────────────────────────────────────
-  const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !sid) return;
-    if (!file.name.endsWith(".xlsx")) {
-      toast.error(".xlsx 파일만 업로드 가능합니다.");
-      return;
-    }
-    setUploading(true);
-    try {
-      const res = await uploadManualExcel(sid, file);
-      toast.success(`${res.parsed_count}개 항목이 업로드되었습니다.`);
-      await finalizeAssessment(sid);
-      toast.success("진단이 완료되었습니다.");
-      navigate(`/reporting/${sid}`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "업로드 중 오류가 발생했습니다.";
-      toast.error(msg);
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
+  // 100% 완료 시 finalize 는 다음 단계(AssessmentNext)에서 처리.
+  // 본 페이지는 자동 수집 진행률만 보여주고, 사용자가 [다음 단계로] 버튼을 눌러 이동한다.
 
   const radarData = PILLARS.map((p, i) => ({
     pillar: p.shortLabel,
@@ -540,7 +449,7 @@ export function InProgress() {
         <div className="mt-3 flex items-center justify-between text-sm">
           <span className="text-gray-500">
             선택된 도구: {status?.selected_tools.length
-              ? status.selected_tools.map((t) => t.toUpperCase()).join(" · ")
+              ? status.selected_tools.map((t) => TOOL_DISPLAY_NAME[t as ToolKey] ?? t).join(" · ")
               : "없음"}
           </span>
           <span className={progress >= 100 ? "font-semibold text-green-600" : "font-semibold text-blue-700"}>
@@ -552,10 +461,10 @@ export function InProgress() {
       {/* 메트릭 카드 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: "총 수집 항목", value: status?.collected_count ?? metrics.totalItems,       icon: Database,       color: "text-blue-600",   bg: "bg-blue-50",   border: "border-blue-100" },
-          { label: "탐지 이벤트",   value: metrics.detectedEvents,                              icon: AlertTriangle, color: "text-yellow-600", bg: "bg-yellow-50", border: "border-yellow-100" },
-          { label: "정책 위반",     value: metrics.policyViolations,                            icon: Shield,         color: "text-red-600",    bg: "bg-red-50",    border: "border-red-100" },
-          { label: "분석 자산",     value: metrics.analyzedAssets,                              icon: Server,         color: "text-green-600",  bg: "bg-green-50",  border: "border-green-100" },
+          { label: "수집 완료 항목",  value: status?.collected_count ?? 0,                       icon: Database,       color: "text-blue-600",   bg: "bg-blue-50",   border: "border-blue-100" },
+          { label: "전체 자동 항목",  value: status?.auto_total ?? 0,                            icon: AlertTriangle, color: "text-yellow-600", bg: "bg-yellow-50", border: "border-yellow-100" },
+          { label: "선택된 도구 수",  value: (status?.selected_tools ?? []).length,              icon: Shield,         color: "text-red-600",    bg: "bg-red-50",    border: "border-red-100" },
+          { label: "활성 필러 수",    value: (status?.pillar_progress ?? []).filter((p) => p.expected > 0).length, icon: Server, color: "text-green-600",  bg: "bg-green-50",  border: "border-green-100" },
         ].map(({ label, value, icon: Icon, color, bg, border }) => (
           <div key={label} className={`${bg} border ${border} rounded-xl p-4`}>
             <div className="flex items-center justify-between mb-2">
@@ -667,18 +576,25 @@ export function InProgress() {
 
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="mb-4">플레이북 도구 현황</h2>
-          <div className="grid grid-cols-2 gap-3">
-            {toolProgress.map((tool, index) => {
+          <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+            {toolProgress.map((tool) => {
               const ratio = tool.total > 0 ? Math.round((tool.collected / tool.total) * 100) : 0;
-              const color = PILLAR_COLORS[index];
+              const color = tool.fill;
               return (
-                <div key={tool.name} className={`p-3 rounded-lg border ${tool.selected ? "bg-gray-50 border-gray-100" : "bg-gray-50/50 border-gray-100 opacity-50"}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="font-medium text-sm">{tool.name}</p>
-                    <span className="text-xs font-semibold" style={{ color }}>
+                <div
+                  key={tool.key}
+                  className={`p-3 rounded-lg border ${
+                    tool.selected ? "bg-gray-50 border-gray-100" : "bg-gray-50/50 border-gray-100 opacity-50"
+                  }`}
+                  title={tool.longLabel}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="font-medium text-sm truncate" title={tool.longLabel}>{tool.name}</p>
+                    <span className="text-xs font-semibold shrink-0" style={{ color }}>
                       {tool.selected ? `${ratio}%` : "미선택"}
                     </span>
                   </div>
+                  <p className="text-[11px] text-gray-400 mb-1.5 truncate">{tool.longLabel}</p>
                   <p className="text-xs text-gray-500 mb-2">
                     {tool.selected ? `${tool.collected} / ${tool.total} 항목` : "사용 안 함"}
                   </p>
@@ -695,7 +611,7 @@ export function InProgress() {
         </div>
       </div>
 
-      {/* 실시간 진단 로그 (시뮬레이션) */}
+      {/* 실시간 진단 로그 — backend 폴링의 tool_progress 델타에서 실시간 emit */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -725,7 +641,7 @@ export function InProgress() {
               session: {orgName || "진단 대상"} / progress: {progress}%
             </div>
             {logs.map((log, i) => {
-              const tool = getLogTool(log.message);
+              const found = getLogTool(log.message);
               const prefix = log.type === "success" ? "====" : log.type === "warning" ? ">>>>" : "----";
               const typeText = log.type === "success" ? "SUCCESS" : log.type === "warning" ? "WARN" : "INFO";
 
@@ -739,9 +655,9 @@ export function InProgress() {
                   }>
                     {typeText}
                   </span>
-                  {tool && (
-                    <span className="rounded bg-gray-100 px-1.5 font-semibold" style={{ color: TOOL_COLORS[tool] }}>
-                      {tool}
+                  {found && (
+                    <span className="rounded bg-gray-100 px-1.5 font-semibold" style={{ color: TOOL_COLORS[found.key] }}>
+                      {found.display}
                     </span>
                   )}
                   <span>{renderLogMessage(log.message)}</span>
@@ -753,221 +669,26 @@ export function InProgress() {
         </div>
       </div>
 
-      {/* SKT 가이드 §5 — 6 Pillar 증적 준비표 (운영자 안내) */}
-      {manualCount > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setEvidenceGuideShow((v) => !v)}
-            className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50 hover:bg-gray-100 transition-colors"
-          >
-            <span className="text-sm font-semibold text-gray-800 flex items-center gap-2">
-              <FileText size={15} />
-              증적 준비표 — Pillar별로 어떤 증적을 준비해야 하는지
-            </span>
-            <ChevronDown
-              size={16}
-              className={`text-gray-500 transition-transform ${evidenceGuideShow ? "rotate-180" : ""}`}
-            />
-          </button>
-          {evidenceGuideShow && (
-            <div className="px-5 py-4 space-y-4">
-              {EVIDENCE_GUIDE.map((g) => (
-                <div key={g.pillarKey} className="rounded-lg border border-gray-200 p-3">
-                  <p className="text-sm font-semibold text-gray-800 mb-2">{g.pillar}</p>
-                  <div className="space-y-1.5 text-xs">
-                    <div>
-                      <span className="font-semibold text-gray-600">준비할 증적: </span>
-                      <span className="text-gray-700">{g.prepare}</span>
-                    </div>
-                    <div>
-                      <span className="font-semibold text-gray-600">주요 질문: </span>
-                      <span className="text-gray-700">{g.questions}</span>
-                    </div>
-                    <div>
-                      <span className="font-semibold text-amber-700">판정 주의: </span>
-                      <span className="text-gray-700">{g.cautions}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Excel 업로드 (수동 항목 있을 때만) */}
-      {manualCount > 0 && (
-        <div className="bg-white rounded-xl border border-blue-200 overflow-hidden">
-          <div className="px-5 py-3 border-b border-blue-100 bg-blue-50">
-            <h2 className="text-sm font-semibold text-blue-800 flex items-center gap-2">
-              <Upload size={16} />
-              수동 진단 항목 Excel 업로드
-            </h2>
-            <p className="text-xs text-blue-600 mt-1">
-              자동 수집이 불가한 <strong>{manualCount}개</strong> 항목은 Excel 일괄 업로드로 제출합니다.
-              {!collectionDone && " 자동 수집과 동시에 진행 가능합니다."}
-            </p>
-          </div>
-
-          <div className="px-5 py-5 space-y-4">
-            <ol className="text-sm text-gray-600 space-y-2 list-decimal list-inside">
-              <li><strong>템플릿 다운로드</strong>로 이 세션 전용 체크리스트(.xlsx)를 받습니다. — 사용자의 IdP/SIEM 환경에 맞춰 자동 폴백 항목까지 포함됩니다.</li>
-              <li>각 항목의 <strong>★ 담당자 선택 (필수)</strong> 열에 드롭다운 값을 입력합니다.</li>
-              <li>작성 완료 후 <strong>Excel 파일 선택</strong>으로 업로드하면 즉시 점수 계산이 시작됩니다.</li>
-              <li>위 <strong>증적 준비표</strong> 토글을 펼치면 Pillar별 어떤 증적을 모아야 하는지 가이드가 나옵니다.</li>
-            </ol>
-
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  if (!sid) {
-                    toast.error("세션 ID가 없어 양식을 다운로드할 수 없습니다.");
-                    return;
-                  }
-                  downloadSessionManualTemplate(sid).catch((err) => {
-                    console.warn("[in-progress] manual template download failed:", err);
-                    toast.error("양식 다운로드에 실패했습니다.");
-                  });
-                }}
-                className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
-                title="이 세션 환경에 맞춘 동적 양식 (자동 폴백 항목 포함)"
-              >
-                <Download size={15} />
-                템플릿 다운로드
-              </button>
-              <label className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer transition-colors ${
-                uploading ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
-              }`}>
-                {uploading ? (
-                  <><Loader2 size={15} className="animate-spin" /> 업로드 중...</>
-                ) : (
-                  <><Upload size={15} /> Excel 파일 선택</>
-                )}
-                <input
-                  ref={fileInputRef}
-                  type="file" accept=".xlsx" className="hidden"
-                  disabled={uploading} onChange={handleExcelUpload}
-                />
-              </label>
-            </div>
-
-            {/* 진행률 100% + 수동 미작성 시 — 사용자가 명시적으로 건너뛰고 결과 보기 가능 */}
-            {collectionDone && progress >= 100 && !finalized && (
-              <div className="mt-4 flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                <div className="flex-1 text-xs text-amber-900">
-                  자동 수집이 끝났지만 수동 양식 {manualCount}건이 미작성 상태입니다.
-                  지금 결과를 먼저 보고, Reporting에서 부족한 항목을 보강하실 수 있습니다.
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSkipManualAndFinalize}
-                  disabled={finalizing}
-                  className={`shrink-0 px-3 py-1.5 text-xs rounded-lg ${
-                    finalizing
-                      ? "bg-gray-200 text-gray-500 cursor-not-allowed"
-                      : "bg-amber-600 text-white hover:bg-amber-700"
-                  }`}
-                >
-                  {finalizing ? "이동 중..." : "수동 건너뛰고 결과 보기"}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 항목별 증적 파일 업로드 (P1-7) */}
-      {manualCount > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setEvidenceShow((v) => !v)}
-            className="w-full flex items-center justify-between px-5 py-3 border-b border-gray-100 bg-gray-50 hover:bg-gray-100 transition-colors"
-          >
-            <span className="text-sm font-semibold text-gray-800 flex items-center gap-2">
-              <Paperclip size={16} className="text-blue-600" />
-              수동 항목별 증적 파일 업로드 (선택)
-              <span className="ml-1 text-xs text-gray-500 font-normal">
-                — Excel 외에 항목별 PDF/이미지 증적을 첨부할 수 있습니다.
-              </span>
-            </span>
-            <span className="text-xs text-gray-500">{evidenceShow ? "접기" : "펼치기"}</span>
-          </button>
-          {evidenceShow && (
-            <div className="p-5 space-y-2 max-h-[480px] overflow-y-auto">
-              {manualItems.map((item) => {
-                const uploading = !!evidenceUploading[item.check_id];
-                const uploaded = uploadedEvidence[item.check_id];
-                return (
-                  <div
-                    key={item.check_id}
-                    className="flex items-center gap-3 px-3 py-2 border border-gray-200 rounded-lg hover:bg-gray-50"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-800 truncate">
-                        {item.item_id} · {item.item_name}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {item.pillar} · {item.category}
-                      </p>
-                      {uploaded && (
-                        <a
-                          href={evidenceDownloadUrl(uploaded.id)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 mt-1 text-xs text-blue-600 hover:underline"
-                        >
-                          <Paperclip size={11} />
-                          {uploaded.name}
-                        </a>
-                      )}
-                    </div>
-                    <label
-                      className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg cursor-pointer ${
-                        uploading
-                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                          : "bg-white border border-gray-300 text-gray-700 hover:bg-blue-50 hover:border-blue-300"
-                      }`}
-                    >
-                      {uploading ? (
-                        <><Loader2 size={12} className="animate-spin" /> 업로드 중</>
-                      ) : (
-                        <><Paperclip size={12} /> {uploaded ? "교체" : "파일 첨부"}</>
-                      )}
-                      <input
-                        type="file"
-                        accept=".pdf,image/*"
-                        className="hidden"
-                        disabled={uploading}
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) handleEvidenceUpload(item.check_id, f);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                  </div>
-                );
-              })}
-              {manualItems.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-4">수동 항목이 없습니다.</p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* 자동 진단만 사용 + 완료 시 안내 */}
-      {manualCount === 0 && collectionDone && (
+      {/* 자동 진단 완료 → 다음 단계(AssessmentNext)로. finalize·수동 양식은 거기서 처리. */}
+      {collectionDone && progress >= 100 && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-6 text-center">
           <CheckCircle size={40} className="mx-auto text-green-500 mb-3" />
           <p className="font-semibold text-gray-700">자동 진단 완료</p>
           <p className="text-sm text-gray-500 mt-1 mb-4">
-            결과 페이지로 자동 이동합니다...
-            {finalizing && <Loader2 size={14} className="inline animate-spin ml-2" />}
+            다음 단계에서 환경에 맞춘 수동 양식을 작성해 업로드하면 최종 보고서가 생성됩니다.
           </p>
+          <button
+            type="button"
+            onClick={() => sid && navigate(`/assessment/next/${sid}`)}
+            disabled={!sid}
+            className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-medium ${
+              !sid
+                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                : "bg-green-600 text-white hover:bg-green-700"
+            }`}
+          >
+            다음 단계로 (수동 보완)
+          </button>
         </div>
       )}
     </div>

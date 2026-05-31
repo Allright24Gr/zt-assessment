@@ -58,6 +58,47 @@ def validate_trivy_image(image: str) -> str:
     return image
 
 
+# trivy repo: GitHub URL 또는 owner/repo 단축형
+_TRIVY_REPO_RE = re.compile(
+    r"^(?:https://github\.com/)?"
+    r"[a-zA-Z0-9][a-zA-Z0-9._\-]{0,99}/[a-zA-Z0-9][a-zA-Z0-9._\-]{0,99}"
+    r"(?:\.git)?/?$"
+)
+
+
+def validate_trivy_repo(repo: str) -> str:
+    """GitHub repo URL 또는 owner/name 단축형. 공백/메타문자 차단."""
+    repo = (repo or "").strip()
+    if not repo:
+        return ""
+    if any(c in repo for c in _SHELL_METAS + " "):
+        raise ValueError("repo 입력에 허용되지 않은 문자가 포함되어 있습니다.")
+    if not _TRIVY_REPO_RE.match(repo):
+        raise ValueError(
+            f"유효하지 않은 trivy repo: {repo!r} "
+            f"(예: https://github.com/owner/repo 또는 owner/repo)"
+        )
+    return repo
+
+
+def _looks_like_repo_shorthand(target: str) -> bool:
+    if "://" in target:
+        return False
+    if ":" in target or "@" in target:
+        return False
+    return target.count("/") == 1
+
+
+def validate_trivy_target(target: str) -> str:
+    """이미지 또는 GitHub repo 두 형식 모두 허용. 형식 자동 판별."""
+    target = (target or "").strip()
+    if not target:
+        return ""
+    if "github.com" in target.lower() or _looks_like_repo_shorthand(target):
+        return validate_trivy_repo(target)
+    return validate_trivy_image(target)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Keycloak / Wazuh URL
 # ──────────────────────────────────────────────────────────────────────────────
@@ -79,6 +120,38 @@ def validate_https_url(url: str, field_name: str = "url") -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# web_probe target (도메인 또는 https URL)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 도메인: 영문/숫자/하이픈/점, 양 끝 영문/숫자. URL 은 https/http 허용.
+_DOMAIN_RE = re.compile(
+    r"^[a-zA-Z0-9](?:[a-zA-Z0-9\-\.]{0,253}[a-zA-Z0-9])?$"
+)
+
+
+def validate_web_probe_target(target: str) -> str:
+    """web_probe 대상: 도메인 또는 http(s) URL. CIDR/IP 단독은 허용하지 않음.
+
+    web_probe 는 HTTP/TLS/OIDC/DNS/CT 를 도메인 단위로 측정하므로 도메인 또는
+    스킴 포함 URL 만 의미가 있다. nmap 처럼 CIDR/IP 도 받지 않는다.
+    """
+    target = (target or "").strip()
+    if not target:
+        return ""
+    if any(c in target for c in _SHELL_METAS + " "):
+        raise ValueError("web_probe 대상에 허용되지 않은 문자가 포함되어 있습니다.")
+    if "://" in target:
+        # URL 형식 — validate_https_url 재사용
+        return validate_https_url(target, "web_probe target")
+    # 도메인 형식 — 점이 최소 1개 있어야 hostname 으로 의미가 있다.
+    if "." not in target:
+        raise ValueError(f"유효하지 않은 web_probe 도메인: {target!r} (예: example.com)")
+    if not _DOMAIN_RE.match(target):
+        raise ValueError(f"유효하지 않은 web_probe 도메인: {target!r}")
+    return target
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 자격(admin_user / admin_pass) 길이 검증
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -89,6 +162,91 @@ def validate_cred_field(value: str, field_name: str, max_len: int = 100) -> str:
         return ""
     if len(value) > max_len:
         raise ValueError(f"{field_name}: {max_len}자 이내여야 합니다 ({len(value)}자 입력)")
+    return value
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Supabase / Vercel / Railway 자격 검증
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Supabase project ref: 20자 lowercase 영숫자 (대시보드 URL 의 서브도메인).
+_SUPABASE_REF_RE = re.compile(r"^[a-z0-9]{20}$")
+# Management PAT: sbp_ + hex
+_SUPABASE_PAT_RE = re.compile(r"^sbp_[a-f0-9]{32,64}$")
+# JWT 형식 (anon/service_role): 3 segments separated by dot, base64url alphabet
+_JWT_RE = re.compile(r"^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$")
+
+
+def validate_supabase_ref(value: str, field_name: str = "supabase_creds.project_ref") -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _SUPABASE_REF_RE.match(value):
+        raise ValueError(f"{field_name}: 20자 lowercase 영숫자여야 합니다 (대시보드 URL 의 ref).")
+    return value
+
+
+def validate_supabase_pat(value: str, field_name: str = "supabase_creds.pat") -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _SUPABASE_PAT_RE.match(value):
+        raise ValueError(f"{field_name}: sbp_ 로 시작하는 hex 토큰이어야 합니다.")
+    return value
+
+
+def validate_jwt_field(value: str, field_name: str) -> str:
+    """anon key / service_role key 같은 JWT 형식 검증."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _JWT_RE.match(value):
+        raise ValueError(f"{field_name}: JWT 형식이 아닙니다 (header.payload.signature).")
+    if len(value) > 4096:
+        raise ValueError(f"{field_name}: JWT 가 비정상적으로 깁니다.")
+    return value
+
+
+# Vercel personal/team token: vcp_/vcl_ + 영숫자, 또는 vca_ (OAuth access).
+_VERCEL_TOKEN_RE = re.compile(r"^(vcp_|vcl_|vca_|vcr_)?[A-Za-z0-9]{20,128}$")
+
+
+def validate_vercel_token(value: str, field_name: str = "vercel_creds.token") -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _VERCEL_TOKEN_RE.match(value):
+        raise ValueError(f"{field_name}: Vercel 토큰 형식이 아닙니다.")
+    if any(c in value for c in _SHELL_METAS + " "):
+        raise ValueError(f"{field_name}: 허용되지 않은 문자가 포함되어 있습니다.")
+    return value
+
+
+# Vercel team/project id: team_xxx / prj_xxx
+_VERCEL_ID_RE = re.compile(r"^(team_|prj_)?[A-Za-z0-9]{8,64}$")
+
+
+def validate_vercel_id(value: str, field_name: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _VERCEL_ID_RE.match(value):
+        raise ValueError(f"{field_name}: Vercel ID 형식이 아닙니다 (team_/prj_ 접두).")
+    return value
+
+
+# Railway: UUID v4 형식 토큰/ID
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def validate_uuid_field(value: str, field_name: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if not _UUID_RE.match(value):
+        raise ValueError(f"{field_name}: UUID 형식이 아닙니다.")
     return value
 
 

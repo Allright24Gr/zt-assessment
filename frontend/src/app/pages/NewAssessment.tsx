@@ -3,13 +3,11 @@ import { useNavigate } from "react-router";
 import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint, BookOpenCheck, Tag, Database as DatabaseIcon, Users as UsersIcon, GitCommit } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
-import {
-  runAssessment, prepareAssessment, startPreparedAssessment,
-  downloadSessionManualTemplate, uploadManualExcel,
-} from "../../config/api";
+import { runAssessment } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
+  SupabaseCreds, VercelCreds, RailwayCreds,
   IdpType, SiemType, YesNoUnknown, ProfileSelect, ScanConsent,
   EvaluationVersion, ScopeAsset, DataClassification, Reviewers,
   AssessmentRunRequest,
@@ -53,6 +51,7 @@ const INFRA_TYPES = [
 // backend가 자동 항목을 수동 폴백으로 돌린다(manual.py /items 가 노출).
 const IDP_OPTIONS: Array<{ key: IdpType; label: string; desc: string; supported: boolean }> = [
   { key: "keycloak",         label: "Keycloak",          desc: "오픈소스 IAM/SSO",        supported: true  },
+  { key: "supabase",         label: "Supabase Auth",     desc: "Supabase 백엔드 인증 (Auth / RLS)",     supported: true  },
   { key: "google_workspace", label: "Google Workspace",  desc: "Google OAuth 기반",       supported: false },
   { key: "entra",            label: "MS Entra ID",       desc: "Microsoft 365 / Azure AD", supported: false },
   { key: "okta",             label: "Okta",              desc: "Okta Workforce Identity",  supported: false },
@@ -135,19 +134,29 @@ export function NewAssessment() {
     edr_product: "",
     ot_segment_present: "unknown",
   });
-  // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy
-  const [externalScanTools, setExternalScanTools] = useState<{ nmap: boolean; trivy: boolean }>({
-    nmap: true, trivy: true,
+  // 외부 자동 스캔(도구 무관) 토글 — Nmap / Trivy / Web Probe + 플랫폼 Vercel/Railway
+  // web_probe: OIDC/DNS/HTTP/TLS/CT log — IdP·SIEM 제품 종류와 관계없이 도메인만으로 측정.
+  // vercel/railway: 배포 플랫폼 API 기반 (자격 입력 시 활성).
+  const [externalScanTools, setExternalScanTools] = useState<{
+    nmap: boolean; trivy: boolean; web_probe: boolean;
+    vercel: boolean; railway: boolean;
+  }>({
+    nmap: true, trivy: true, web_probe: true,
+    vercel: false, railway: false,
   });
   // 내부적으로 백엔드에 보내는 tool_scope는 profileSelect + externalScanTools에서 파생
   const toolScope: Record<string, boolean> = {
-    keycloak: profileSelect.idp_type === "keycloak",
-    wazuh:    profileSelect.siem_type === "wazuh",
-    nmap:     externalScanTools.nmap,
-    trivy:    externalScanTools.trivy,
+    keycloak:  profileSelect.idp_type === "keycloak",
+    supabase:  profileSelect.idp_type === "supabase",
+    wazuh:     profileSelect.siem_type === "wazuh",
+    nmap:      externalScanTools.nmap,
+    trivy:     externalScanTools.trivy,
+    web_probe: externalScanTools.web_probe,
+    vercel:    externalScanTools.vercel,
+    railway:   externalScanTools.railway,
   };
-  const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string }>({
-    nmap: "", trivy: "",
+  const [scanTargets, setScanTargets] = useState<{ nmap: string; trivy: string; web_probe: string }>({
+    nmap: "", trivy: "", web_probe: "",
   });
   const [files, setFiles] = useState<File[]>([]);
 
@@ -186,14 +195,6 @@ export function NewAssessment() {
     cloud_owner: "",
     security_reviewer: "",
   });
-  // Step 2 — 수동 양식 미리 작성 (선택). prepareAssessment 로 미리 세션 생성.
-  const [preparedSessionId, setPreparedSessionId] = useState<number | string | null>(null);
-  const [preparing, setPreparing] = useState(false);
-  const [manualUploading, setManualUploading] = useState(false);
-  const [manualUploadResult, setManualUploadResult] = useState<
-    { parsed: number; skipped: number; unmatched: number } | null
-  >(null);
-  const manualFileInputRef = useRef<HTMLInputElement>(null);
   // Keycloak 연결 카드 입력값 (작업 E-fe)
   const [keycloakCreds, setKeycloakCreds] = useState<{ url: string; admin_user: string; admin_pass: string }>({
     url: "", admin_user: "", admin_pass: "",
@@ -202,6 +203,18 @@ export function NewAssessment() {
   const [wazuhCreds, setWazuhCreds] = useState<{ url: string; api_user: string; api_pass: string }>({
     url: "", api_user: "", api_pass: "",
   });
+  // Supabase 자격 — Management PAT 권장. service_role/anon 은 보조.
+  const [supabaseCreds, setSupabaseCreds] = useState<{
+    project_ref: string; pat: string; service_role: string; anon_key: string;
+  }>({ project_ref: "", pat: "", service_role: "", anon_key: "" });
+  // Vercel 자격
+  const [vercelCreds, setVercelCreds] = useState<{
+    token: string; team_id: string; project_id: string;
+  }>({ token: "", team_id: "", project_id: "" });
+  // Railway 자격
+  const [railwayCreds, setRailwayCreds] = useState<{
+    token: string; project_id: string; service_id: string; environment_id: string;
+  }>({ token: "", project_id: "", service_id: "", environment_id: "" });
 
   const togglePillar = (key: string) => {
     setPillarScope((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -242,7 +255,8 @@ export function NewAssessment() {
   const isLive = scanMode === "live";
   const liveScanIntent = isLive && (
     (toolScope.nmap && scanTargets.nmap.trim()) ||
-    (toolScope.trivy && scanTargets.trivy.trim())
+    (toolScope.trivy && scanTargets.trivy.trim()) ||
+    (toolScope.web_probe && scanTargets.web_probe.trim())
   );
   // 승인 메타 필수값(승인자 + 비상연락처) — 외부 스캔 시 책임 추적을 위해 보고서에 기록.
   const consentMetaMissing = !!liveScanIntent && (
@@ -252,13 +266,16 @@ export function NewAssessment() {
   const submitDisabled =
     !!liveScanIntent && (!consentExternalScan || consentMetaMissing);
 
-  // payload 빌더 — runAssessment / prepareAssessment 둘 다 사용.
+  // payload 빌더 — runAssessment 호출에 사용.
   const buildRunPayload = (): AssessmentRunRequest => {
     const nmapTarget = scanTargets.nmap.trim();
     const trivyTarget = scanTargets.trivy.trim();
+    const webProbeTarget = scanTargets.web_probe.trim();
     const scanTargetsPayload: ScanTargets = {};
     if (isLive && toolScope.nmap && nmapTarget) scanTargetsPayload.nmap = nmapTarget;
     if (isLive && toolScope.trivy && trivyTarget) scanTargetsPayload.trivy = trivyTarget;
+    // web_probe: 별도 target 또는 nmap target 폴백 (백엔드가 동일 도메인으로 호환 처리).
+    if (isLive && toolScope.web_probe && webProbeTarget) scanTargetsPayload.web_probe = webProbeTarget;
     const hasScanTargets = Object.keys(scanTargetsPayload).length > 0;
 
     const kcPayload: KeycloakCreds = {};
@@ -276,6 +293,32 @@ export function NewAssessment() {
       if (wazuhCreds.api_pass)        wzPayload.api_pass = wazuhCreds.api_pass;
     }
     const hasWz = Object.keys(wzPayload).length > 0;
+
+    const sbPayload: SupabaseCreds = {};
+    if (isLive && toolScope.supabase) {
+      if (supabaseCreds.project_ref.trim()) sbPayload.project_ref = supabaseCreds.project_ref.trim();
+      if (supabaseCreds.pat.trim())          sbPayload.pat          = supabaseCreds.pat.trim();
+      if (supabaseCreds.service_role.trim()) sbPayload.service_role = supabaseCreds.service_role.trim();
+      if (supabaseCreds.anon_key.trim())     sbPayload.anon_key     = supabaseCreds.anon_key.trim();
+    }
+    const hasSb = Object.keys(sbPayload).length > 0;
+
+    const vcPayload: VercelCreds = {};
+    if (isLive && toolScope.vercel) {
+      if (vercelCreds.token.trim())      vcPayload.token      = vercelCreds.token.trim();
+      if (vercelCreds.team_id.trim())    vcPayload.team_id    = vercelCreds.team_id.trim();
+      if (vercelCreds.project_id.trim()) vcPayload.project_id = vercelCreds.project_id.trim();
+    }
+    const hasVc = Object.keys(vcPayload).length > 0;
+
+    const rwPayload: RailwayCreds = {};
+    if (isLive && toolScope.railway) {
+      if (railwayCreds.token.trim())          rwPayload.token          = railwayCreds.token.trim();
+      if (railwayCreds.project_id.trim())     rwPayload.project_id     = railwayCreds.project_id.trim();
+      if (railwayCreds.service_id.trim())     rwPayload.service_id     = railwayCreds.service_id.trim();
+      if (railwayCreds.environment_id.trim()) rwPayload.environment_id = railwayCreds.environment_id.trim();
+    }
+    const hasRw = Object.keys(rwPayload).length > 0;
 
     const consentPayload: ScanConsent = {};
     if (liveScanIntent) {
@@ -336,6 +379,9 @@ export function NewAssessment() {
       ...(hasScanTargets ? { scan_targets: scanTargetsPayload } : {}),
       ...(hasKc ? { keycloak_creds: kcPayload } : {}),
       ...(hasWz ? { wazuh_creds: wzPayload } : {}),
+      ...(hasSb ? { supabase_creds: sbPayload } : {}),
+      ...(hasVc ? { vercel_creds: vcPayload } : {}),
+      ...(hasRw ? { railway_creds: rwPayload } : {}),
       ...(hasConsent ? { scan_consent: consentPayload } : {}),
       ...(hasEvalVersion ? { evaluation_version: evalVersionPayload } : {}),
       ...(scopeAssetsPayload.length > 0 ? { evaluation_scope_assets: scopeAssetsPayload } : {}),
@@ -349,81 +395,17 @@ export function NewAssessment() {
     .map(([tool]) => tool)
     .join(",");
 
-  // 미리 세션 만들기 (skip_collector=true) — Step 2 양식 카드에서 호출.
-  const handlePrepareSession = async () => {
-    if (preparedSessionId || preparing) return;
-    setPreparing(true);
-    try {
-      const res = await prepareAssessment(buildRunPayload());
-      setPreparedSessionId(res.session_id);
-      toast.success("세션 준비 완료 — 양식을 다운로드받아 작성하세요.");
-    } catch (err) {
-      console.warn("[new-assessment] prepare failed:", err);
-      toast.error("세션 준비 실패: 입력값을 확인해주세요.");
-    } finally {
-      setPreparing(false);
-    }
-  };
-
-  // 양식 다운로드 (prepared session 기반).
-  const handleDownloadManualTemplate = async () => {
-    if (!preparedSessionId) {
-      toast.error("먼저 세션을 준비해주세요.");
-      return;
-    }
-    try {
-      await downloadSessionManualTemplate(preparedSessionId);
-    } catch (err) {
-      console.warn("[new-assessment] template download failed:", err);
-      toast.error("양식 다운로드에 실패했습니다.");
-    }
-  };
-
-  // 양식 업로드 (자동 채점).
-  const handleManualExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !preparedSessionId) return;
-    setManualUploading(true);
-    try {
-      const res = await uploadManualExcel(preparedSessionId, file);
-      setManualUploadResult({
-        parsed: res.parsed_count ?? 0,
-        skipped: res.skipped_count ?? 0,
-        unmatched: res.unmatched_count ?? 0,
-      });
-      toast.success(`양식 업로드 완료 — ${res.parsed_count ?? 0}건 채점됨`);
-    } catch (err) {
-      console.warn("[new-assessment] manual upload failed:", err);
-      toast.error("양식 업로드에 실패했습니다.");
-    } finally {
-      setManualUploading(false);
-      if (manualFileInputRef.current) manualFileInputRef.current.value = "";
-    }
-  };
-
+  // 진단 시작 — runAssessment 호출 후 InProgress 로 이동.
+  // 수동 양식 다운/업로드는 자동 진단 완료 후 AssessmentNext 페이지에서만 수행한다.
   const handleSubmit = () => {
-    // 이미 prepared session 있으면 startPreparedAssessment, 아니면 기존 runAssessment.
-    const navTo = (sid: number | string) =>
-      navigate(`/in-progress/${sid}`, {
+    runAssessment(buildRunPayload())
+      .then((res) => navigate(`/in-progress/${res.session_id}`, {
         state: {
           excludedTools: excludedToolsStr,
           orgName: formData.orgName,
           manager: formData.manager,
         },
-      });
-
-    if (preparedSessionId) {
-      startPreparedAssessment(preparedSessionId)
-        .then(() => navTo(preparedSessionId))
-        .catch((err) => {
-          console.warn("[new-assessment] startPrepared failed:", err);
-          toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
-        });
-      return;
-    }
-
-    runAssessment(buildRunPayload())
-      .then((res) => navTo(res.session_id))
+      }))
       .catch((err) => {
         console.warn("[new-assessment] runAssessment failed:", err);
         toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
@@ -480,22 +462,10 @@ export function NewAssessment() {
               <h2>Step 1: 사전 프로파일링 + 기관 정보 입력</h2>
             </div>
 
-            {/* SKT 가이드 §9 — 평가 목적 안내 */}
-            <div className="rounded-xl border border-emerald-300 bg-emerald-50/60 p-5">
-              <div className="flex items-start gap-3">
-                <BookOpenCheck size={20} className="text-emerald-700 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-semibold text-emerald-900 mb-1">진단 목적 안내</p>
-                  <p className="text-sm text-emerald-900 leading-relaxed">
-                    이번 진단은 <strong>KISA 제로트러스트 가이드라인 2.0</strong> 기준으로
-                    조직의 6대 Pillar (식별자·기기·네트워크·시스템·애플리케이션·데이터) ×
-                    4단계 성숙도 (기존·초기·향상·최적화) 를 평가합니다.
-                    자동 수집 가능한 통제는 외부 도구로 점검하고,
-                    정책·운영 이력처럼 외부 확인이 어려운 영역은 <strong>수동 증적</strong>을 첨부해 함께 판정합니다.
-                    결과로 현황 점수, Pillar별 강·약점, <strong>30/60/90일 개선 로드맵</strong>이 산출됩니다.
-                  </p>
-                </div>
-              </div>
+            {/* 노션 2번 피드백 D-1: 진단 목적 안내 박스 축소 — 한 줄 inline 안내로 변경. */}
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50/50 text-xs text-emerald-900">
+              <BookOpenCheck size={14} className="text-emerald-700 shrink-0" />
+              <span>KISA 제로트러스트 가이드라인 2.0 기준 — 6 Pillar × 4단계 성숙도 평가.</span>
             </div>
 
             {prefillNotice && (
@@ -702,7 +672,54 @@ export function NewAssessment() {
                     />
                     <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
                       <p className="text-sm font-medium text-gray-800">Trivy</p>
-                      <p className="text-xs text-gray-500">컨테이너 이미지 스캔</p>
+                      <p className="text-xs text-gray-500">컨테이너 이미지 + GitHub repo 스캔 (의존성/IaC/Secret)</p>
+                    </div>
+                  </label>
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] sm:col-span-2 ${
+                    externalScanTools.web_probe ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.web_probe}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, web_probe: !p.web_probe }))}
+                    />
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                      <p className="text-sm font-medium text-gray-800">Web/DNS/TLS Probe</p>
+                      <p className="text-xs text-gray-500">
+                        IdP/SIEM 제품과 관계없이 도메인만으로 측정 — OIDC Discovery / DNS(SPF·DMARC·CAA) /
+                        HTTP 보안 헤더 / TLS 1.3·인증서 / Certificate Transparency 로그
+                      </p>
+                    </div>
+                  </label>
+                  {/* Vercel API */}
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
+                    externalScanTools.vercel ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.vercel}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, vercel: !p.vercel }))}
+                    />
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                      <p className="text-sm font-medium text-gray-800">Vercel</p>
+                      <p className="text-xs text-gray-500">배포 이력 / 환경변수 / 도메인 SSL / 팀 RBAC</p>
+                    </div>
+                  </label>
+                  {/* Railway API */}
+                  <label className={`flex items-center gap-2 p-3 border rounded-lg cursor-pointer transition-colors min-h-[68px] ${
+                    externalScanTools.railway ? "border-blue-500 bg-white shadow-sm" : "border-gray-200 bg-white hover:bg-gray-50"
+                  }`}>
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 w-4 h-4"
+                      checked={externalScanTools.railway}
+                      onChange={() => setExternalScanTools((p) => ({ ...p, railway: !p.railway }))}
+                    />
+                    <div className="min-w-0 flex flex-col justify-center min-h-[44px]">
+                      <p className="text-sm font-medium text-gray-800">Railway</p>
+                      <p className="text-xs text-gray-500">배포 상태 / 환경변수 / 헬스체크 / restart 정책</p>
                     </div>
                   </label>
                 </div>
@@ -739,7 +756,7 @@ export function NewAssessment() {
                     >
                       <option value="yes">활성 (Security 4688/4697/4720 emit)</option>
                       <option value="no">비활성</option>
-                      <option value="unknown">모름</option>
+                      <option value="unknown">미확인</option>
                     </select>
                   </div>
                   <div>
@@ -755,7 +772,7 @@ export function NewAssessment() {
                     >
                       <option value="yes">설치됨 (EID 1·3·10·22·25 수집 가능)</option>
                       <option value="no">미설치</option>
-                      <option value="unknown">모름</option>
+                      <option value="unknown">미확인</option>
                     </select>
                   </div>
                   <div>
@@ -786,7 +803,7 @@ export function NewAssessment() {
                     >
                       <option value="yes">있음 (별도 트랙 분리)</option>
                       <option value="no">없음</option>
-                      <option value="unknown">모름</option>
+                      <option value="unknown">미확인</option>
                     </select>
                   </div>
                 </div>
@@ -951,7 +968,7 @@ export function NewAssessment() {
             </div>
 
             {/* 진단 대상 (외부 스캔) */}
-            {(toolScope.nmap || toolScope.trivy) && (
+            {(toolScope.nmap || toolScope.trivy || toolScope.web_probe) && (
               <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <Target size={16} className="text-blue-600" />
@@ -986,20 +1003,43 @@ export function NewAssessment() {
                   {toolScope.trivy && (
                     <div>
                       <label className="block mb-2 text-sm">
-                        컨테이너 이미지 (Trivy) <span className="text-gray-400 text-xs">(선택)</span>
+                        컨테이너 이미지 또는 GitHub repo (Trivy) <span className="text-gray-400 text-xs">(선택)</span>
                       </label>
                       <input
                         type="text"
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                         value={scanTargets.trivy}
                         onChange={(e) => setScanTargets({ ...scanTargets, trivy: e.target.value })}
-                        placeholder="예: nginx:1.25, alpine:latest"
+                        placeholder="예: nginx:1.25 또는 https://github.com/owner/repo"
                         disabled={!isLive}
                       />
+                      <p className="mt-1 text-xs text-gray-500">
+                        이미지 참조 또는 GitHub repo URL을 입력하세요. repo는 소스 코드 의존성·IaC·secret까지 스캔합니다.
+                      </p>
+                    </div>
+                  )}
+                  {toolScope.web_probe && (
+                    <div>
+                      <label className="block mb-2 text-sm">
+                        도메인 또는 URL (Web/DNS/TLS Probe) <span className="text-gray-400 text-xs">(선택)</span>
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                        value={scanTargets.web_probe}
+                        onChange={(e) => setScanTargets({ ...scanTargets, web_probe: e.target.value })}
+                        placeholder="예: example.com 또는 https://app.example.com"
+                        disabled={!isLive}
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        도메인 입력 시 OIDC Discovery / DNS(SPF·DMARC·CAA) / HTTP 보안 헤더 / TLS 1.3 ·
+                        인증서 / Certificate Transparency 로그를 외부에서 비침해 측정합니다.
+                        미입력 시 Nmap 대상 도메인으로 폴백됩니다.
+                      </p>
                     </div>
                   )}
                 </div>
-                {isLive && (scanTargets.nmap.trim() || scanTargets.trivy.trim()) && (
+                {isLive && (scanTargets.nmap.trim() || scanTargets.trivy.trim() || scanTargets.web_probe.trim()) && (
                   <>
                     <div className="mt-3 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
                       <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -1111,8 +1151,8 @@ export function NewAssessment() {
               </div>
             )}
 
-            {/* IdP / SIEM / EDR 연결 카드 */}
-            {(toolScope.keycloak || toolScope.wazuh) && (
+            {/* IdP / SIEM / 플랫폼 연결 카드 — 선택된 도구 중 자격 필요한 게 하나라도 있으면 노출 */}
+            {(toolScope.keycloak || toolScope.wazuh || toolScope.supabase || toolScope.vercel || toolScope.railway) && (
               <div className={!isLive ? "opacity-60" : ""}>
                 <div className="flex items-center gap-2 mb-3">
                   <KeyRound size={16} className="text-blue-600" />
@@ -1206,6 +1246,104 @@ export function NewAssessment() {
                           disabled={!isLive}
                           aria-label="Wazuh API 비밀번호"
                         />
+                      </div>
+                    </div>
+                  )}
+                  {/* Supabase 카드 — idp_type=supabase 일 때만 활성 */}
+                  {toolScope.supabase && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Supabase</span>
+                        <span className="text-[10px] text-gray-400">Auth / DB / RLS</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.project_ref}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, project_ref: e.target.value })}
+                          placeholder="project ref (대시보드 URL 의 20자 lowercase 영숫자)"
+                          disabled={!isLive} aria-label="Supabase project ref" />
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.pat}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, pat: e.target.value })}
+                          placeholder="Management PAT (sbp_...) — 권장"
+                          disabled={!isLive} aria-label="Supabase Management PAT" />
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.service_role}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, service_role: e.target.value })}
+                          placeholder="service_role JWT (선택)"
+                          disabled={!isLive} aria-label="Supabase service_role key" />
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={supabaseCreds.anon_key}
+                          onChange={(e) => setSupabaseCreds({ ...supabaseCreds, anon_key: e.target.value })}
+                          placeholder="anon key JWT (선택, 공개 설정만)"
+                          disabled={!isLive} aria-label="Supabase anon key" />
+                      </div>
+                    </div>
+                  )}
+                  {/* Vercel 카드 */}
+                  {toolScope.vercel && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Vercel</span>
+                        <span className="text-[10px] text-gray-400">배포·환경변수·도메인</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={vercelCreds.token}
+                          onChange={(e) => setVercelCreds({ ...vercelCreds, token: e.target.value })}
+                          placeholder="API Token (vcp_...)"
+                          disabled={!isLive} aria-label="Vercel token" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={vercelCreds.team_id}
+                          onChange={(e) => setVercelCreds({ ...vercelCreds, team_id: e.target.value })}
+                          placeholder="team_id (선택, 팀 계정만)"
+                          disabled={!isLive} aria-label="Vercel team_id" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={vercelCreds.project_id}
+                          onChange={(e) => setVercelCreds({ ...vercelCreds, project_id: e.target.value })}
+                          placeholder="project_id (prj_...)"
+                          disabled={!isLive} aria-label="Vercel project_id" />
+                      </div>
+                    </div>
+                  )}
+                  {/* Railway 카드 */}
+                  {toolScope.railway && (
+                    <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-700">Railway</span>
+                        <span className="text-[10px] text-gray-400">배포·서비스·헬스체크</span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <input type="password" autoComplete="new-password"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.token}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, token: e.target.value })}
+                          placeholder="API Token (UUID)"
+                          disabled={!isLive} aria-label="Railway token" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.project_id}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, project_id: e.target.value })}
+                          placeholder="project_id (UUID)"
+                          disabled={!isLive} aria-label="Railway project_id" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.service_id}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, service_id: e.target.value })}
+                          placeholder="service_id (UUID)"
+                          disabled={!isLive} aria-label="Railway service_id" />
+                        <input type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                          value={railwayCreds.environment_id}
+                          onChange={(e) => setRailwayCreds({ ...railwayCreds, environment_id: e.target.value })}
+                          placeholder="environment_id (UUID)"
+                          disabled={!isLive} aria-label="Railway environment_id" />
                       </div>
                     </div>
                   )}
@@ -1352,8 +1490,8 @@ export function NewAssessment() {
                             setScopeAssets(next);
                           }}
                           placeholder={
-                            asset.name === "Frontend URL" ? "https://tmarkovframework.vercel.app" :
-                            asset.name === "Backend API" ? "https://api.tmarkov.example.com" :
+                            asset.name === "Frontend URL" ? "https://app.example.com" :
+                            asset.name === "Backend API" ? "https://api.example.com" :
                             asset.name === "Supabase project" ? "프로젝트 ID 또는 URL" :
                             asset.name === "GitHub repo" ? "owner/name" :
                             "값 또는 URL"
@@ -1501,100 +1639,51 @@ export function NewAssessment() {
             <p className="text-sm text-gray-500">
               선택하신 필러와 도구 기반으로 진단이 진행됩니다. 다음 단계에서 최종 확인 후 진단을 시작하세요.
             </p>
-            <div className="space-y-3">
-              {PILLARS.filter((p) => pillarScope[p.key]).map((pillar) => {
-                const autoTools = Object.entries(toolScope).filter(([, on]) => on).map(([k]) => k);
+            {/* 노션 2번 피드백 D-3, D-4: 우측 "진단 대상 필러" 라벨 삭제(정보 중복), 카드 하나로 통합. */}
+            {(() => {
+              const selectedPillars = PILLARS.filter((p) => pillarScope[p.key]);
+              const autoTools = Object.entries(toolScope).filter(([, on]) => on).map(([k]) => k);
+              if (selectedPillars.length === 0) {
                 return (
-                  <div key={pillar.key} className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-gray-800">{pillar.label}</h3>
-                      <span className="text-xs text-gray-400">진단 대상 필러</span>
-                    </div>
-                    <p className="mt-2 text-xs text-gray-500">
-                      자동 수집 도구: {autoTools.length > 0 ? autoTools.join(", ") : "없음 (전체 수동 진단)"}
-                    </p>
-                    <p className="mt-1 text-xs text-gray-400">
-                      세부 체크리스트 답변은 진단 시작 후 자동 수집과 병행하여 진행됩니다.
-                    </p>
-                  </div>
-                );
-              })}
-              {Object.values(pillarScope).every((v) => !v) && (
-                <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                  선택된 필러가 없습니다. 이전 단계에서 진단 범위를 선택해주세요.
-                </p>
-              )}
-            </div>
-
-            {/* 수동 양식 미리 작성 (선택) — 진단 시작 전 자동 채점 */}
-            <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-5">
-              <div className="flex items-center gap-2 mb-2">
-                <Upload size={18} className="text-blue-700" />
-                <h3 className="text-sm font-semibold text-gray-800">
-                  수동 진단 양식 미리 작성 (선택)
-                </h3>
-              </div>
-              <p className="text-xs text-gray-600 mb-3">
-                Step 1에서 선택한 IdP/SIEM 환경에 맞춰 자동 진단이 불가능한 항목만 모은 Excel 양식을
-                미리 받아 채울 수 있습니다. 업로드 시 자동 채점됩니다.
-                다음 단계 마지막에 [진단 시작]을 누르면 자동 수집과 합쳐져 최종 PDF가 만들어집니다.
-              </p>
-
-              {!preparedSessionId ? (
-                <button
-                  type="button"
-                  onClick={handlePrepareSession}
-                  disabled={preparing || selectedPillarCount === 0}
-                  className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg ${
-                    preparing || selectedPillarCount === 0
-                      ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                      : "bg-blue-600 text-white hover:bg-blue-700"
-                  }`}
-                >
-                  {preparing ? "준비 중..." : "환경 기반 양식 준비"}
-                </button>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-xs text-emerald-700">
-                    ✅ 세션 준비 완료 (session #{preparedSessionId}). 양식 다운로드 → 작성 → 업로드.
+                  <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                    선택된 필러가 없습니다. 이전 단계에서 진단 범위를 선택해주세요.
                   </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={handleDownloadManualTemplate}
-                      className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-gray-300 bg-white rounded-lg hover:bg-gray-50 text-gray-700"
-                    >
-                      <FileText size={15} />
-                      양식 다운로드 (.xlsx)
-                    </button>
-                    <label
-                      className={`inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg cursor-pointer ${
-                        manualUploading
-                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                          : "bg-blue-600 text-white hover:bg-blue-700"
-                      }`}
-                    >
-                      <Upload size={15} />
-                      {manualUploading ? "업로드 중..." : "작성한 양식 업로드"}
-                      <input
-                        ref={manualFileInputRef}
-                        type="file"
-                        accept=".xlsx"
-                        className="hidden"
-                        disabled={manualUploading}
-                        onChange={handleManualExcelUpload}
-                      />
-                    </label>
+                );
+              }
+              return (
+                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/40">
+                  <div className="flex items-center gap-2 mb-3">
+                    <h3 className="font-semibold text-gray-800">진단 대상 필러 ({selectedPillars.length}개)</h3>
                   </div>
-                  {manualUploadResult && (
-                    <div className="text-xs text-gray-700 bg-white rounded border border-gray-200 px-3 py-2">
-                      <span className="font-semibold text-emerald-700">자동 채점 완료:</span>{" "}
-                      <strong>{manualUploadResult.parsed}건</strong> 채점,
-                      건너뜀 {manualUploadResult.skipped}건, 매칭 실패 {manualUploadResult.unmatched}건.
-                    </div>
-                  )}
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {selectedPillars.map((p) => (
+                      <span
+                        key={p.key}
+                        className="inline-block px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700 border border-blue-200"
+                      >
+                        {p.label}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-600">
+                    자동 수집 도구: {autoTools.length > 0 ? autoTools.join(", ") : "없음 (전체 수동 진단)"}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    세부 체크리스트 답변은 진단 시작 후 자동 수집과 병행하여 진행됩니다.
+                  </p>
                 </div>
-              )}
+              );
+            })()}
+
+            {/* 안내 — 수동 양식 다운/업로드는 자동 진단 완료 후 다음 단계(AssessmentNext)에서 진행. */}
+            <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 text-xs text-gray-600">
+              <div className="flex items-start gap-2">
+                <Info size={14} className="mt-0.5 text-gray-500 shrink-0" />
+                <p>
+                  자동 진단이 끝난 뒤 <strong>다음 단계</strong> 페이지에서 환경에 맞춘
+                  수동 양식(.xlsx)을 다운로드받아 작성 후 업로드하면, 자동 결과와 합쳐서 최종 보고서가 생성됩니다.
+                </p>
+              </div>
             </div>
 
             <div className="flex justify-between pt-4">

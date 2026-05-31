@@ -36,29 +36,45 @@ _ALLOWED_EVIDENCE_MIMES = {
 MATURITY_NUM = {"기존": 1, "초기": 2, "향상": 3, "최적화": 4}
 VALID_RESULTS = {"충족", "부분충족", "미충족", "평가불가"}
 
+# 담당자가 선택할 수 있는 4가지 직관 기호 — 자유 입력 차단.
+# O = 충족, △ = 부분충족, X = 미충족, 평가불가 = 평가불가.
+CHOICE_OPTIONS = ["O", "△", "X", "평가불가"]
+CHOICE_TO_VERDICT = {
+    "O":      "충족",
+    "△":      "부분충족",
+    "X":      "미충족",
+    "평가불가": "평가불가",
+}
+
 
 def _normalize_result(v: str) -> str:
     """부분 충족 → 부분충족 등 공백 정규화."""
     return v.replace(" ", "") if v else "평가불가"
 
 
-def _build_judgment_map(wb: openpyxl.Workbook) -> dict:
-    """judgment_mapping 시트에서 (M_id, 선택값) → 판정결과 딕셔너리 생성."""
-    ws = wb["judgment_mapping"]
-    mapping = {}
-    for r in range(2, ws.max_row + 1):
-        row = [ws.cell(r, c).value for c in range(1, 7)]
-        m_id, _, _, _, choice, verdict = row
-        if m_id and m_id != "항목ID" and choice and verdict:
-            mapping[(str(m_id).strip(), str(choice).strip())] = _normalize_result(str(verdict).strip())
-    return mapping
+def resolve_verdict(user_choice: str) -> str:
+    """담당자가 선택한 기호 → 판정 결과 변환.
+
+    선택값이 정의되지 않은 값이면 '평가불가' 처리.
+    """
+    return CHOICE_TO_VERDICT.get((user_choice or "").strip(), "평가불가")
 
 
-def _find_checklist(db: Session, item_no_str: str, maturity: str, question: str) -> Optional[Checklist]:
+def _find_checklist(
+    db: Session,
+    item_no_str: str,
+    maturity: str,
+    question: str,
+    used_check_ids: Optional[set] = None,
+) -> Optional[Checklist]:
     """항목번호+성숙도+질문으로 Checklist 행을 찾는다.
 
     Excel 항목번호 예: "1.1.1 사용자 인벤토리" → prefix "1.1.1"
     DB item_id 형식: "{prefix}.{maturity_num}_{counter}" → "1.1.1.1_1"
+
+    같은 prefix·성숙도에 후보가 여러 개일 때(질문 텍스트가 양식과 안 맞는 경우)
+    used_check_ids 를 받아 이미 이번 업로드에서 쓰인 check_id 는 제외하고 매칭한다.
+    → 여러 xlsx 행이 같은 candidates[0] 으로 몰리는 중복 binding 방지.
     """
     if not item_no_str:
         return None
@@ -68,15 +84,31 @@ def _find_checklist(db: Session, item_no_str: str, maturity: str, question: str)
         return None
 
     pattern = f"{prefix}.{mat_num}_%"
-    candidates = db.query(Checklist).filter(Checklist.item_id.like(pattern)).all()
+    candidates = db.query(Checklist).filter(
+        Checklist.item_id.like(pattern)
+    ).order_by(Checklist.item_id).all()
     if not candidates:
         return None
 
     q = (question or "").strip()
     if q:
+        # 1차: 완전 일치 (used 무시 — 같은 질문이면 같은 row 로 정확히 update)
         for c in candidates:
             if c.item_name and c.item_name.strip() == q:
                 return c
+        # 2차: 공백/특수문자 무시한 정규화 일치
+        import re as _re
+        norm_q = _re.sub(r"\s+", "", q)
+        for c in candidates:
+            if c.item_name and _re.sub(r"\s+", "", c.item_name.strip()) == norm_q:
+                return c
+
+    # 질문 매칭 실패: 라운드로빈 — 아직 쓰이지 않은 후보를 item_id 순으로 채택.
+    if used_check_ids is not None:
+        for c in candidates:
+            if c.check_id not in used_check_ids:
+                return c
+    # used 모두 소진 또는 used_check_ids 미지정 — 첫 후보 폴백.
     return candidates[0]
 
 
@@ -115,19 +147,23 @@ async def manual_upload(
     except Exception:
         raise HTTPException(status_code=400, detail="올바른 Excel(.xlsx) 파일이 아닙니다.")
 
-    if "manual_diagnosis" not in wb.sheetnames or "judgment_mapping" not in wb.sheetnames:
+    if "manual_diagnosis" not in wb.sheetnames:
         raise HTTPException(
             status_code=400,
-            detail="manual_diagnosis / judgment_mapping 시트가 필요합니다.",
+            detail="manual_diagnosis 시트가 필요합니다.",
         )
 
-    judgment_map = _build_judgment_map(wb)
     ws = wb["manual_diagnosis"]
 
     weight_map = {"충족": 1.0, "부분충족": 0.5, "미충족": 0.0, "평가불가": 0.0}
     saved = 0
     unmatched = 0
     skipped = 0
+    # 같은 트랜잭션 내 중복 INSERT 방지 — _find_checklist 가 여러 xlsx 행을 같은
+    # checklist 로 폴백 매핑하는 경우(질문 텍스트 불일치 등) 같은 (session, check_id)
+    # 에 여러 번 add 되어 248행에 중복이 쌓이는 버그가 있었음. 이번 업로드에서 이미
+    # 처리한 check_id 는 update 만 하고 add 는 한 번만 한다.
+    processed_check_ids: set[int] = set()
 
     for r in range(4, ws.max_row + 1):
         row = [ws.cell(r, c).value for c in range(1, 9)]
@@ -142,14 +178,16 @@ async def manual_upload(
         choice_str = str(choice).strip()
         note_str = str(note).strip() if note else ""
 
-        verdict = judgment_map.get((m_id_str, choice_str))
-        if not verdict:
-            # 정확 매칭 실패 시 선택값 자체가 판정결과인 경우 허용
-            verdict = _normalize_result(choice_str)
-            if verdict not in VALID_RESULTS:
-                verdict = "평가불가"
+        # 신규 규칙: 담당자가 선택한 기호(O/△/X/평가불가) → 판정 직접 매핑.
+        # 양식의 모든 행은 동일한 4선택 dropdown 으로 통일됨.
+        verdict = resolve_verdict(choice_str)
+        if verdict not in VALID_RESULTS:
+            verdict = "평가불가"
 
-        checklist = _find_checklist(db, str(item_no), str(maturity), str(question))
+        checklist = _find_checklist(
+            db, str(item_no), str(maturity), str(question),
+            used_check_ids=processed_check_ids,
+        )
         if not checklist:
             unmatched += 1
             continue
@@ -157,7 +195,11 @@ async def manual_upload(
         check_id = checklist.check_id
         score = checklist.maturity_score * weight_map.get(verdict, 0.0)
 
-        # CollectedData upsert
+        # 같은 업로드 내 같은 check_id 두 번째 등장 — 첫 번째 결과를 덮어쓰기로 정정.
+        already_processed = check_id in processed_check_ids
+        processed_check_ids.add(check_id)
+
+        # CollectedData upsert (DB + 메모리 둘 다 검사해서 중복 add 방지)
         existing_cd = db.query(CollectedData).filter(
             CollectedData.session_id == session_id,
             CollectedData.check_id == check_id,
@@ -181,6 +223,7 @@ async def manual_upload(
                 raw_json={"manual": True, "choice": choice_str, "note": note_str},
                 error=None,
             ))
+            db.flush()  # 다음 iteration 의 existing_cd.first() 가 이 row 를 보도록 즉시 flush
 
         # DiagnosisResult upsert
         existing_dr = db.query(DiagnosisResult).filter(
@@ -198,27 +241,78 @@ async def manual_upload(
                 score=score,
                 recommendation="",
             ))
+            db.flush()
 
         if note_str:
-            db.add(Evidence(
-                session_id=session_id,
-                check_id=check_id,
-                source="수동입력(Excel)",
-                observed=note_str,
-                location="",
-                reason="",
-                impact=None,
-            ))
+            # Evidence 도 upsert — 같은 (session, check_id, source=수동입력(Excel)) 에 새 노트를
+            # 매번 INSERT 하면 같은 항목에 중복 row 가 쌓인다. 가장 최근 노트만 유지.
+            existing_ev = db.query(Evidence).filter(
+                Evidence.session_id == session_id,
+                Evidence.check_id == check_id,
+                Evidence.source == "수동입력(Excel)",
+            ).first()
+            if existing_ev:
+                existing_ev.observed = note_str
+            else:
+                db.add(Evidence(
+                    session_id=session_id,
+                    check_id=check_id,
+                    source="수동입력(Excel)",
+                    observed=note_str,
+                    location="",
+                    reason="",
+                    impact=None,
+                ))
 
-        saved += 1
+        if not already_processed:
+            saved += 1
+        # 첫 1회만 카운트 — 두 번째 등장은 덮어쓰기로 saved 증가 X
 
     db.commit()
+
+    # 업로드 결과 상세 (UI 가 토스트나 결과 요약 패널에 그대로 보여줄 수 있게).
+    # processed_check_ids 기준으로 pillar/maturity/result 분포 산출.
+    detail_rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(
+            DiagnosisResult.session_id == session_id,
+            DiagnosisResult.check_id.in_(processed_check_ids) if processed_check_ids else False,
+        )
+        .all()
+    ) if processed_check_ids else []
+    by_pillar: dict[str, dict] = {}
+    by_result: dict[str, int] = {}
+    sample_items: list[dict] = []
+    for dr, cl in detail_rows:
+        p = cl.pillar or "미분류"
+        bp = by_pillar.setdefault(p, {"pass": 0, "fail": 0, "na": 0})
+        if dr.result == "충족":
+            bp["pass"] += 1
+        elif dr.result in ("미충족", "부분충족"):
+            bp["fail"] += 1
+        else:
+            bp["na"] += 1
+        by_result[dr.result or "평가불가"] = by_result.get(dr.result or "평가불가", 0) + 1
+        if len(sample_items) < 50:
+            sample_items.append({
+                "item_id":   cl.item_id,
+                "category":  cl.category,
+                "maturity":  cl.maturity,
+                "item_name": cl.item_name,
+                "result":    dr.result,
+                "pillar":    cl.pillar,
+            })
+
     return {
         "status":          "ok",
         "session_id":      session_id,
         "parsed_count":    saved,
         "unmatched_count": unmatched,
         "skipped_count":   skipped,
+        "by_pillar":       by_pillar,
+        "by_result":       by_result,
+        "items":           sample_items,
     }
 
 
@@ -271,6 +365,7 @@ def manual_submit(
                 raw_json={"manual": True, "evidence": evidence_text},
                 error=None,
             ))
+            db.flush()  # 같은 answers 안에서 동일 check_id 중복 등장 시 두 번째 iter 가 위 row 보도록.
 
         existing = db.query(DiagnosisResult).filter(
             DiagnosisResult.session_id == req.session_id,
@@ -288,17 +383,28 @@ def manual_submit(
                 score=checklist.maturity_score * weight_map.get(result, 0.0),
                 recommendation="",
             ))
+            db.flush()
 
         if evidence_text:
-            db.add(Evidence(
-                session_id=req.session_id,
-                check_id=check_id,
-                source="수동입력",
-                observed=evidence_text,
-                location="",
-                reason="",
-                impact=None,
-            ))
+            # Evidence 도 upsert — manual_submit 재호출 시 같은 (session, check_id, source=수동입력)
+            # 에 중복 row 가 쌓이는 것 방지.
+            existing_ev = db.query(Evidence).filter(
+                Evidence.session_id == req.session_id,
+                Evidence.check_id == check_id,
+                Evidence.source == "수동입력",
+            ).first()
+            if existing_ev:
+                existing_ev.observed = evidence_text
+            else:
+                db.add(Evidence(
+                    session_id=req.session_id,
+                    check_id=check_id,
+                    source="수동입력",
+                    observed=evidence_text,
+                    location="",
+                    reason="",
+                    impact=None,
+                ))
 
         saved += 1
 
@@ -342,7 +448,7 @@ def _find_base_template() -> Optional[Path]:
 # 폴백되는데, 정적 양식엔 그 폴백 항목이 없다. 세션의 profile_select 와
 # selected_tools 를 기반으로 폴백 항목까지 포함한 양식을 동적 생성한다.
 
-_IDP_AUTO_TOOLS_FOR_FALLBACK = {"keycloak", "entra"}
+_IDP_AUTO_TOOLS_FOR_FALLBACK = {"keycloak", "supabase", "entra"}
 _SIEM_AUTO_TOOLS_FOR_FALLBACK = {"wazuh"}
 
 
@@ -370,14 +476,112 @@ def _resolve_fallback_tools(session: DiagnosisSession) -> set[str]:
     return fallback
 
 
-# 폴백 항목 기본 선택지 — 가이드 §5 톤에 맞춘 4단계.
-# 기존 수동 항목 다수가 (운영 중, 계획, 미도입) 3선택지를 쓰므로 동일 패턴 유지.
-_FALLBACK_CHOICES = [
-    ("운영 중",     "충족"),
-    ("부분 운영",   "부분 충족"),
-    ("미도입",      "미충족"),
-    ("평가 불가",   "평가 불가"),
-]
+# 폴백 항목도 본 양식과 동일하게 O/△/X/평가불가 4선택 dropdown 사용.
+# (choice → verdict 매핑은 CHOICE_TO_VERDICT 참조)
+_FALLBACK_CHOICES = [(c, CHOICE_TO_VERDICT[c]) for c in CHOICE_OPTIONS]
+
+
+_MATURITY_NAME_FROM_NUM = {1: "기존", 2: "초기", 3: "향상", 4: "최적화"}
+
+
+def _category_prefix(item_id: str) -> str:
+    """item_id 'X.Y.Z.N_M' → 카테고리 prefix 'X.Y.Z'."""
+    if not item_id:
+        return ""
+    base = item_id.split("_", 1)[0]
+    parts = base.split(".")
+    return ".".join(parts[:3]) if len(parts) >= 3 else ""
+
+
+def _maturity_num_from_item_id(item_id: str) -> int:
+    """item_id 'X.Y.Z.N_M' → maturity 숫자 N (1=기존, 2=초기, 3=향상, 4=최적화)."""
+    if not item_id:
+        return 0
+    base = item_id.split("_", 1)[0]
+    parts = base.split(".")
+    if len(parts) < 4:
+        return 0
+    try:
+        return int(parts[3])
+    except (ValueError, TypeError):
+        return 0
+
+
+def _analyze_auto_max_level(session_id: int, db: Session) -> dict[str, int]:
+    """세션의 자동 진단 결과를 분석해 카테고리(prefix) 별 충족된 최고 단계 산출.
+
+    KISA ZT 가이드라인의 보수적 평가 원칙: 상위 단계가 충족되면 하위 단계는 자동
+    충족된 것으로 본다. 따라서 수동 양식에서는 자동으로 충족된 최고 단계 *이하* 행을
+    모두 제외해야 한다.
+
+    반환: {"1.1.1": 3, "1.2.1": 0, ...}
+      · 키: 카테고리 prefix (3-segment item_id)
+      · 값: 자동 진단에서 "충족" 으로 판정된 가장 높은 maturity 숫자 (1~4).
+            충족된 게 없으면 키 자체가 없음 → caller 는 .get(prefix, 0) 사용.
+    """
+    rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    auto_max: dict[str, int] = {}
+    for dr, cl in rows:
+        if cl.diagnosis_type != "자동":
+            continue
+        if dr.result != "충족":
+            continue
+        prefix = _category_prefix(cl.item_id or "")
+        mat_num = _maturity_num_from_item_id(cl.item_id or "")
+        if not prefix or not mat_num:
+            continue
+        prev = auto_max.get(prefix, 0)
+        if mat_num > prev:
+            auto_max[prefix] = mat_num
+    return auto_max
+
+
+def _auto_result_distribution(session_id: int, db: Session) -> dict[str, dict]:
+    """카테고리 prefix 별 자동 결과 분포 + 한국어 카테고리 이름 산출 (요약 시트용).
+
+    반환: {
+        "1.1.1": {
+            "category_label": "1.1.1 사용자 인벤토리",
+            "max_satisfied":  3,   # 자동 최고 충족 단계 (없으면 0)
+            "counts": {"충족": 2, "부분충족": 0, "미충족": 1, "평가불가": 0},
+        },
+        ...
+    }
+    """
+    rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    summary: dict[str, dict] = {}
+    for dr, cl in rows:
+        if cl.diagnosis_type != "자동":
+            continue
+        prefix = _category_prefix(cl.item_id or "")
+        if not prefix:
+            continue
+        rec = summary.setdefault(prefix, {
+            "category_label": cl.category or prefix,
+            "max_satisfied":  0,
+            "counts":         {"충족": 0, "부분충족": 0, "미충족": 0, "평가불가": 0},
+        })
+        # 가장 의미 있는 라벨 (Checklist.category) 채택
+        if cl.category and len(cl.category) > len(rec["category_label"]):
+            rec["category_label"] = cl.category
+        result_key = _normalize_result(dr.result or "")
+        if result_key in rec["counts"]:
+            rec["counts"][result_key] += 1
+        if result_key == "충족":
+            mat_num = _maturity_num_from_item_id(cl.item_id or "")
+            if mat_num > rec["max_satisfied"]:
+                rec["max_satisfied"] = mat_num
+    return summary
 
 
 # 카테고리(Pillar) 정렬 순서 — 기존 양식과 동일하게 6 Pillar 순으로.
@@ -420,6 +624,19 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     ws_diag = wb["manual_diagnosis"]
     ws_judg = wb["judgment_mapping"]
 
+    # ── 자동 진단 결과 분석 (보수적 단계 평가) ────────────────────────────────
+    # 카테고리별 자동 충족된 최고 단계 ≥ 행 단계인 행은 양식에서 제외한다.
+    # ex) 1.1.1 카테고리에서 "향상(3)" 까지 자동 충족 → 1.1.1 의 기존/초기/향상 행 모두 제외.
+    auto_max = _analyze_auto_max_level(session.session_id, db)
+    auto_dist = _auto_result_distribution(session.session_id, db)
+
+    # ── 양식 R2 안내문에 보수적 평가 안내 추가 ────────────────────────────────
+    notice_cell = ws_diag.cell(2, 1)
+    base_notice = str(notice_cell.value or "")
+    extra_notice = " ※ 자동 진단에서 충족된 항목은 보수적 평가 원칙에 따라 양식에서 자동 제외되었습니다 (해당 카테고리 자동 결과 요약 시트 참고)."
+    if extra_notice not in base_notice:
+        notice_cell.value = base_notice + extra_notice
+
     # ── 공개 URL 자동 점검 (실패해도 양식 생성은 진행) ───────────────────────
     extra = session.extra if isinstance(session.extra, dict) else {}
     scan_targets = extra.get("scan_targets") if isinstance(extra.get("scan_targets"), dict) else {}
@@ -441,7 +658,45 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             logger.warning("[manual] web evidence collection failed: %s", exc)
             evidence = {"error": str(exc)}
 
-    # 기존 양식에 이미 포함된 (item_no_prefix, maturity) 조합 — 중복 추가 방지.
+    # ── 자동 충족된 행 제거 (보수적 단계 평가) ────────────────────────────────
+    # 역순 순회로 행 번호 안 꼬이게 처리. 데이터 행 (M### 시작) 만 검사 대상.
+    removed_rows_info: list[tuple[str, str]] = []  # (prefix, maturity) — 로그/디버그용
+    for r in range(ws_diag.max_row, 3, -1):
+        mid = ws_diag.cell(r, 1).value
+        if not mid or not isinstance(mid, str) or not mid.startswith("M"):
+            continue
+        item_no_cell = ws_diag.cell(r, 3).value
+        maturity_cell = ws_diag.cell(r, 4).value
+        if not item_no_cell or not maturity_cell:
+            continue
+        prefix = str(item_no_cell).split()[0]
+        maturity = str(maturity_cell).strip()
+        mat_num = MATURITY_NUM.get(maturity, 0)
+        if not prefix or not mat_num:
+            continue
+        category_max = auto_max.get(prefix, 0)
+        if category_max >= mat_num:
+            ws_diag.delete_rows(r, 1)
+            removed_rows_info.append((prefix, maturity))
+
+    # 빈 카테고리 구분행 (▸ ...) 정리 — 직후가 또 ▸ 이거나 시트 끝이면 제거.
+    for r in range(ws_diag.max_row, 3, -1):
+        v = ws_diag.cell(r, 1).value
+        if not v or not isinstance(v, str) or not v.startswith("▸"):
+            continue
+        nxt = ws_diag.cell(r + 1, 1).value if r + 1 <= ws_diag.max_row else None
+        if not nxt or (isinstance(nxt, str) and nxt.startswith("▸")):
+            ws_diag.delete_rows(r, 1)
+
+    # M_id 재번호 — 빈자리 없이 M001~ 연속 번호.
+    next_m_for_renumber = 1
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("M"):
+            ws_diag.cell(r, 1).value = f"M{next_m_for_renumber:03d}"
+            next_m_for_renumber += 1
+
+    # 기존 양식에 이미 포함된 (item_no_prefix, maturity) 조합 — 폴백 중복 추가 방지.
     existing_keys: set[tuple[str, str]] = set()
     for r in range(4, ws_diag.max_row + 1):
         mid = ws_diag.cell(r, 1).value
@@ -452,21 +707,68 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         if item_no and maturity:
             existing_keys.add((item_no, maturity))
 
+    # 양식이 완전히 비었으면 안내 한 줄 (행 4 = 첫 카테고리 위치).
+    has_any_data = next_m_for_renumber > 1
+    if not has_any_data:
+        info_row = 4
+        ic = ws_diag.cell(info_row, 1)
+        ic.value = "✓ 모든 자동 진단이 충족되어 수동 보완 항목이 없습니다. (자동 결과 요약 시트 참고)"
+        ic.font = Font(name="Arial", size=11, bold=True, color="FF0F766E")
+        ic.fill = PatternFill("solid", fgColor="FFE7F5F2")
+        ic.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws_diag.merge_cells(start_row=info_row, start_column=1, end_row=info_row, end_column=8)
+
     fallback_tools = _resolve_fallback_tools(session)
-    if not fallback_tools:
-        # 폴백 없음 — 그대로 출력 (=정적 양식과 동일)
+    # instructions 시트에도 보수적 평가 안내 추가 (멱등).
+    _augment_instructions_sheet(wb)
+
+    # 자동 진단에서 평가불가로 떨어진 항목들도 수동 입력으로 보완 — 결과 페이지에
+    # "평가 안 됨" 공백을 남기지 않기 위함. KISA 보수적 평가 원칙은 동일하게 적용
+    # (해당 카테고리의 상위 단계가 자동 충족이면 하위 단계 평가불가 항목은 제외).
+    unavailable_check_ids: set[int] = set()
+    unavailable_rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(
+            DiagnosisResult.session_id == session.session_id,
+            DiagnosisResult.result == "평가불가",
+        )
+        .all()
+    )
+    unavailable_checklist: list[Checklist] = []
+    for _dr, cl in unavailable_rows:
+        if cl.check_id in unavailable_check_ids:
+            continue
+        unavailable_check_ids.add(cl.check_id)
+        unavailable_checklist.append(cl)
+
+    if not fallback_tools and not unavailable_checklist:
+        # 폴백 없음 + 평가불가 없음 — 자동 결과 요약/외부 점검 시트만 부착 후 종료.
+        _append_auto_summary_sheet(wb, auto_dist)
+        if evidence and not evidence.get("error"):
+            _append_evidence_sheet(wb, evidence)
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
 
-    # 폴백 도구 매핑된 Checklist 항목 조회
-    rows = db.query(Checklist).filter(
-        Checklist.tool.in_(sorted(fallback_tools))
-    ).all()
+    # 폴백 도구 매핑된 Checklist 항목 조회 + 자동 평가불가 항목 합치기 (중복 제거).
+    rows: list[Checklist] = []
+    seen_check_ids: set[int] = set()
+    if fallback_tools:
+        for cl in db.query(Checklist).filter(
+            Checklist.tool.in_(sorted(fallback_tools))
+        ).all():
+            if cl.check_id not in seen_check_ids:
+                seen_check_ids.add(cl.check_id)
+                rows.append(cl)
+    for cl in unavailable_checklist:
+        if cl.check_id not in seen_check_ids:
+            seen_check_ids.add(cl.check_id)
+            rows.append(cl)
     # 카테고리·item_id 순으로 정렬
     rows.sort(key=lambda c: (_pillar_sort_key(c.pillar or ""), c.item_id or ""))
 
-    # 기존 양식에 이미 있는 항목 제외
+    # 기존 양식에 이미 있는 항목 제외 + 자동 충족된 단계 제외 (보수적 평가).
     new_items = []
     for cl in rows:
         prefix = (cl.item_id or "").split("_", 1)[0]  # "1.1.1.1"
@@ -474,9 +776,18 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         key = (item_no_prefix, cl.maturity or "")
         if key in existing_keys:
             continue
+        # 자동에서 같은 카테고리의 상위(또는 동등) 단계가 충족되어 있으면 폴백도 생략.
+        mat_num = MATURITY_NUM.get(cl.maturity or "", 0)
+        if mat_num and auto_max.get(item_no_prefix, 0) >= mat_num:
+            removed_rows_info.append((item_no_prefix, cl.maturity or ""))
+            continue
         new_items.append((cl, item_no_prefix))
 
     if not new_items:
+        # 자동 결과 요약 시트는 폴백 없이도 부착해서 담당자가 확인 가능.
+        _append_auto_summary_sheet(wb, auto_dist)
+        if evidence and not evidence.get("error"):
+            _append_evidence_sheet(wb, evidence)
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
@@ -515,43 +826,62 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             "alignment": copy(sc.alignment),
         }
 
-    # 폴백 항목을 Pillar 별로 그룹화
+    # 폴백/평가불가 항목을 Pillar 별로 그룹화 + Pillar 내부는 item_id 순서.
     by_pillar: dict[str, list] = {}
     for cl, item_no_prefix in new_items:
         by_pillar.setdefault(cl.pillar or "기타", []).append((cl, item_no_prefix))
+    for pillar in by_pillar:
+        by_pillar[pillar].sort(key=lambda t: t[0].item_id or "")
 
-    # manual_diagnosis 시트 끝에 추가
-    append_at = ws_diag.max_row + 2  # 한 줄 띄움
+    # 사전 M_id 할당 — xlsx 최종 visual order(식별자→기기→...→데이터) 기준 연속 번호.
+    # 이렇게 해야 reverse 삽입을 해도 보기에는 위→아래 M### 가 단조 증가.
+    pre_assigned_mids: list[str] = []
+    pillar_order_keys = [p for p in _PILLAR_ORDER if by_pillar.get(p)]
+    extra_pillars = sorted([p for p in by_pillar if p not in _PILLAR_ORDER])
+    for pillar in pillar_order_keys + extra_pillars:
+        for _ in by_pillar[pillar]:
+            pre_assigned_mids.append(f"M{next_m:03d}")
+            next_m += 1
 
-    # 안내 헤더 (폴백 섹션 구분)
-    notice_row = append_at
-    nc = ws_diag.cell(notice_row, 1)
-    nc.value = (
-        f"▼ 자동 폴백 항목 — 사용 환경(IdP/SIEM)에서 자동 진단이 불가능해 수동으로 평가해야 하는 항목 "
-        f"({len(new_items)}건)"
-    )
-    nc.font = Font(name="Arial", size=11, bold=True, color="FFB91C1C")
-    nc.fill = PatternFill("solid", fgColor="FFFEE2E2")
-    ws_diag.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=8)
-    nc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    append_at += 1
+    # 기존 sheet 에서 Pillar 별 데이터 행 마지막 위치 스캔.
+    # ▸ 로 시작하는 카테고리 구분행을 기준으로 섹션 경계 파악.
+    pillar_section_end: dict[str, int] = {}  # pillar -> 그 pillar 의 마지막 데이터 행
+    current_pillar: Optional[str] = None
+    section_start_row = 4
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("▸"):
+            if current_pillar:
+                pillar_section_end[current_pillar] = section_start_row - 1
+            current_pillar = v.replace("▸", "").strip()
+            # 마지막 데이터 행 = 다음 ▸ 의 한 줄 위. 일단 r 로 두고 다음 ▸ 만나면 갱신.
+            section_start_row = r + 1
+            pillar_section_end[current_pillar] = ws_diag.max_row  # 일단 끝까지로 두고 다음 섹션 발견 시 갱신
+        elif v and isinstance(v, str) and v.startswith("M") and current_pillar:
+            pillar_section_end[current_pillar] = r
+
+    # 폴백 강조용 스타일 (M_id 셀 + 판정 선택 셀 두 군데에만 옅은 빨강 fill).
+    fallback_mid_font = Font(name="Arial", size=10, bold=True, color="FFB91C1C")
+    fallback_mid_fill = PatternFill("solid", fgColor="FFFEE2E2")
 
     new_mapping_rows: list[tuple] = []  # (m_id, pillar, item_no_full, maturity, choice, verdict)
+    inserted_row_ranges: list[tuple[int, int]] = []  # 드롭다운 적용용 (start, end inclusive)
 
-    for pillar in sorted(by_pillar.keys(), key=_pillar_sort_key):
+    # 본문: reverse pillar order 로 삽입 → earlier pillar 위치 안 흔들림.
+    # M_id 는 pre_assigned_mids 에서 visual order 로 미리 잘라둠.
+    visual_order = pillar_order_keys + extra_pillars
+    mid_cursor = 0
+    pillar_mid_slice: dict[str, list[str]] = {}
+    for pillar in visual_order:
+        cnt = len(by_pillar[pillar])
+        pillar_mid_slice[pillar] = pre_assigned_mids[mid_cursor:mid_cursor + cnt]
+        mid_cursor += cnt
+
+    for pillar in reversed(visual_order):
         items = by_pillar[pillar]
-        # 카테고리 구분행
-        cat_cell = ws_diag.cell(append_at, 1)
-        cat_cell.value = f"▸  {pillar}"
-        ws_diag.merge_cells(start_row=append_at, start_column=1, end_row=append_at, end_column=8)
-        for col in range(1, 9):
-            c = ws_diag.cell(append_at, col)
-            cs = cat_styles.get(col, {})
-            if cs.get("font"):      c.font      = copy(cs["font"])
-            if cs.get("fill"):      c.fill      = copy(cs["fill"])
-            if cs.get("border"):    c.border    = copy(cs["border"])
-            if cs.get("alignment"): c.alignment = copy(cs["alignment"])
-        append_at += 1
+        mids = pillar_mid_slice[pillar]
+        if not items:
+            continue
 
         # Pillar 별 자동 점검 요약 (한 번만 계산해서 같은 Pillar 행에 공유)
         pillar_evidence_text = ""
@@ -562,9 +892,33 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             except Exception:
                 pillar_evidence_text = ""
 
-        for cl, item_no_prefix in items:
-            m_id = f"M{next_m:03d}"
-            next_m += 1
+        # 삽입 위치: 기존 pillar 섹션의 마지막 데이터 행 바로 다음.
+        # 기존에 그 pillar 가 없으면 시트 맨 끝에 새 카테고리 구분행과 함께 추가.
+        if pillar in pillar_section_end:
+            insert_at = pillar_section_end[pillar] + 1
+            # N개 행 삽입 (기존 행들 아래로 밀림)
+            ws_diag.insert_rows(insert_at, amount=len(items))
+            data_start = insert_at
+        else:
+            # 새 pillar — 끝에 카테고리 구분행 + 데이터 행 모두 추가
+            data_start = ws_diag.max_row + 2
+            cat_cell = ws_diag.cell(data_start, 1)
+            cat_cell.value = f"▸  {pillar}"
+            ws_diag.merge_cells(start_row=data_start, start_column=1, end_row=data_start, end_column=8)
+            for col in range(1, 9):
+                c = ws_diag.cell(data_start, col)
+                cs = cat_styles.get(col, {})
+                if cs.get("font"):      c.font      = copy(cs["font"])
+                if cs.get("fill"):      c.fill      = copy(cs["fill"])
+                if cs.get("border"):    c.border    = copy(cs["border"])
+                if cs.get("alignment"): c.alignment = copy(cs["alignment"])
+            data_start += 1
+
+        # 데이터 행 채우기
+        first_new = data_start
+        for i, (cl, item_no_prefix) in enumerate(items):
+            r = data_start + i
+            m_id = mids[i]
             item_no_full = (cl.category or item_no_prefix)
             row_vals = [
                 m_id,
@@ -573,24 +927,28 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
                 cl.maturity or "",
                 cl.item_name or "",
                 cl.criteria or "",
-                None,                       # ★ 담당자 선택 (필수) — 빈 칸
-                pillar_evidence_text or None,  # 비고/증적메모 — 자동 점검 요약 미리 채움
+                None,                          # ★ 담당자 선택 (필수) — 빈 칸
+                pillar_evidence_text or None,  # 비고/증적메모
             ]
             for col, val in enumerate(row_vals, start=1):
-                c = ws_diag.cell(append_at, col)
+                c = ws_diag.cell(r, col)
                 c.value = val
                 cs = cell_styles.get(col, {})
                 if cs.get("font"):      c.font      = copy(cs["font"])
                 if cs.get("fill"):      c.fill      = copy(cs["fill"])
                 if cs.get("border"):    c.border    = copy(cs["border"])
                 if cs.get("alignment"): c.alignment = copy(cs["alignment"])
+            # M_id 셀에 폴백 강조 (옅은 빨강 배경 + 빨강 볼드)
+            mid_cell = ws_diag.cell(r, 1)
+            mid_cell.font = copy(fallback_mid_font)
+            mid_cell.fill = copy(fallback_mid_fill)
 
-            # judgment_mapping 행 누적
-            for choice, verdict in _FALLBACK_CHOICES:
+            for choice in CHOICE_OPTIONS:
+                verdict = CHOICE_TO_VERDICT[choice]
                 new_mapping_rows.append(
                     (m_id, pillar, item_no_full, cl.maturity or "", choice, verdict)
                 )
-            append_at += 1
+        inserted_row_ranges.append((first_new, first_new + len(items) - 1))
 
     # judgment_mapping 시트에 폴백 매핑 추가
     judg_append = ws_judg.max_row + 1
@@ -599,31 +957,198 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             ws_judg.cell(judg_append, col).value = val
         judg_append += 1
 
-    # 드롭다운(데이터 검증) 추가 — ★ 담당자 선택 (필수) 컬럼(G)에 폴백 행만
-    # _FALLBACK_CHOICES 의 choice 값만 허용
-    fallback_choice_str = ",".join(c for c, _ in _FALLBACK_CHOICES)
+    # 전체 M_id 재번호 — 삽입 후 위→아래 순서로 M001 ~ Mxxx 단조 증가하도록.
+    renum = 1
+    for r in range(4, ws_diag.max_row + 1):
+        v = ws_diag.cell(r, 1).value
+        if v and isinstance(v, str) and v.startswith("M"):
+            ws_diag.cell(r, 1).value = f"M{renum:03d}"
+            renum += 1
+
+    # 드롭다운(데이터 검증) 추가 — ★ 담당자 선택 컬럼(G) 모든 새 행에 일괄 적용.
+    choice_str = ",".join(CHOICE_OPTIONS)
     dv = DataValidation(
         type="list",
-        formula1=f'"{fallback_choice_str}"',
+        formula1=f'"{choice_str}"',
         allow_blank=True,
         showErrorMessage=True,
         errorTitle="선택값 확인",
-        error="드롭다운에서 선택해주세요.",
+        error="O / △ / X / 평가불가 중에서 선택해주세요.",
     )
-    # 폴백 데이터 행 범위 (notice_row+1 ~ append_at-1)
-    first_data_row = notice_row + 1
-    last_data_row = append_at - 1
-    if last_data_row >= first_data_row:
-        dv.add(f"G{first_data_row}:G{last_data_row}")
-        ws_diag.add_data_validation(dv)
+    # 모든 신규 삽입 구간을 DV 에 등록
+    for (s, e) in inserted_row_ranges:
+        dv.add(f"G{s}:G{e}")
+    ws_diag.add_data_validation(dv)
+    # 아래 기존 코드는 사용 안 함 — 변수만 정의해 호환성 유지.
+    first_data_row = inserted_row_ranges[0][0] if inserted_row_ranges else (ws_diag.max_row + 1)
+    # notice_row 는 더 이상 안 그림 — 폴백 강조는 M_id 셀 빨강 배경으로 대체.
+    notice_row = first_data_row - 1
+    # 위에서 이미 dv 추가했으므로 여기서는 호환성 유지를 위한 노옵 (기존 변수 사용).
+    _ = first_data_row  # noqa: F841
 
-    # ── 부록 시트: 외부 자동 점검 결과 (참고용) ─────────────────────────────
+    # ── 가독성: 셀 실제 내용 길이 기반 열 너비/행 높이 자동 산정 ──────────
+    # 무지성 고정폭 X. 한국어/영문 혼합을 고려해 한국어 1글자 ≈ 2 width unit 로 가중치.
+    # 컬럼 별 상·하한 폭을 두어 너무 좁거나 너무 넓어지지 않도록 캡.
+    COL_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    # (최소, 최대) 폭 — 컬럼 의미에 맞춘 보호 범위
+    COL_BOUNDS = {
+        "A": (7,  10),   # M_id
+        "B": (12, 20),   # Pillar
+        "C": (18, 36),   # 항목번호·이름
+        "D": (8,  12),   # 성숙도
+        "E": (30, 70),   # 세부 질문 (가장 김)
+        "F": (24, 60),   # 판정 기준
+        "G": (10, 16),   # 선택
+        "H": (20, 48),   # 비고
+    }
+
+    def _visual_len(s: str) -> int:
+        """한글 1글자=2, 영문/숫자/공백=1 로 환산한 시각적 폭."""
+        n = 0
+        for ch in s:
+            n += 2 if ord(ch) > 0x7F else 1
+        return n
+
+    # 컬럼 별 최대 줄 길이 측정 (개행 분리)
+    col_max_len: dict[str, int] = {c: 0 for c in COL_LETTERS}
+    for r in range(4, ws_diag.max_row + 1):
+        for ci, letter in enumerate(COL_LETTERS, start=1):
+            v = ws_diag.cell(r, ci).value
+            if v is None:
+                continue
+            s = str(v)
+            longest_line = max((_visual_len(line) for line in s.split("\n")), default=0)
+            if longest_line > col_max_len[letter]:
+                col_max_len[letter] = longest_line
+
+    for letter in COL_LETTERS:
+        lo, hi = COL_BOUNDS[letter]
+        # +2 padding for borders/padding, 그 후 (lo, hi) 범위로 클램프
+        ideal = col_max_len[letter] + 2
+        ws_diag.column_dimensions[letter].width = max(lo, min(ideal, hi))
+
+    # 행 높이 — 각 행의 가장 긴 셀 문자열이 그 컬럼 폭에 맞춰 몇 줄로 wrap 될지 추정.
+    # wrap_text 가 켜진 셀이라는 가정. 줄당 ~16pt, 최대 5줄(=80pt) 캡.
+    LINE_PT = 16
+    MAX_LINES = 5
+    for r in range(4, ws_diag.max_row + 1):
+        v0 = ws_diag.cell(r, 1).value
+        # 카테고리 구분행(▸) 은 단일 줄, 데이터 행(M###) 만 추정.
+        if not (v0 and isinstance(v0, str) and v0.startswith("M")):
+            continue
+        max_lines = 1
+        for ci, letter in enumerate(COL_LETTERS, start=1):
+            v = ws_diag.cell(r, ci).value
+            if v is None:
+                continue
+            s = str(v)
+            col_w = ws_diag.column_dimensions[letter].width or 10
+            # 명시 개행은 그대로 카운트, 추가로 폭 기준 wrap 줄 수 추정.
+            lines_in_cell = 0
+            for line in s.split("\n"):
+                vlen = _visual_len(line)
+                wrapped = max(1, (vlen + int(col_w) - 1) // max(1, int(col_w)))
+                lines_in_cell += wrapped
+            if lines_in_cell > max_lines:
+                max_lines = lines_in_cell
+        max_lines = min(max_lines, MAX_LINES)
+        # 1줄(=한글 18pt 정도)도 답답하지 않게 베이스 18pt + 추가 줄당 LINE_PT
+        ws_diag.row_dimensions[r].height = 18 + (max_lines - 1) * LINE_PT
+
+    # ── 부록 시트: 자동 결과 요약 + 외부 자동 점검 결과 (참고용) ───────────
+    _append_auto_summary_sheet(wb, auto_dist)
     if evidence and not evidence.get("error"):
         _append_evidence_sheet(wb, evidence)
 
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _augment_instructions_sheet(wb: openpyxl.Workbook) -> None:
+    """instructions 시트에 보수적 평가 안내 한 줄 추가 (멱등).
+
+    이미 추가되어 있으면 아무 일도 하지 않는다. 시트 자체가 없으면 무시.
+    """
+    if "instructions" not in wb.sheetnames:
+        return
+    ws_i = wb["instructions"]
+    marker = "자동 진단에서 충족된 항목은 보수적 평가 원칙"
+    for r in range(1, ws_i.max_row + 1):
+        for c in range(1, 5):
+            v = ws_i.cell(r, c).value
+            if isinstance(v, str) and marker in v:
+                return  # 이미 안내됨
+    append_at = ws_i.max_row + 2
+    c1 = ws_i.cell(append_at, 1, "자동 처리")
+    c1.font = Font(name="Arial", size=10, bold=True, color="FF0F766E")
+    c2 = ws_i.cell(append_at, 2,
+        "자동 진단에서 충족된 항목은 보수적 평가 원칙(상위 충족 → 하위 자동 충족)에 따라 "
+        "양식에서 자동 제외되었습니다. 어떤 자동 결과로 어떤 단계가 빠졌는지는 "
+        "'자동 결과 요약' 시트에서 확인할 수 있습니다."
+    )
+    c2.alignment = Alignment(wrap_text=True, vertical="top")
+
+
+def _append_auto_summary_sheet(wb: openpyxl.Workbook, auto_dist: dict[str, dict]) -> None:
+    """양식에 '자동 결과 요약' 시트 추가 — 카테고리별 자동 충족 단계 + 결과 분포.
+
+    담당자가 어떤 자동 결과 때문에 어떤 단계가 양식에서 빠졌는지 한눈에 보도록.
+    auto_dist 가 비어있어도 헤더만 있는 빈 시트는 만들지 않는다.
+    """
+    if not auto_dist:
+        return
+    # 중복 호출 방지 — 같은 이름 시트가 이미 있으면 건너뜀.
+    sheet_name = "자동 결과 요약"
+    if sheet_name in wb.sheetnames:
+        return
+    ws = wb.create_sheet(sheet_name)
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 40
+
+    bold = Font(name="Arial", size=11, bold=True, color="FF1E3A5F")
+    header_fill = PatternFill("solid", fgColor="FFE7F5F2")
+    title_font = Font(name="Arial", size=12, bold=True, color="FF1E3A5F")
+    title_fill = PatternFill("solid", fgColor="FFFEF3C7")
+
+    tc = ws.cell(1, 1, "자동 진단 결과 요약 — 보수적 평가에 의해 양식에서 제외된 범위 확인용")
+    tc.font = title_font
+    tc.fill = title_fill
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    tc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    headers = ["카테고리(prefix)", "카테고리 이름", "자동 최고 충족 단계", "자동 결과 분포"]
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(3, col, h)
+        c.font = bold
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    # 정렬: prefix 사전순 (1.1.1 → 1.1.2 → ...)
+    row = 4
+    def _prefix_key(p: str) -> tuple:
+        try:
+            return tuple(int(x) for x in p.split("."))
+        except Exception:
+            return (999,)
+    for prefix in sorted(auto_dist.keys(), key=_prefix_key):
+        rec = auto_dist[prefix]
+        max_n = rec.get("max_satisfied", 0)
+        max_label = _MATURITY_NAME_FROM_NUM.get(max_n, "(없음)") if max_n else "(없음)"
+        counts = rec.get("counts", {})
+        dist_text = " / ".join(
+            f"{k} {counts.get(k, 0)}"
+            for k in ("충족", "부분충족", "미충족", "평가불가")
+        )
+        ws.cell(row, 1, prefix)
+        ws.cell(row, 2, rec.get("category_label") or prefix)
+        ws.cell(row, 3, max_label)
+        ws.cell(row, 4, dist_text)
+        for col in range(1, 5):
+            ws.cell(row, col).alignment = Alignment(vertical="center", wrap_text=True)
+        row += 1
 
 
 def _append_evidence_sheet(wb: openpyxl.Workbook, evidence: dict) -> None:
@@ -926,9 +1451,12 @@ async def upload_evidence(
 
     filename = f"{uuid.uuid4().hex}.{ext}"
     target_path = target_dir / filename
+    # SER-003: 디스크 저장 전에 at-rest 암호화 (키 없으면 평문 폴백).
+    from services.crypto import encrypt_bytes
+    stored_bytes, is_encrypted = encrypt_bytes(content)
     try:
         with open(target_path, "wb") as fp:
-            fp.write(content)
+            fp.write(stored_bytes)
     except OSError as exc:
         logger.error("[evidence] write failed: %s", exc)
         raise HTTPException(status_code=500, detail="증적 파일 저장에 실패했습니다.")
@@ -950,6 +1478,7 @@ async def upload_evidence(
         existing.mime_type = mime
         existing.file_size = file_size
         existing.original_filename = original_filename
+        existing.encrypted = 1 if is_encrypted else 0
         evidence = existing
     else:
         evidence = Evidence(
@@ -964,6 +1493,7 @@ async def upload_evidence(
             mime_type=mime,
             file_size=file_size,
             original_filename=original_filename,
+            encrypted=1 if is_encrypted else 0,
         )
         db.add(evidence)
 
@@ -1012,8 +1542,26 @@ def download_evidence(
         logger.warning("[evidence] file missing on disk: %s", evidence.file_path)
         raise HTTPException(status_code=410, detail="증적 파일이 디스크에서 사라졌습니다.")
 
+    media_type = evidence.mime_type or "application/octet-stream"
+    fname = evidence.original_filename or path.name
+    # SER-003: 암호화 저장본은 복호화해서 메모리로 응답 (디스크 평문 노출 없음).
+    if getattr(evidence, "encrypted", 0):
+        from urllib.parse import quote
+        from fastapi import Response
+        from services.crypto import decrypt_bytes
+        data = decrypt_bytes(path.read_bytes())
+        ascii_name = (fname.encode("ascii", "ignore").decode() or "evidence")
+        disposition = (
+            f"attachment; filename=\"{ascii_name}\"; "
+            f"filename*=UTF-8''{quote(fname)}"
+        )
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={"Content-Disposition": disposition},
+        )
     return FileResponse(
         path=str(path),
-        media_type=evidence.mime_type or "application/octet-stream",
-        filename=evidence.original_filename or path.name,
+        media_type=media_type,
+        filename=fname,
     )
