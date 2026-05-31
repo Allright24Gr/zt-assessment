@@ -65,11 +65,12 @@
 ### 🔍 진단 엔진
 
 - **6 Pillar × 4단계 = 310개 체크리스트** 자동 평가
-- **자동 수집 도구 4종**
-  - 🔐 **Keycloak** — IdP / SSO / MFA / 권한 관리 (65 항목)
-  - 🛡️ **Wazuh** — SIEM / HIDS / 침입 탐지 (122 항목)
-  - 🌐 **Nmap** — 외부 포트·TLS·서브넷 스캔 (14 항목)
-  - 📦 **Trivy** — 컨테이너 이미지·SBOM·취약점 (11 항목)
+- **자동 수집 도구 8종 (265 자동 항목)** — 사용자 환경(Step 0 프로파일링)에 따라 선택
+  - 🔐 **Keycloak** (65) · **Supabase** (14) — IdP / 인증 / MFA / 권한 관리
+  - 🛡️ **Wazuh** (122) — SIEM / HIDS / 침입 탐지
+  - 🌐 **Nmap** (14) · **Trivy** (15) · **web_probe** (24) — 외부 포트·TLS·이미지·SBOM·OIDC/DNS/CT log 스캔
+  - 🚀 **Vercel** (6) · **Railway** (5) — SaaS 배포 플랫폼 보안 설정 점검
+- **도구 무관 평가** — 가이드라인은 통제 요건 기준. 미지원 영역은 **수동 진단으로 자동 폴백**
 - **보너스 자동 점검** — HTTP 보안 헤더, DNS (SPF/DMARC/CAA), TLS 인증서, `security.txt`, GitHub repo 보안 파일
 - **수동 진단 폴백** — 환경에 맞춰 자동 미지원 항목을 Excel 양식으로 다운로드·작성·업로드
 
@@ -154,6 +155,20 @@
   <img src="https://img.shields.io/badge/Wazuh-4.7-1496FE"/>
   <img src="https://img.shields.io/badge/Nmap-Wrapper-4682B4"/>
   <img src="https://img.shields.io/badge/Trivy-Aqua-1904DA"/>
+  <img src="https://img.shields.io/badge/Supabase-3FCF8E?logo=supabase"/>
+  <img src="https://img.shields.io/badge/Vercel-000000?logo=vercel"/>
+  <img src="https://img.shields.io/badge/Railway-0B0D0E?logo=railway"/>
+  <img src="https://img.shields.io/badge/web__probe-OIDC/DNS/TLS-4682B4"/>
+</td>
+</tr>
+<tr>
+<td>보안</td>
+<td>
+  <img src="https://img.shields.io/badge/JWT-access/refresh-000000?logo=jsonwebtokens"/>
+  <img src="https://img.shields.io/badge/PBKDF2-600k-green"/>
+  <img src="https://img.shields.io/badge/Fernet-at--rest-yellow"/>
+  <img src="https://img.shields.io/badge/SHA--256-hash_chain-orange"/>
+  <img src="https://img.shields.io/badge/Prometheus-metrics-E6522C?logo=prometheus"/>
 </td>
 </tr>
 </table>
@@ -163,40 +178,37 @@
 ## 🏗 아키텍처
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                       사용자 브라우저                              │
-│            http://<EC2_IP>:8080                                  │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │
+┌──────────────────────────────────────────────────────────────────┐
+│         사용자 브라우저   http://<host>:8080                        │
+│  Dashboard · 진단신청 · InProgress · Reporting · 운영콘솔(admin)    │
+└──────────────────────────────┬───────────────────────────────────┘
                   ┌────────────▼────────────┐
                   │  zt-web (Nginx + React)  │  :8080
                   └────────────┬────────────┘
-                               │
-                  ┌────────────▼─────────────┐
-                  │ zt-backend (FastAPI)      │  :8000
-                  │  - auth / assessment      │
-                  │  - report / improvement   │
-                  │  - manual evidence        │
-                  └────┬───────┬──────────┬───┘
-                       │       │          │
-            ┌──────────▼──┐ ┌──▼────┐ ┌───▼──────┐
-            │  MySQL 8    │ │Keycloak│ │  Wazuh  │
-            │  3306       │ │ 8443  │ │ 55000   │
-            └─────────────┘ └───────┘ └─────────┘
-                       │
-            ┌──────────┴──────────┐
-            │                     │
-   ┌────────▼──────┐    ┌────────▼──────┐
-   │ nmap-wrapper  │    │ trivy-wrapper │
-   │ Flask :8001   │    │ Flask :8002   │
-   └────────┬──────┘    └───────────────┘
-            │
-            ▼
-   ┌──────────────────────────────────────┐
-   │ 외부 진단 대상 (고객 시스템)            │
-   │ - tmarkovframework.vercel.app 등      │
-   │ - 우리는 outbound 호출만, agent 설치 X │
-   └──────────────────────────────────────┘
+       ┌─────────────────────────▼─────────────────────────────────┐
+       │ zt-backend (FastAPI)  :8000                                │
+       │  routers: auth·assessment·score·report·improvement·        │
+       │           manual·checklist·admin·settings                  │
+       │  lifespan: 90일 cleanup · 주기 평가 스케줄러 · 자동 백업       │
+       └────┬───────────┬──────────┬───────────┬───────────────────┘
+            │           │          │           │
+   ┌────────▼┐  ┌───────▼┐  ┌──────▼┐   ┌──────▼──────────┐
+   │ MySQL 8 │  │Keycloak│  │ Wazuh │   │ SaaS API        │
+   │ 3306    │  │ 8443   │  │ 55000 │   │ Supabase·Vercel │
+   └─────────┘  └────────┘  └───────┘   │ ·Railway        │
+                     │                  └─────────────────┘
+       ┌─────────────┼──────────────┐
+   ┌───▼───────┐ ┌───▼────────┐ ┌───▼──────────┐
+   │nmap-wrapper│ │trivy-wrapper│ │ web_probe    │
+   │Flask :8001 │ │Flask :8002  │ │ OIDC/DNS/TLS │
+   └───┬────────┘ └─────────────┘ └───┬──────────┘
+       │                              │
+       ▼                              ▼
+   ┌──────────────────────────────────────────────────┐
+   │ 외부 진단 대상 (고객 시스템)                        │
+   │ - 공개 도메인 / 배포본 (예: example.com)            │
+   │ - 우리는 outbound 호출만 — agent/sidecar 설치 X     │
+   └──────────────────────────────────────────────────┘
 ```
 
 ### 진단 데이터 흐름
@@ -218,6 +230,10 @@ POST /api/assessment/run
 
 POST /api/assessment/finalize/{id}
    └─ score_session → MaturityScore + ScoreHistory + recommendation
+        + DiagnosisResult.row_hash (SHA-256 무결성, SER-010) + 결과 캐시 무효화
+
+[주기 실행] lifespan 스케줄러가 도래한 ScheduledAssessment 를 데모 모드로 자동 재진단
+[운영]     /metrics(Prometheus) · /api/admin/{audit,config,backup,metrics}
 ```
 
 ---
@@ -280,61 +296,42 @@ cp .env.example .env   # (선택) 운영 시에만
 
 ---
 
-## 🔁 진단 흐름
+## 🔁 진단 흐름 — 진단 전 · 중 · 후
 
-### Step 0 — 사전 환경 프로파일링
+진단은 **준비(전) → 실시간 수집(중) → 결과·활용(후) → 운영·지속** 의 라이프사이클로 진행된다.
 
-NewAssessment 첫 화면에서 선택:
+### 1️⃣ 진단 전 — 준비 (NewAssessment, Step 0~3)
 
-- **IdP 선택** — Keycloak / Google Workspace / MS Entra ID / Okta / 자체 LDAP·AD / 사용 안 함
-- **SIEM 선택** — Wazuh / Splunk / Elastic / 사용 안 함
-- **외부 자동 스캔** — Nmap / Trivy 토글
-- **데모/실 스캔 모드** — 안전한 시연 vs 실제 외부 호출
+- **Step 0 · 사전 환경 프로파일링** — IdP(Keycloak/Supabase/Entra/Okta/LDAP/없음) · SIEM(Wazuh/Splunk/Elastic/없음) · 외부 스캔(Nmap/Trivy) · **데모 ↔ 실 스캔** 토글. 미지원 옵션은 *수동 진단 자동 폴백*.
+- **Step 1 · 기관 정보** — 부서·산업군·인프라(온프레/AWS/Azure/GCP/**SaaS형**/하이브리드)·규모 + 가이드 §3 착수 전 확정 **4카드**(평가 대상 버전 / 범위 자산 / 데이터 등급 / 판정자 4역할).
+- **Step 2 · 진단 범위** — 6 Pillar 선택(첫 평가는 전체 권장). *수동 양식 미리 작성* 옵션 — 세션 선생성 → 환경 맞춤 xlsx, 비고에 공개 URL 자동점검 결과(HTTP 헤더·DNS·TLS·GitHub) prefill.
+- **Step 3 · 외부 스캔 동의 + 시작** — 승인자·시간대·강도·제외경로·비상연락처(가이드 §3·§4) 입력 → 자동 collector 실행.
 
-> 미지원 옵션을 선택하면 그 분야 자동 항목은 *수동 진단으로 자동 폴백* 됩니다.
+### 2️⃣ 진단 중 — 실시간 수집 (InProgress)
 
-### Step 1 — 기관 정보 입력
+- **실시간 진행률** — 도구별·필러별 카운트 + 250ms 폴링 + 평균 속도 기반 **동적 ETA**
+- **병행 작업** — 진행 중에도 수동 양식 다운로드/업로드 + 항목별 증적 파일(PDF/이미지) 첨부 (증적은 **at-rest 암호화** 저장)
+- **무침해 수집** — 우리 서버에서 outbound 호출만(agent/sidecar 설치 X). 미연결 도구는 일괄 "평가불가"로 안전 처리, collector 실패는 재시도 후 부분 결과
+- **자동 채점** — 수집 완료 시 `score_session` → 점수·등급 + **결과 무결성 해시** 생성 → `/reporting/{id}` 자동 이동
 
-- 부서, 산업군, 인프라 유형 (온프레/AWS/Azure/GCP/**SaaS형**/하이브리드)
-- 직원·서버·애플리케이션 수
-- 평가 착수 전 확정사항 **4 카드** (가이드 §3)
-  - **평가 대상 버전** — Vercel/Railway deployment id, Git commit
-  - **평가 범위 자산 목록** — 8개 기본 항목 (Frontend URL ~ 운영자 계정)
-  - **데이터 등급 분류** — 7개 항목 × 민감도(낮음·중간·높음) × 보관 위치
-  - **판정자 4역할** — App owner / Backend / Cloud / Security reviewer
+### 3️⃣ 진단 후 — 결과·활용 (Reporting)
 
-### Step 2 — 진단 범위 선택
+- **종합 결과** — 점수·등급·AS-IS/TO-BE 레이더·위험영역 + **목표 대비 gap**(조직별 목표 성숙도) + **소요시간·SLA**
+- **세부 항목** — 카테고리 카드 → 4단계 펼침, 판정 근거·출처·평가불가 사유 표기
+- **개선·표준** — 30/60/90일 개선 로드맵(가이드 §8) · NIST 800-207 / CIS v8 매핑 · OCSF 1.1.0 이벤트
+- **산출물 출력** — PDF 보고서 / 증적 목록 xlsx / 판정 로그 md (아래 §산출물 참조)
+- **결과 활용**
+  - 🔗 **공유 링크** — 인증 없이 조회 가능한 토큰 링크 (만료·취소 가능)
+  - 📊 **세션 비교** — 최대 4개 동시 비교로 추이 분석
+  - 🔎 **이력 검색** — 조직·담당자·레벨·상태로 과거 진단 검색
+  - 🛡️ **무결성 검증** — `/api/assessment/verify` 로 결과 위변조 확인
+  - 🔁 **재진단** — 보완 양식 업로드 후 재채점, 점수 변화 추적
 
-6 Pillar 중 진단할 영역 체크박스. 첫 평가는 6 Pillar 전체 권장.
+### 4️⃣ 운영·지속 (관리자)
 
-선택 후, *수동 진단 양식 미리 작성* 옵션:
-- 세션 미리 생성 (`prepareAssessment`) → 환경에 맞춘 xlsx 양식 다운로드
-- 작성 후 업로드하면 자동 채점됨
-- 양식의 비고 컬럼에 *공개 URL 자동 점검 결과* (HTTP 헤더·DNS·TLS·GitHub repo) 미리 채워짐
-
-### Step 3 — 외부 스캔 동의 + 진단 시작
-
-- **외부 스캔 동의 메타 5필드** (가이드 §3·§4)
-  - 승인자, 시간대, 강도(light/standard), 제외 경로, 비상 연락처
-- **진단 시작** → 자동 collector 실행
-
-### InProgress 페이지
-
-- 도구별·필러별 진행률
-- 평균 속도 기반 ETA 동적 추정
-- 250ms 폴링
-- **§5 6 Pillar 증적 준비표** 토글 안내
-- 수동 양식 다운로드/업로드 + 항목별 증적 파일 (PDF/이미지) 첨부
-- 완료 시 자동으로 `/reporting/{id}` 이동
-
-### Reporting 페이지
-
-- **종합 결과** — 점수, 등급, AS-IS/TO-BE 비교, 위험영역
-- **세부 항목** — 카테고리(예 "1.2.1 다중인증") 카드 → 4단계 row 펼침
-- **개선 로드맵** — 30/60/90일 칸반 + 가이드 §8 권장 활동
-- **표준 매핑** — NIST 800-207 / CIS Controls v8
-- **OCSF** — 1.1.0 표준 이벤트
-- **보고서 출력** — PDF / 증적 목록 xlsx / 판정 로그 md 다운로드
+- **주기 평가 스케줄링** — 지정 주기로 자동 재진단(데모 모드)하여 성숙도 변화를 지속 추적
+- **운영 콘솔** — 시스템 상태 모니터링 · 동적 설정(재시작 없이) · DB 백업/복구 · 감사 로그 + 해시 체인 검증
+- **데이터 보관** — 90일 자동 삭제(시드 보호) · 감사 로그 DB 영속화 · `/metrics` Prometheus 노출
 
 ---
 
@@ -360,65 +357,72 @@ zt-assessment/
 ├── frontend/                    React 18 + TypeScript + Vite
 │   ├── src/
 │   │   ├── app/
-│   │   │   ├── pages/           Login, Dashboard, NewAssessment, InProgress, Reporting, History, Settings
+│   │   │   ├── pages/           Login·Signup·Dashboard·NewAssessment·InProgress·
+│   │   │   │                    AssessmentNext·Reporting·History·Compare·Settings·
+│   │   │   │                    AdminConsole·SharedResult·PasswordReset*
 │   │   │   ├── components/      RootLayout 등
 │   │   │   ├── context/         AuthContext, NotificationContext
 │   │   │   ├── data/            mockData, evidenceGuide, checklistItems, constants
-│   │   │   └── lib/             maturity, pillar, settingsStore
+│   │   │   └── lib/             maturity, pillar, settingsStore, datetime, toolLabel
 │   │   ├── config/              api.ts (apiFetch, 다운로드 헬퍼)
 │   │   └── types/               api.ts (TypeScript 인터페이스)
 │   └── package.json
 │
 ├── backend/                     Python 3.11 + FastAPI
-│   ├── routers/                 8 라우터
-│   │   ├── auth.py              인증·회원·비밀번호 정책·잠금
-│   │   ├── assessment.py        진단 실행·결과·OCSF
+│   ├── routers/                 10 라우터
+│   │   ├── auth.py              인증·회원·JWT·비밀번호 정책·잠금
+│   │   ├── assessment.py        진단 실행·결과·스케줄·무결성검증·OCSF
 │   │   ├── score.py             점수 요약·추이
 │   │   ├── report.py            PDF·xlsx·md 산출물 생성
 │   │   ├── improvement.py       개선 권고
-│   │   ├── manual.py            수동 양식 다운로드·업로드·증적
+│   │   ├── manual.py            수동 양식·업로드·증적(at-rest 암호화)
 │   │   ├── checklist.py         체크리스트 조회
-│   │   └── validators.py        Nmap/Trivy target·URL·자격 검증
-│   ├── collectors/              자동 수집기
-│   │   ├── keycloak_collector.py     65 함수
-│   │   ├── wazuh_collector.py        122 함수
-│   │   ├── nmap_collector.py         14 함수
-│   │   ├── trivy_collector.py        11 함수
-│   │   ├── http_headers_collector.py 보안 헤더 8종
-│   │   └── web_evidence_collector.py DNS/TLS/security.txt/GitHub repo
+│   │   ├── admin.py             체크리스트 관리·감사조회·메트릭·동적설정·백업
+│   │   ├── settings.py          조직 목표 성숙도·체크리스트 커스터마이징
+│   │   └── validators.py        target·URL·자격 입력 검증(메타문자 차단)
+│   ├── collectors/              자동 수집기 10종 (265 자동 항목)
+│   │   ├── keycloak(65)·wazuh(122)·nmap(14)·trivy(15)
+│   │   ├── web_probe(24)·supabase(14)·vercel(6)·railway(5)
+│   │   └── http_headers·web_evidence (보안헤더·DNS·TLS·GitHub repo)
+│   ├── services/                crypto·integrity·cache·config_store·metrics·
+│   │                            email_sender·ocsf_transformer·standards_mapping 등
 │   ├── scoring/engine.py        결과 → MaturityScore 계산
-│   ├── scripts/                 seed_checklist, seed_demo_examples, seed_improvement, validate_checklist_mapping, cleanup_old_sessions
-│   ├── models.py                SQLAlchemy 모델 (12 테이블)
+│   ├── scripts/                 seed_*·migrate_schema·backup_db·cleanup_old_sessions·
+│   │                            validate_checklist_mapping
+│   ├── tests/                   pytest (auth·IDOR·cleanup·validators·매핑·도구해석)
+│   ├── models.py                SQLAlchemy 모델 (17 테이블)
 │   ├── database.py              DB 연결
-│   ├── main.py                  FastAPI 앱 + lifespan
+│   ├── main.py                  FastAPI 앱 + lifespan(cleanup·스케줄러·백업) + /metrics
 │   ├── zt-checklist.xlsx        체크리스트 원본 (310 항목)
 │   ├── zt-improvement-guide.xlsx 개선 권고 원본
 │   └── manual-checklist.xlsx    수동 진단 양식 베이스
 │
 ├── nmap-wrapper/                Flask 컨테이너 (8001)
 ├── trivy-wrapper/               Flask 컨테이너 (8002)
-├── docker-compose.yml           9개 컨테이너 정의
-├── deploy.sh                    배포 자동화 스크립트
+├── docker-compose.yml           컨테이너 정의 (web·backend·mysql·keycloak·wazuh·es·wrappers)
+├── deploy.sh                    배포 자동화 (.env 없으면 데모 기본값 자동 생성)
 ├── stop.sh                      안전 정지 스크립트
-└── .env.example                 환경 변수 템플릿
+└── .env.example                 환경 변수 템플릿 (선택)
 ```
 
 ---
 
 ## 🔧 환경 변수
 
-`.env` 파일 (`.env.example` 참고):
+> **`.env` 는 선택사항** — 없으면 `docker-compose.yml` 의 데모 기본값(`DB_USER=zt_user` / `DB_PASSWORD=ztDemo1234` 등)으로 그대로 실행된다. 운영 시에만 아래 값을 `.env` 로 덮어쓴다. (`.env.example` 참고)
 
-### 필수 — 운영
+### 운영 — 기본값 덮어쓰기 (권장)
 
 ```bash
-SECRET_KEY=                     # JWT 서명 키. 32+ char 권장
+SECRET_KEY=                     # JWT 서명 + 증적 암호화 키 파생. 32+ char (미설정 시 부팅마다 임시키)
 DB_HOST=mysql
 DB_PORT=3306
 DB_NAME=zt_assessment
-DB_USER=readyz
-DB_PASSWORD=                    # 강한 비번 설정
+DB_USER=zt_user
+DB_PASSWORD=                    # 강한 비번 (데모 기본값 ztDemo1234)
 CORS_ORIGINS=                   # 명시적 도메인 콤마 구분, wildcard 금지
+ZTA_ENCRYPTION_KEY=             # (선택) 증적 at-rest 전용 Fernet 키. 미설정 시 SECRET_KEY 파생
+ZTA_FORCE_HTTPS=                # true 면 http→https 리다이렉트 (프록시 뒤 X-Forwarded-Proto 존중)
 ```
 
 ### 도구 fallback (사용자 입력 없을 때)
@@ -448,6 +452,12 @@ ZTA_SESSION_RETENTION_DAYS=90            # 90일 후 세션 자동 삭제
 ZTA_PROTECT_DEMO_DATA=true               # 시드 데이터 보호
 ZTA_CLEANUP_DISABLE=                     # cleanup 비활성
 ZTA_CLEANUP_INTERVAL_HOURS=24
+# 신규 기능 (모두 admin 운영 콘솔에서 재시작 없이 동적 변경 가능)
+ZTA_ASSESSMENT_SLA_SECONDS=600           # 평가 수행 시간 SLA 기준(초)
+ZTA_SCHEDULER_ENABLE=true                # 주기 평가 스케줄러
+ZTA_BACKUP_INTERVAL_HOURS=0              # 자동 DB 백업 주기(0=비활성)
+ZTA_RESULT_CACHE_TTL=300                 # 결과/리포트 캐시 TTL(초)
+ZTA_COLLECTOR_RETRY=3                    # collector 실패 재시도 횟수
 ```
 
 ---
@@ -482,7 +492,7 @@ docker logs zt-assessment-zt-backend-1 -f    # backend 로그
 
 ```bash
 docker exec -it zt-assessment-mysql-1 \
-  mysql -ureadyz -p<DB_PASSWORD> zt_assessment
+  mysql -uzt_user -p<DB_PASSWORD> zt_assessment   # 데모 기본 비번: ztDemo1234
 ```
 
 ### 시드 재실행
