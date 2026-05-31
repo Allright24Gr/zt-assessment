@@ -81,7 +81,7 @@
 - **다른 세션과 비교** — 최대 4개 동시 비교
 - **NIST 800-207 / CIS Controls v8 표준 매핑**
 
-### 🔄 평가 메타 (SKT 가이드 §3 대응)
+### 🔄 평가 착수 메타 (가이드 §3)
 
 진단 시작 시 입력 → 보고서 첫 장 자동 표기:
 - 평가 대상 버전 (Vercel/Railway deployment id, Git commit)
@@ -94,6 +94,20 @@
 
 - 진단 완료, 시드 비번 사용, 수동 미완료 등 이벤트 알림
 - localStorage 영속 + 종 아이콘 드롭다운
+
+### 🛡️ 운영·보안 강화
+
+- **운영 콘솔 (관리자)** — 시스템 상태 모니터링, 동적 운영 설정(재시작 없이 변경), DB 백업, 감사 로그 조회를 한 화면에서
+- **위변조 방지 (무결성)**
+  - 평가 결과 — 행 단위 SHA-256 해시. DB 직접 수정 시 `/api/assessment/verify` 가 탐지
+  - 감사 로그 — 해시 체인. 중간 행 변조·삭제 시 `/api/admin/audit/verify` 가 위치까지 식별
+- **목표 대비 분석** — 조직별 Pillar 목표 성숙도 설정 + 현재 점수와의 gap 자동 계산
+- **주기 평가 스케줄링** — 지정 주기로 진단 자동 실행 (데모 모드)
+- **시스템 모니터링** — Prometheus 텍스트 메트릭(`/metrics`) + JSON 상태 지표
+- **증적 파일 at-rest 암호화** — 업로드 증적을 Fernet(AES) 로 디스크 암호화 저장
+- **결과/리포트 캐싱** — 동일 세션 반복 조회 시 재계산 생략 (세션 변경 시 자동 무효화)
+- **평가 소요시간·SLA** — 진단 수행 시간 측정 + SLA 충족 여부 표기
+- **결과 검색 / 항목 커스터마이징** — 이력 검색 + 조직별 체크리스트 항목 enable·가중치 조정
 
 ---
 
@@ -221,8 +235,9 @@ POST /api/assessment/finalize/{id}
 ```bash
 git clone https://github.com/Allright24Gr/zt-assessment
 cd zt-assessment
-cp .env.example .env
-# .env 의 SECRET_KEY, DB 비밀번호 등을 운영 환경에 맞춰 수정
+# .env 는 선택사항 — 없으면 docker-compose 데모 기본값으로 그대로 실행된다(무설정 제출본 대응).
+# 운영·외부 도구 연동 시에만 .env 를 만들어 SECRET_KEY·DB 비밀번호 등을 채운다:
+cp .env.example .env   # (선택) 운영 시에만
 ```
 
 ### 2. 한 줄 배포
@@ -248,7 +263,7 @@ cp .env.example .env
 
 | 서비스 | URL | 비고 |
 |---|---|---|
-| **메인 사이트** | http://localhost:8080 | 진우님이 사용할 화면 |
+| **메인 사이트** | http://localhost:8080 | 사용자용 진단 화면 |
 | **API 헬스체크** | http://localhost:8000/health | `{"status":"ok"}` 응답 |
 | **Keycloak (옵션)** | http://localhost:8443 | 진단 대상 — admin/admin |
 | **Wazuh (옵션)** | https://localhost:55000 | 진단 대상 |
@@ -259,7 +274,7 @@ cp .env.example .env
 |---|---|---|---|
 | `admin` | `admin` | 관리자 | 전체 진단 이력 조회 |
 | `user1` | `user1` | 사용자 (박기웅, 세종대학교) | 데모 모드 시연 |
-| `user2` | `user2` | 사용자 (서진우, T-Markov Framework) | 실 운영 평가 시연 |
+| `user2` | `user2` | 사용자 (서진우, 데모 기업) | 실 스택 평가 시연 |
 
 > ⚠️ 시드 비밀번호는 *시연 편의* 를 위한 4자입니다. 운영 환경에서는 로그인 즉시 변경 권장. Dashboard 에 노란 배너로 안내합니다.
 
@@ -594,11 +609,18 @@ docker exec zt-assessment-zt-backend-1 python /app/scripts/validate_checklist_ma
 - 시드 데이터 보호 (`ZTA_PROTECT_DEMO_DATA=true`)
 - 스탠드얼론: `python backend/scripts/cleanup_old_sessions.py --days 90 [--dry-run]`
 
-### 감사 로그
+### 감사 로그 · 무결성
 
-- 채널: `zt.audit` (stdlib logger)
+- 채널: `zt.audit` (stdlib logger) + **`AuthAuditLog` DB 테이블 영속화**
 - 이벤트: register / login(성공·실패·잠금) / profile update / change-password / cleanup
-- 현재는 콘솔, 추후 DB 테이블화 예정
+- **해시 체인** — 각 행이 직전 행 해시를 묶어 SHA-256. 위변조·삭제 시 `/api/admin/audit/verify` 가 탐지
+- **평가 결과 무결성** — 결과 행별 해시 저장 → `/api/assessment/verify/{id}` 로 변조 검증
+- **민감 데이터 암호화** — 업로드 증적 파일 Fernet at-rest 암호화 (키: `ZTA_ENCRYPTION_KEY` 또는 `SECRET_KEY` 파생)
+
+### 전송 보안
+
+- 운영 nginx 가 80→443 강제 + HSTS. 앱 레벨에서도 보안 헤더 부착(HSTS·X-Frame-Options·nosniff 등)
+- `ZTA_FORCE_HTTPS=true` 시 http 요청을 https 로 리다이렉트 (프록시 뒤 `X-Forwarded-Proto` 존중)
 
 ---
 
@@ -612,11 +634,6 @@ docker exec zt-assessment-zt-backend-1 python /app/scripts/validate_checklist_ma
 - **송민희** (CTO) — 프론트엔드·UX
 
 세종대학교 정보보호학과 캡스톤 2026.
-
-### 외부 협력
-
-- **SKT** — 최주용 팀장 (T-Markov Framework 평가 시연 지원)
-- **앱엑스네트웍스** — 가원호 이사, 유병재 이사
 
 ### 라이선스
 
