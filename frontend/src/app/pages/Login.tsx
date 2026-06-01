@@ -5,12 +5,6 @@ import { useNotifications } from "../context/NotificationContext";
 import { Shield, AlertCircle, X, Mail, KeyRound } from "lucide-react";
 import { requestPasswordReset, ApiError } from "../../config/api";
 
-const DEMO_ACCOUNTS = [
-  { label: "관리자", id: "admin", role: "관리자" },
-  { label: "박기웅 (세종대학교)", id: "user1", role: "일반 사용자" },
-  { label: "서진우 (T-Markov Framework)", id: "user2", role: "일반 사용자" },
-];
-
 type RecoveryMode = null | "id" | "password";
 
 export function Login() {
@@ -92,11 +86,6 @@ export function Login() {
     } else {
       setError("아이디 또는 비밀번호가 올바르지 않습니다.");
     }
-  };
-
-  const handleDemoLogin = (id: string) => {
-    setUsername(id);
-    setPassword(id);
   };
 
   const openRecovery = (mode: RecoveryMode) => {
@@ -201,21 +190,7 @@ export function Login() {
         </form>
 
         <div className="mt-8 pt-6 border-t border-gray-200">
-          <p className="text-xs text-gray-400 text-center mb-3">데모 로그인 — 계정을 클릭하면 자동 입력됩니다</p>
-          <div className="grid grid-cols-2 gap-2">
-            {DEMO_ACCOUNTS.map((account) => (
-              <button
-                key={account.id}
-                type="button"
-                onClick={() => handleDemoLogin(account.id)}
-                className="text-left px-3 py-2 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors"
-              >
-                <p className="text-xs font-medium text-gray-700 truncate">{account.label}</p>
-                <p className="text-xs text-gray-400">{account.role}</p>
-              </button>
-            ))}
-          </div>
-          <p className="text-center mt-4 text-sm text-gray-500">
+          <p className="text-center text-sm text-gray-500">
             계정이 없으신가요?{" "}
             <Link to="/signup" className="text-blue-600 hover:underline">
               회원가입
