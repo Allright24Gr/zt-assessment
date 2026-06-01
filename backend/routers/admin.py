@@ -10,10 +10,11 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import AuthAuditLog, Checklist, CollectedData, DiagnosisResult, User
+from models import AuthAuditLog, Checklist, CollectedData, DiagnosisResult, DiagnosisSession, User
 from routers.auth import get_current_user
 from services import config_store
 
@@ -321,3 +322,71 @@ def get_backups(
     _require_admin(current_user)
     from scripts.backup_db import list_backups
     return {"backups": list_backups()}
+
+
+@router.get("/alerts")
+def operational_alerts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """관리자 운영 알림용 실시간 신호 (서버 계산).
+
+    Settings의 '운영 알림 설정' 토글이 이 신호를 구독한다. 모두 실데이터 기반:
+      - audit       : 감사 로그 해시 체인 무결성 (위변조 탐지)
+      - backup      : 최근 백업 경과/누락 (7일 초과 또는 0건 → overdue)
+      - tools       : 최근 24h 수집 오류 건수 (도구 연결 실패 추정)
+      - assessments : 완료 진단 누계 (클라이언트가 직전 값과 비교해 '신규' 판단)
+    """
+    _require_admin(current_user)
+    from datetime import datetime, timezone, timedelta
+    from services.integrity import audit_row_hash
+    from scripts.backup_db import list_backups
+
+    # 1) 감사 로그 무결성 (해시 체인 재계산)
+    rows = db.query(AuthAuditLog).order_by(AuthAuditLog.audit_id.asc()).all()
+    prev = None
+    broken = 0
+    for r in rows:
+        if not r.row_hash:
+            prev = None
+            continue
+        expected = audit_row_hash(
+            r.prev_hash, event_type=r.event_type, user_id=r.user_id,
+            login_id=r.login_id, source_ip=r.source_ip, success=r.success,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        link_ok = (prev is None) or (r.prev_hash == prev)
+        if expected != r.row_hash or not link_ok:
+            broken += 1
+        prev = r.row_hash
+
+    # 2) 백업 경과/누락
+    backups = list_backups()
+    last_at = backups[0]["modified_at"] if backups else None
+    overdue = len(backups) == 0
+    if last_at:
+        try:
+            dt = datetime.fromisoformat(last_at)
+            overdue = (datetime.now(timezone.utc) - dt) > timedelta(days=7)
+        except Exception:
+            pass
+
+    # 3) 최근 24h 수집 오류 (도구 연결 실패 추정)
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
+    tool_failures = db.query(func.count(CollectedData.data_id)).filter(
+        CollectedData.collected_at >= since,
+        CollectedData.error.isnot(None),
+    ).scalar() or 0
+
+    # 4) 완료 진단 누계
+    completed = db.query(func.count(DiagnosisSession.session_id)).filter(
+        DiagnosisSession.status == "완료"
+    ).scalar() or 0
+
+    return {
+        "checked_at":  datetime.now(timezone.utc).isoformat(),
+        "audit":       {"ok": broken == 0, "broken_count": broken},
+        "backup":      {"overdue": overdue, "last_at": last_at, "count": len(backups)},
+        "tools":       {"recent_failures": int(tool_failures)},
+        "assessments": {"completed_total": int(completed)},
+    }
