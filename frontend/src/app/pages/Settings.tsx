@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
 import { useAuth } from "../context/AuthContext";
 import { updateAuthProfile, changePassword, deleteAccount, putOrgTargets, ApiError, type ProfileFields } from "../../config/api";
+import { AdminSettings } from "./AdminSettings";
 
 const STORAGE_KEY = "zt_settings";
 
@@ -368,6 +369,10 @@ export function Settings() {
   const updateTarget = (index: number, value: number) => {
     setTargetScores((prev) => prev.map((score, i) => (i === index ? value : score)));
   };
+
+  // 관리자는 운영자용 설정 화면으로 분기 (진단 신청자용 항목 제외).
+  // 위 hooks 는 모두 호출된 뒤이므로 hooks 순서 규칙에 안전.
+  if (user?.role === "admin") return <AdminSettings />;
 
   return (
     <div className="max-w-screen-2xl mx-auto space-y-6">

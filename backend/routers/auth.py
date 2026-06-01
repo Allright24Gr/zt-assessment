@@ -335,6 +335,7 @@ class UserResponse(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=200)
     profile: ProfileFields
+    name: Optional[str] = Field(default=None, max_length=100)  # 표시 이름(선택) 갱신
 
 
 class ChangePasswordRequest(BaseModel):
@@ -611,6 +612,9 @@ def update_profile(
         audit_logger.warning("[auth] profile update fail login_id=%s reason=bad_password", x_login_id)
         raise HTTPException(status_code=401, detail="비밀번호가 일치하지 않습니다.")
     user.profile = req.profile.model_dump(exclude_none=True)
+    # 표시 이름(선택) 갱신 — 관리자 계정 정보 수정 등. 이메일/로그인ID는 변경 불가(정체성 잠금).
+    if req.name and req.name.strip():
+        user.name = req.name.strip()[:100]
     db.commit()
     db.refresh(user)
     audit_logger.info("[auth] profile update ok login_id=%s", x_login_id)

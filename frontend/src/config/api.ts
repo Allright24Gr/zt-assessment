@@ -643,11 +643,12 @@ export function updateAuthProfile(
   login_id: string,
   profile: ProfileFields,
   currentPassword: string,
+  name?: string,
 ) {
   return apiFetch<AuthUser>(API_ENDPOINTS.AUTH_PROFILE, {
     method: "PUT",
     headers: { "X-Login-Id": login_id },
-    body: JSON.stringify({ profile, current_password: currentPassword }),
+    body: JSON.stringify({ profile, current_password: currentPassword, ...(name ? { name } : {}) }),
   });
 }
 
@@ -744,6 +745,17 @@ export function verifyAuditChain() {
   return apiFetch<{ total: number; checked: number; verified: number; broken_count: number; ok: boolean }>(
     "/api/admin/audit/verify",
   );
+}
+
+export interface OperationalAlerts {
+  checked_at: string;
+  audit: { ok: boolean; broken_count: number };
+  backup: { overdue: boolean; last_at: string | null; count: number };
+  tools: { recent_failures: number };
+  assessments: { completed_total: number };
+}
+export function getOperationalAlerts() {
+  return apiFetch<OperationalAlerts>("/api/admin/alerts");
 }
 
 export function createBackup() {
