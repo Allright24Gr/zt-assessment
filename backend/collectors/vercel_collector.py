@@ -222,3 +222,75 @@ def collect_audit_log_retention(item_id: str, maturity: str) -> CollectedResult:
     count = float(len(events))
     verdict = "충족" if count >= TH else "미충족"
     return _result(item_id, maturity, MK, count, TH, verdict, {"events": len(events)})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 확장 collector (2026-06) — Firewall/배포 보호(SSO·비밀번호·Trusted IP) 점검 추가.
+# docstring item_id 로 autodiscover 자동 편입. 측정 실패 → 평가불가.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def collect_firewall_threat_response(item_id: str, maturity: str) -> CollectedResult:
+    """3.2.1.1_1: 위협 대응 — Vercel Firewall 활성 + 룰 ≥ 1 → 충족, 활성만 → 부분충족."""
+    MK, TH = "firewall_rules_active", 1.0
+    proj = _get_project_id()
+    if not proj:
+        return _unavailable(item_id, maturity, MK, TH, "project_id 미설정")
+    data, err = _api_get("/v1/security/firewall/config", params={"projectId": proj})
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    d = data or {}
+    enabled = bool(d.get("firewallEnabled") or d.get("enabled")
+                   or d.get("managedRules") or d.get("crs"))
+    custom = d.get("rules") if isinstance(d.get("rules"), list) else []
+    managed = d.get("managedRules") if isinstance(d.get("managedRules"), dict) else {}
+    rule_count = len(custom) + len(managed)
+    if enabled and rule_count >= 1:
+        verdict, val = "충족", float(rule_count)
+    elif enabled:
+        verdict, val = "부분충족", 0.5
+    else:
+        verdict, val = "미충족", 0.0
+    return _result(item_id, maturity, MK, val, TH, verdict,
+                   {"firewall_enabled": enabled, "rule_count": rule_count})
+
+
+def _deployment_protection_count(proj: str) -> tuple[int, dict, Optional[str]]:
+    """프로젝트의 배포 보호 정책 수(SSO/비밀번호/Trusted IP) 산출."""
+    data, err = _api_get(f"/v9/projects/{proj}")
+    if err:
+        return 0, {}, err
+    d = data or {}
+    tip = d.get("trustedIps")
+    detail = {
+        "sso":         bool(d.get("ssoProtection")),
+        "password":    bool(d.get("passwordProtection")),
+        "trusted_ips": bool(tip and (not isinstance(tip, dict) or tip.get("addresses"))),
+    }
+    return sum(1 for v in detail.values() if v), detail, None
+
+
+def collect_deployment_protection(item_id: str, maturity: str) -> CollectedResult:
+    """4.1.1.2_1: 접근통제 — 배포 보호(SSO/비밀번호/Trusted IP) 정책 ≥ 1 → 충족."""
+    MK, TH = "deployment_protection_policies", 1.0
+    proj = _get_project_id()
+    if not proj:
+        return _unavailable(item_id, maturity, MK, TH, "project_id 미설정")
+    count, detail, err = _deployment_protection_count(proj)
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    verdict = "충족" if count >= 1 else "미충족"
+    return _result(item_id, maturity, MK, float(count), TH, verdict, detail)
+
+
+def collect_remote_access_protection(item_id: str, maturity: str) -> CollectedResult:
+    """5.3.1.1_2: 원격 접속 — 배포 환경 접근 보호(SSO/비밀번호/Trusted IP) 정책 ≥ 1 → 충족."""
+    MK, TH = "remote_access_policies", 1.0
+    proj = _get_project_id()
+    if not proj:
+        return _unavailable(item_id, maturity, MK, TH, "project_id 미설정")
+    count, detail, err = _deployment_protection_count(proj)
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    verdict = "충족" if count >= 1 else "미충족"
+    return _result(item_id, maturity, MK, float(count), TH, verdict, detail)

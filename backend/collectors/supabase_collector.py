@@ -475,3 +475,196 @@ def collect_role_change_events(item_id: str, maturity: str) -> CollectedResult:
     verdict = "충족" if ratio >= TH else "부분충족" if ratio > 0 else "미충족"
     return _result(item_id, maturity, MK, ratio, TH, verdict,
                    {"total": len(users), "recent": recent})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 확장 collector (2026-06) — 기존 fetch(_auth_config/_auth_settings/_rls_policies/
+# _tables/_list_users) + SSL 강제 조회를 재활용해 자동 진단 커버리지 확대.
+# docstring item_id 로 autodiscover 자동 편입(Keycloak 과 다중 매핑 — SaaS 환경에서
+# 신원/데이터/네트워크 영역 보강). 측정 실패는 _unavailable(평가불가), 실측 실패만 미충족.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _ssl_enforcement(timeout: float = _TIMEOUT) -> tuple[dict, Optional[str]]:
+    """Management API: GET /projects/{ref}/ssl-enforcement — DB 연결 SSL 강제 여부."""
+    ref = _get_project_ref()
+    if not ref:
+        return {}, "project_ref 미설정"
+    data, err = _mgmt_get(f"/projects/{ref}/ssl-enforcement", timeout=timeout)
+    if err:
+        return {}, err
+    return data or {}, None
+
+
+def collect_continuous_stepup(item_id: str, maturity: str) -> CollectedResult:
+    """1.2.2.2_1: 지속 인증 — MFA 또는 refresh token 회전 등 Step-Up 흐름 ≥ 1 → 충족."""
+    MK, TH = "stepup_flow_count", 1.0
+    cfg, err = _auth_config()
+    if err:
+        settings, serr = _auth_settings()
+        if serr:
+            return _unavailable(item_id, maturity, MK, TH, err)
+        mfa_on = bool(settings.get("mfa_enabled"))
+        rot = False
+    else:
+        mfa = cfg.get("mfa") if isinstance(cfg.get("mfa"), dict) else {}
+        mfa_on = bool(cfg.get("mfa_enabled") or mfa.get("totp_enroll_enabled")
+                      or cfg.get("mfa_totp_enroll_enabled"))
+        rot = bool(cfg.get("refresh_token_rotation_enabled")
+                   or cfg.get("security_refresh_token_rotation_enabled"))
+    flows = int(mfa_on) + int(rot)
+    verdict = "충족" if flows >= TH else "미충족"
+    return _result(item_id, maturity, MK, float(flows), TH, verdict,
+                   {"mfa": mfa_on, "refresh_rotation": rot})
+
+
+def collect_continuous_session_reauth(item_id: str, maturity: str) -> CollectedResult:
+    """1.2.2.3_1: 지속 인증 — 세션 타임박스/비활성 만료/재인증 흐름 ≥ 1 → 충족."""
+    MK, TH = "session_reauth_flow", 1.0
+    cfg, err = _auth_config()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    timebox = cfg.get("sessions_timebox") or cfg.get("session_timebox") or 0
+    inactivity = cfg.get("sessions_inactivity_timeout") or cfg.get("session_inactivity_timeout") or 0
+    single = bool(cfg.get("sessions_single_per_user"))
+    reauth = bool(cfg.get("security_update_password_require_reauthentication"))
+    flows = sum(1 for x in (timebox, inactivity, single, reauth) if x)
+    verdict = "충족" if flows >= TH else "미충족"
+    return _result(item_id, maturity, MK, float(flows), TH, verdict,
+                   {"timebox": timebox, "inactivity": inactivity,
+                    "single_session": single, "pw_reauth": reauth})
+
+
+def collect_credential_policy(item_id: str, maturity: str) -> CollectedResult:
+    """4.2.2.1_2: 자격 증명 관리 — 비밀번호/유출 검사 등 자격 정책 설정됨 → 충족."""
+    MK, TH = "credential_policy_set", 1.0
+    cfg, err = _auth_config()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    pw = cfg.get("password") if isinstance(cfg.get("password"), dict) else {}
+    min_len = float(pw.get("min_length") or cfg.get("password_min_length") or 0)
+    reqs = pw.get("required_characters") or cfg.get("password_required_characters") or ""
+    leaked = bool(cfg.get("password_hibp_enabled") or cfg.get("security_password_hibp_enabled"))
+    has_policy = (min_len >= 8) or bool(reqs) or leaked
+    verdict = "충족" if has_policy else "미충족"
+    return _result(item_id, maturity, MK, 1.0 if has_policy else 0.0, TH, verdict,
+                   {"min_length": min_len, "required_chars": bool(reqs), "leaked_protection": leaked})
+
+
+def collect_central_credential_mgmt(item_id: str, maturity: str) -> CollectedResult:
+    """4.2.2.2_1: 자격 증명 관리 — 중앙 자격 발급(Supabase Auth/JWT) 활성 ≥ 1 → 충족."""
+    MK, TH = "central_credential_issuer", 1.0
+    settings, err = _auth_settings()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    external = settings.get("external") or {}
+    has_provider = any(v for v in external.values() if isinstance(v, bool))
+    issuer_active = bool(has_provider or settings.get("external_email_enabled")
+                         or not settings.get("disable_signup"))
+    verdict = "충족" if issuer_active else "미충족"
+    return _result(item_id, maturity, MK, 1.0 if issuer_active else 0.0, TH, verdict,
+                   {"has_external": has_provider, "email": settings.get("external_email_enabled")})
+
+
+def collect_data_access_rls_tables(item_id: str, maturity: str) -> CollectedResult:
+    """6.2.1.2_1: 데이터 접근제어 — RLS 적용 보호 테이블(클라이언트) ≥ 1 → 충족."""
+    MK, TH = "rls_protected_tables", 1.0
+    tables, err = _tables()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    public = [t for t in tables if (t.get("schemaname") or "") == "public"]
+    rls_on = [t for t in public if t.get("rowsecurity") is True]
+    count = float(len(rls_on))
+    verdict = "충족" if count >= TH else "미충족"
+    return _result(item_id, maturity, MK, count, TH, verdict,
+                   {"public_tables": len(public), "rls_protected": len(rls_on)})
+
+
+def collect_data_access_rls_policies(item_id: str, maturity: str) -> CollectedResult:
+    """6.2.1.2_2: 데이터 접근제어 — 데이터 접근 정책(RLS policy) ≥ 1 → 충족."""
+    MK, TH = "data_access_policy_count", 1.0
+    policies, err = _rls_policies()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    pub = [p for p in policies if (p.get("schemaname") or "") == "public"]
+    count = float(len(pub))
+    verdict = "충족" if count >= TH else "미충족"
+    return _result(item_id, maturity, MK, count, TH, verdict,
+                   {"total_policies": len(policies), "public_policies": len(pub)})
+
+
+def collect_data_encryption(item_id: str, maturity: str) -> CollectedResult:
+    """6.3.1.2_2: 데이터 암호화 — 전송구간 SSL 강제(저장구간 기본 암호화) → 충족."""
+    MK, TH = "encryption_mechanisms", 1.0
+    ssl, err = _ssl_enforcement()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    cur = ssl.get("currentConfig") if isinstance(ssl.get("currentConfig"), dict) else {}
+    db_ssl = bool(cur.get("database"))
+    # 저장구간(at-rest)은 Supabase 기본 적용 → 최소 1개 메커니즘. SSL 강제 시 2개.
+    mechanisms = 1 + int(db_ssl)
+    verdict = "충족" if db_ssl else "부분충족"
+    return _result(item_id, maturity, MK, float(mechanisms), TH, verdict,
+                   {"db_ssl_enforced": db_ssl, "at_rest": True})
+
+
+def collect_traffic_encryption(item_id: str, maturity: str) -> CollectedResult:
+    """3.3.1.2_1: 트래픽 암호화 — API(HTTPS)+DB SSL 강제 비율 ≥ 0.8 → 충족."""
+    MK, TH = "encrypted_channel_ratio", 0.8
+    ssl, err = _ssl_enforcement()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    cur = ssl.get("currentConfig") if isinstance(ssl.get("currentConfig"), dict) else {}
+    db_ssl = bool(cur.get("database"))
+    # API/PostgREST 는 항상 HTTPS(1) + DB SSL 강제 여부(0/1) → 비율
+    ratio = (1.0 + (1.0 if db_ssl else 0.0)) / 2.0
+    verdict = "충족" if ratio >= TH else "부분충족" if ratio >= 0.5 else "미충족"
+    return _result(item_id, maturity, MK, ratio, TH, verdict,
+                   {"api_https": True, "db_ssl_enforced": db_ssl})
+
+
+def collect_unified_icam(item_id: str, maturity: str) -> CollectedResult:
+    """1.3.1.2_1: 통합 ICAM — 인증수단/MFA/세션관리 3영역 모두 → 충족, 일부 → 부분충족."""
+    MK, TH = "icam_components", 3.0
+    settings, err = _auth_settings()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    external = settings.get("external") or {}
+    has_auth = bool(any(v for v in external.values() if isinstance(v, bool))
+                    or settings.get("external_email_enabled"))
+    mfa = bool(settings.get("mfa_enabled"))
+    cfg, cerr = _auth_config()
+    if not cerr and isinstance(cfg, dict):
+        m = cfg.get("mfa") if isinstance(cfg.get("mfa"), dict) else {}
+        mfa = mfa or bool(cfg.get("mfa_enabled") or m.get("totp_enroll_enabled")
+                          or cfg.get("mfa_totp_enroll_enabled"))
+        session_mgmt = bool(cfg.get("jwt_exp") or cfg.get("sessions_timebox")
+                            or cfg.get("sessions_inactivity_timeout"))
+    else:
+        session_mgmt = bool(settings.get("jwt_exp"))
+    comps = int(has_auth) + int(mfa) + int(session_mgmt)
+    verdict = "충족" if comps >= 3 else "부분충족" if comps >= 1 else "미충족"
+    return _result(item_id, maturity, MK, float(comps), TH, verdict,
+                   {"auth": has_auth, "mfa": mfa, "session_mgmt": session_mgmt})
+
+
+def collect_user_inventory_advanced(item_id: str, maturity: str) -> CollectedResult:
+    """1.1.1.4_2: 사용자 인벤토리 — 활성 사용자 ≥ 3 AND 역할 그룹 ≥ 1 → 충족, 1~2 → 부분충족."""
+    MK, TH = "active_users_with_grouping", 1.0
+    users, err = _list_users()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    active = [u for u in users if not u.get("banned_until")]
+    roles = set()
+    for u in users:
+        r = (u.get("app_metadata") or {}).get("role") or u.get("role")
+        if r:
+            roles.add(r)
+    if len(active) >= 3 and len(roles) >= 1:
+        verdict, val = "충족", 1.0
+    elif len(active) >= 1:
+        verdict, val = "부분충족", 0.5
+    else:
+        verdict, val = "미충족", 0.0
+    return _result(item_id, maturity, MK, val, TH, verdict,
+                   {"active_users": len(active), "role_groups": len(roles)})

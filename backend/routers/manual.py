@@ -756,9 +756,9 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     # instructions 시트에도 보수적 평가 안내 추가 (멱등).
     _augment_instructions_sheet(wb)
 
-    # 자동 진단에서 평가불가로 떨어진 항목들도 수동 입력으로 보완 — 결과 페이지에
-    # "평가 안 됨" 공백을 남기지 않기 위함. KISA 보수적 평가 원칙은 동일하게 적용
-    # (해당 카테고리의 상위 단계가 자동 충족이면 하위 단계 평가불가 항목은 제외).
+    # 자동 진단에서 평가불가로 떨어진 항목은 전부 수동 입력으로 보완 — 결과 페이지에
+    # "평가 안 됨" 공백을 남기지 않기 위함. 평가불가 항목은 보수적 캐스케이드/셀 중복과
+    # 무관하게 빠짐없이 양식에 포함되어, 담당자가 채우면 최종 결과의 평가불가가 0이 된다.
     unavailable_check_ids: set[int] = set()
     unavailable_rows = (
         db.query(DiagnosisResult, Checklist)
@@ -803,17 +803,21 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     rows.sort(key=lambda c: (_pillar_sort_key(c.pillar or ""), c.item_id or ""))
 
     # 기존 양식에 이미 있는 항목 제외 + 자동 충족된 단계 제외 (보수적 평가).
+    # ※ 자동 '평가불가' 항목은 예외 — 업로드 후 최종 결과에 평가불가가 남지 않도록
+    #    보수적 캐스케이드/셀 중복과 무관하게 항상 양식에 1행씩 넣어 담당자가 채우게 한다.
     new_items = []
     for cl in rows:
         prefix = (cl.item_id or "").split("_", 1)[0]  # "1.1.1.1"
         item_no_prefix = ".".join(prefix.split(".")[:3])  # "1.1.1"
+        is_unavailable = cl.check_id in unavailable_check_ids
         key = (item_no_prefix, cl.maturity or "")
-        if key in existing_keys:
+        if not is_unavailable and key in existing_keys:
             continue
         # 미수집 정책 — 자동이 이미 판정한 셀이거나(충족/부분충족/미충족),
-        # 같은 카테고리 상위 단계가 자동 충족이면(보수적 평가) 폴백도 생략.
+        # 같은 카테고리 상위 단계가 자동 충족이면(보수적 평가) 폴백은 생략.
+        # 단, 평가불가 항목은 위 예외에 따라 항상 포함한다.
         mat_num = MATURITY_NUM.get(cl.maturity or "", 0)
-        if mat_num and (
+        if not is_unavailable and mat_num and (
             auto_max.get(item_no_prefix, 0) >= mat_num
             or (item_no_prefix, mat_num) in auto_judged
         ):
