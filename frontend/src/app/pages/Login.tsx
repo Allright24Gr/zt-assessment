@@ -200,8 +200,8 @@ export function Login() {
             ))}
           </div>
           <p className="mt-3 text-center leading-relaxed">
-            <span className="block text-lg font-semibold text-gray-700">제로트러스트 성숙도, 설치 없이 진단</span>
-            <span className="block text-sm text-gray-400 mt-1">6대 보안 영역을 무침해 원격으로 정량 평가합니다</span>
+            <span className="block text-lg font-semibold text-gray-700">제로트러스트 성숙도 진단 플랫폼</span>
+            <span className="block text-sm text-gray-400 mt-1">6대 보안 영역을 무침해 원격으로 정량 평가</span>
           </p>
         </div>
         </div>
