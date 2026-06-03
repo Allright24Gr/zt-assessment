@@ -3,10 +3,30 @@ import { useNavigate, Link } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { useNotifications } from "../context/NotificationContext";
 import {
-  Shield, AlertCircle, X, Mail, KeyRound, ShieldCheck, ScanLine,
+  Shield, AlertCircle, X, Mail, KeyRound, ShieldCheck,
   Fingerprint, Laptop, Network, Server, Boxes, Database,
 } from "lucide-react";
 import { requestPasswordReset, ApiError } from "../../config/api";
+
+// 좌측 비주얼용 — 성숙도 레이더(6 Pillar) 좌표 헬퍼. 텍스트 없이 그래픽만.
+const RADAR = { cx: 150, cy: 150, r: 110 };
+const RADAR_ANGLES = [-90, -30, 30, 90, 150, 210].map((d) => (d * Math.PI) / 180);
+function radarPoints(ratio: number | number[]): string {
+  return RADAR_ANGLES.map((a, i) => {
+    const rr = RADAR.r * (Array.isArray(ratio) ? ratio[i] : ratio);
+    return `${(RADAR.cx + rr * Math.cos(a)).toFixed(1)},${(RADAR.cy + rr * Math.sin(a)).toFixed(1)}`;
+  }).join(" ");
+}
+const RADAR_CURRENT = [0.78, 0.7, 0.62, 0.72, 0.68, 0.6];
+// 레이더 6 꼭짓점 둘레에 떠있는 보안 도메인 아이콘 (라벨 없음)
+const FLOAT_ICONS = [
+  { Icon: Fingerprint, top: 2, left: 168 },
+  { Icon: Laptop, top: 84, left: 311 },
+  { Icon: Network, top: 250, left: 311 },
+  { Icon: Server, top: 333, left: 168 },
+  { Icon: Boxes, top: 250, left: 25 },
+  { Icon: Database, top: 84, left: 25 },
+];
 
 type RecoveryMode = null | "id" | "password";
 
@@ -126,51 +146,47 @@ export function Login() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center p-6">
       <div className="w-full max-w-5xl flex items-center justify-center lg:justify-between gap-12">
-        {/* 좌측 — 진단/보안 비주얼 (lg 이상에서 표시) */}
-        <div className="hidden lg:block flex-1 max-w-lg">
-          <div className="flex items-center gap-2.5 mb-6">
-            <ShieldCheck className="text-blue-600" size={30} />
-            <span className="text-2xl font-bold text-gray-800">Readyz-T</span>
-          </div>
-          <h2 className="text-3xl font-bold text-gray-800 leading-snug mb-3">
-            제로트러스트 성숙도,<br />
-            <span className="text-blue-600">설치 없이 자동 진단</span>
-          </h2>
-          <p className="text-gray-500 mb-8 leading-relaxed">
-            가이드라인 2.0 기반 6대 보안 영역을 무침해 원격 진단으로 정량 평가합니다.
-          </p>
+        {/* 좌측 — '진단 시스템' 비주얼 (텍스트 없이 그래픽만): 성숙도 레이더 + 보안 아이콘 + 스캔 펄스 */}
+        <div className="hidden lg:flex flex-1 items-center justify-center">
+          <div className="relative" style={{ width: 400, height: 400 }}>
+            {/* 스캔 펄스 링 */}
+            <div className="absolute rounded-full border border-blue-300/50 animate-ping" style={{ inset: 70, animationDuration: "3s" }} />
+            <div className="absolute rounded-full bg-blue-200/25 blur-md" style={{ inset: 110 }} />
 
-          {/* 6 Pillar 진단 영역 아이콘 카드 */}
-          <div className="grid grid-cols-3 gap-3 mb-6">
-            {[
-              { icon: Fingerprint, label: "식별자·신원" },
-              { icon: Laptop, label: "기기" },
-              { icon: Network, label: "네트워크" },
-              { icon: Server, label: "시스템" },
-              { icon: Boxes, label: "애플리케이션" },
-              { icon: Database, label: "데이터" },
-            ].map(({ icon: Icon, label }) => (
-              <div
-                key={label}
-                className="bg-white/70 backdrop-blur-sm rounded-xl border border-white shadow-sm p-3 flex flex-col items-center gap-1.5"
-              >
-                <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
-                  <Icon className="text-blue-600" size={18} />
-                </div>
-                <span className="text-xs text-gray-600">{label}</span>
+            {/* 성숙도 레이더 차트 */}
+            <svg viewBox="0 0 300 300" className="absolute drop-shadow-sm" style={{ inset: 30, width: 340, height: 340 }}>
+              {[1, 0.66, 0.33].map((g) => (
+                <polygon key={g} points={radarPoints(g)} fill="none" stroke="#bfdbfe" strokeWidth="1" />
+              ))}
+              {RADAR_ANGLES.map((a, i) => (
+                <line key={i} x1={RADAR.cx} y1={RADAR.cy}
+                  x2={(RADAR.cx + RADAR.r * Math.cos(a)).toFixed(1)}
+                  y2={(RADAR.cy + RADAR.r * Math.sin(a)).toFixed(1)}
+                  stroke="#dbeafe" strokeWidth="1" />
+              ))}
+              {/* 목표(점선) + 현재(채움) */}
+              <polygon points={radarPoints(0.9)} fill="none" stroke="#34d399" strokeWidth="1.5" strokeDasharray="4 3" />
+              <polygon points={radarPoints(RADAR_CURRENT)} fill="rgba(59,130,246,0.22)" stroke="#2563eb" strokeWidth="2" />
+              {radarPoints(RADAR_CURRENT).split(" ").map((p, i) => {
+                const [x, y] = p.split(",");
+                return <circle key={i} cx={x} cy={y} r="2.6" fill="#2563eb" />;
+              })}
+            </svg>
+
+            {/* 중앙 실드 */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-blue-600 shadow-lg shadow-blue-600/30 ring-4 ring-white flex items-center justify-center">
+                <ShieldCheck className="text-white" size={30} />
               </div>
-            ))}
-          </div>
+            </div>
 
-          {/* 특징 뱃지 */}
-          <div className="flex flex-wrap gap-2">
-            {["무침해 원격", "310개 항목", "자동 8개 도구", "결과 무결성"].map((b) => (
-              <span
-                key={b}
-                className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-white/60 border border-white text-xs text-gray-600"
-              >
-                <ScanLine size={12} className="text-blue-500" /> {b}
-              </span>
+            {/* 떠있는 보안 도메인 아이콘 (라벨 없음) */}
+            {FLOAT_ICONS.map(({ Icon, top, left }, i) => (
+              <div key={i}
+                className="absolute w-12 h-12 rounded-2xl bg-white shadow-lg border border-blue-50 flex items-center justify-center"
+                style={{ top, left }}>
+                <Icon className="text-blue-600" size={22} />
+              </div>
             ))}
           </div>
         </div>
