@@ -74,6 +74,24 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 공유/관리형 호스팅 플랫폼 도메인 — 앱 소유자가 DNS(SPF/DMARC) 레코드나 TLS 인증서
+# (CT 발급)를 직접 통제할 수 없다. 이런 도메인에 대한 메일/CT 통제는 "미충족"(실패)이
+# 아니라 "평가불가"(평가 대상 아님)로 둬야 점수가 부당하게 깎이지 않는다.
+# 자체 도메인(회사 소유)에서는 정상적으로 DMARC/SPF/CT 를 평가한다.
+_SHARED_PLATFORM_SUFFIXES = (
+    "vercel.app", "netlify.app", "pages.dev", "github.io", "web.app",
+    "firebaseapp.com", "onrender.com", "herokuapp.com", "fly.dev",
+    "railway.app", "up.railway.app", "workers.dev", "surge.sh",
+    "gitlab.io", "azurewebsites.net", "cloudfront.net", "amplifyapp.com",
+)
+
+
+def _is_shared_platform_domain(domain: str) -> bool:
+    """도메인이 앱 소유자가 DNS/인증서를 통제할 수 없는 공유 호스팅 플랫폼인지."""
+    d = (domain or "").lower().rstrip(".")
+    return any(d == s or d.endswith("." + s) for s in _SHARED_PLATFORM_SUFFIXES)
+
+
 # ─── 결과 dict 헬퍼 ──────────────────────────────────────────────────────────
 
 def _ok(item_id: str, maturity: str, result: str, metric_key: str,
@@ -234,14 +252,15 @@ def collect_oidc_idp_integration() -> CollectedResult:
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
     oidc = _cached_oidc(dom)
-    if oidc.get("error") and not oidc.get("discovered"):
-        # 미발견은 평가 결과(미충족) 로 처리, 진짜 네트워크 에러만 평가불가.
-        if "Name or service not known" in str(oidc.get("error")) or "timeout" in str(oidc.get("error")).lower():
-            return _err(item_id, maturity, MK, TH, oidc["error"], oidc)
-    discovered = bool(oidc.get("discovered"))
+    if not oidc.get("discovered"):
+        # 프론트엔드 앱 도메인은 OIDC 발급자(IdP)가 아니다. Discovery 미노출은
+        # 실패(미충족)가 아니라 '평가 대상 아님' → IdP 연계는 전용 도구로 평가.
+        return _err(item_id, maturity, MK, TH,
+                    "앱 도메인에 OIDC Discovery 미노출 — IdP 연계는 전용 도구(supabase/keycloak 등)로 평가",
+                    oidc)
     cfg = oidc.get("config") or {}
     has_issuer = bool(cfg.get("issuer"))
-    value = 1.0 if (discovered and has_issuer) else 0.0
+    value = 1.0 if has_issuer else 0.0
     result = "충족" if value >= TH else "미충족"
     return _ok(item_id, maturity, result, MK, value, TH, oidc)
 
@@ -259,6 +278,11 @@ def collect_oidc_global_federation() -> CollectedResult:
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
     oidc = _cached_oidc(dom)
+    if not oidc.get("discovered"):
+        # 앱 도메인에 OIDC 미노출 → IdP 연계는 전용 도구로 평가 (점수 제외).
+        return _err(item_id, maturity, MK, TH,
+                    "앱 도메인에 OIDC Discovery 미노출 — IdP 연계는 전용 도구(supabase/keycloak 등)로 평가",
+                    oidc)
     cfg = oidc.get("config") or {}
     scopes = set(cfg.get("scopes_supported") or [])
     required = {"openid", "profile", "email"}
@@ -284,6 +308,11 @@ def collect_oidc_context_auth() -> CollectedResult:
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
     oidc = _cached_oidc(dom)
+    if not oidc.get("discovered"):
+        # 앱 도메인에 OIDC 미노출 → IdP 연계는 전용 도구로 평가 (점수 제외).
+        return _err(item_id, maturity, MK, TH,
+                    "앱 도메인에 OIDC Discovery 미노출 — IdP 연계는 전용 도구(supabase/keycloak 등)로 평가",
+                    oidc)
     cfg = oidc.get("config") or {}
     acr_vals = cfg.get("acr_values_supported") or []
     claims = set(cfg.get("claims_supported") or [])
@@ -313,6 +342,11 @@ def collect_oidc_credential_endpoint() -> CollectedResult:
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
     oidc = _cached_oidc(dom)
+    if not oidc.get("discovered"):
+        # 앱 도메인에 OIDC 미노출 → IdP 연계는 전용 도구로 평가 (점수 제외).
+        return _err(item_id, maturity, MK, TH,
+                    "앱 도메인에 OIDC Discovery 미노출 — IdP 연계는 전용 도구(supabase/keycloak 등)로 평가",
+                    oidc)
     cfg = oidc.get("config") or {}
     has_token = bool(cfg.get("token_endpoint"))
     has_jwks = bool(cfg.get("jwks_uri"))
@@ -338,6 +372,11 @@ def collect_oidc_authz_endpoint() -> CollectedResult:
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
     oidc = _cached_oidc(dom)
+    if not oidc.get("discovered"):
+        # 앱 도메인에 OIDC 미노출 → IdP 연계는 전용 도구로 평가 (점수 제외).
+        return _err(item_id, maturity, MK, TH,
+                    "앱 도메인에 OIDC Discovery 미노출 — IdP 연계는 전용 도구(supabase/keycloak 등)로 평가",
+                    oidc)
     cfg = oidc.get("config") or {}
     has_authz = bool(cfg.get("authorization_endpoint"))
     value = 1.0 if has_authz else 0.0
@@ -362,6 +401,10 @@ def collect_dns_dmarc_policy() -> CollectedResult:
     dom = _get_domain()
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
+    if _is_shared_platform_domain(dom):
+        return _err(item_id, maturity, MK, TH,
+                    "공유 호스팅 도메인 — 메일(DMARC) DNS 정책은 앱 소유자 통제 밖. 자체 도메인에서 평가 필요",
+                    {"shared_platform": dom})
     dns = _cached_dns(dom)
     dmarc = (dns.get("dmarc") or {})
     verdict = dmarc.get("verdict", "fail")
@@ -386,6 +429,10 @@ def collect_dns_spf_coverage() -> CollectedResult:
     dom = _get_domain()
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
+    if _is_shared_platform_domain(dom):
+        return _err(item_id, maturity, MK, TH,
+                    "공유 호스팅 도메인 — 메일(SPF) DNS 정책은 앱 소유자 통제 밖. 자체 도메인에서 평가 필요",
+                    {"shared_platform": dom})
     dns = _cached_dns(dom)
     spf_obj = (dns.get("spf") or {})
     verdict = spf_obj.get("verdict", "fail")
@@ -411,6 +458,10 @@ def collect_dns_dmarc_reporting() -> CollectedResult:
     dom = _get_domain()
     if not dom:
         return _no_target_err(item_id, maturity, MK, TH)
+    if _is_shared_platform_domain(dom):
+        return _err(item_id, maturity, MK, TH,
+                    "공유 호스팅 도메인 — 메일(DMARC 리포팅) DNS 정책은 앱 소유자 통제 밖. 자체 도메인에서 평가 필요",
+                    {"shared_platform": dom})
     dns = _cached_dns(dom)
     dmarc = (dns.get("dmarc") or {})
     dmarc_val = dmarc.get("value", "")
@@ -602,8 +653,11 @@ def collect_http_data_access_authentication() -> CollectedResult:
     raw_headers = h.get("headers") or {}
     set_cookies = raw_headers.get("set-cookie", "")
     if not set_cookies:
-        return _ok(item_id, maturity, "미충족", MK, 0.0, TH,
-                   {**h, "note": "Set-Cookie 헤더 없음 — 쿠키 기반 인증 미사용 또는 비공개 페이지"})
+        # 쿠키 자체가 없으면 "안전하지 않은 쿠키"도 없다 → 실패(미충족) 아님.
+        # 토큰/세션(localStorage) 기반 SPA 는 쿠키를 안 쓰는 게 정상 → 평가불가.
+        return _err(item_id, maturity, MK, TH,
+                    "Set-Cookie 없음 — 토큰/세션 기반 인증으로 쿠키 미사용. 쿠키 보안은 평가 대상 아님",
+                    {**h, "note": "no Set-Cookie — cookie-based auth not used"})
     cookies_lower = set_cookies.lower()
     cookie_count = max(cookies_lower.count("="), 1)
     secure_hits = cookies_lower.count("secure")
@@ -849,12 +903,16 @@ def collect_ct_secure_deployment() -> CollectedResult:
     count = int(ct.get("cert_count") or 0)
     wild = int(ct.get("wildcard_count") or 0)
     wild_ratio = (wild / count) if count else 0.0
-    if count >= 1 and wild_ratio < 0.5:
+    # HTTPS 로 정상 응답하는 사이트는 항상 CT 로그 인증서가 존재한다. 0건이면
+    # 와일드카드(*.vercel.app)·관리형 인증서로 정확-서브도메인 조회가 누락됐거나
+    # crt.sh 조회 실패다 → '미공인 발급(미충족)'이 아니라 '평가불가'.
+    if count == 0:
+        return _err(item_id, maturity, MK, TH,
+                    "CT 로그 조회 결과 없음 — 와일드카드/관리형 인증서 또는 조회 실패. 미공인 발급으로 단정 불가", ct)
+    if wild_ratio < 0.5:
         value, result = float(count), "충족"
-    elif count >= 1:
-        value, result = float(count), "부분충족"
     else:
-        value, result = 0.0, "미충족"
+        value, result = float(count), "부분충족"
     return _ok(item_id, maturity, result, MK, value, TH, ct)
 
 
@@ -874,12 +932,13 @@ def collect_ct_app_inventory_signal() -> CollectedResult:
     if ct.get("error") and ct.get("cert_count", 0) == 0:
         return _err(item_id, maturity, MK, TH, ct["error"], ct)
     count = float(ct.get("cert_count") or 0)
+    if count == 0:
+        return _err(item_id, maturity, MK, TH,
+                    "CT 로그 조회 결과 없음 — 와일드카드/관리형 인증서 또는 조회 실패. 발급 활동 단정 불가", ct)
     if count >= TH:
         result = "충족"
-    elif count >= 1:
-        result = "부분충족"
     else:
-        result = "미충족"
+        result = "부분충족"
     return _ok(item_id, maturity, result, MK, count, TH, ct)
 
 
@@ -901,7 +960,8 @@ def collect_ct_dev_segregation() -> CollectedResult:
     count = int(ct.get("cert_count") or 0)
     issuers = ct.get("issuers") or []  # [(name, n), ...]
     if count == 0 or not issuers:
-        return _ok(item_id, maturity, "미충족", MK, 0.0, TH, ct)
+        return _err(item_id, maturity, MK, TH,
+                    "CT 로그 조회 결과 없음 — 와일드카드/관리형 인증서 또는 조회 실패. 발급자 격리 단정 불가", ct)
     top_share = issuers[0][1] / count if count else 1.0
     if top_share < 0.9:
         value, result = 1.0, "충족"
