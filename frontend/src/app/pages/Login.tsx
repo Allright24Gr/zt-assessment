@@ -18,16 +18,14 @@ function radarPoints(ratio: number | number[]): string {
   }).join(" ");
 }
 const RADAR_CURRENT = [0.78, 0.7, 0.62, 0.72, 0.68, 0.6];
-// 좌측 비주얼 박스 크기 + 아이콘 배지 좌표(박스 중심 기준 자동 계산 → 크기 바꿔도 정렬 유지)
-const VIS_SIZE = 460;
-const ICON_RING = 160;
-const ICON_BADGE = 48;
+// 아이콘 배지 좌표를 박스 중심 기준 % 로 계산(반응형 — 박스 크기 바꿔도 정렬 유지).
+// 배지는 style.transform translate(-50%,-50%) 로 해당 지점에 중앙 정렬한다.
+const FLOAT_RING_PCT = 38; // 박스 중심으로부터 아이콘까지 거리(%)
 function floatPos(deg: number) {
   const a = (deg * Math.PI) / 180;
-  const c = VIS_SIZE / 2;
   return {
-    left: c + ICON_RING * Math.cos(a) - ICON_BADGE / 2,
-    top: c + ICON_RING * Math.sin(a) - ICON_BADGE / 2,
+    left: `${(50 + FLOAT_RING_PCT * Math.cos(a)).toFixed(1)}%`,
+    top: `${(50 + FLOAT_RING_PCT * Math.sin(a)).toFixed(1)}%`,
   };
 }
 // 레이더 6 꼭짓점 둘레에 떠있는 보안 도메인 아이콘 (라벨 없음)
@@ -158,14 +156,14 @@ export function Login() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex">
       {/* 좌측 절반 — '진단 시스템' 비주얼 중앙 정렬 (텍스트 없이 그래픽만) */}
-      <div className="hidden lg:flex w-1/2 items-center justify-center p-6">
-        <div className="relative" style={{ width: VIS_SIZE, height: VIS_SIZE }}>
+      <div className="hidden lg:flex w-1/2 items-center justify-center p-8">
+        <div className="relative w-full max-w-[620px] aspect-square">
           {/* 스캔 펄스 링 */}
           <div className="absolute rounded-full border border-blue-300/50 animate-ping" style={{ inset: "17%", animationDuration: "3s" }} />
           <div className="absolute rounded-full bg-blue-200/25 blur-md" style={{ inset: "27%" }} />
 
             {/* 성숙도 레이더 차트 */}
-            <svg viewBox="0 0 300 300" className="absolute drop-shadow-sm" style={{ left: "14%", top: "14%", width: "72%", height: "72%" }}>
+            <svg viewBox="0 0 300 300" className="absolute drop-shadow-sm" style={{ left: "10%", top: "10%", width: "80%", height: "80%" }}>
               {[1, 0.66, 0.33].map((g) => (
                 <polygon key={g} points={radarPoints(g)} fill="none" stroke="#bfdbfe" strokeWidth="1" />
               ))}
@@ -186,17 +184,17 @@ export function Login() {
 
             {/* 중앙 실드 */}
             <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-16 h-16 rounded-full bg-blue-600 shadow-lg shadow-blue-600/30 ring-4 ring-white flex items-center justify-center">
-                <ShieldCheck className="text-white" size={30} />
+              <div className="w-20 h-20 rounded-full bg-blue-600 shadow-lg shadow-blue-600/30 ring-4 ring-white flex items-center justify-center">
+                <ShieldCheck className="text-white" size={40} />
               </div>
             </div>
 
             {/* 떠있는 보안 도메인 아이콘 (라벨 없음) */}
             {FLOAT_ICONS.map(({ Icon, top, left }, i) => (
               <div key={i}
-                className="absolute rounded-2xl bg-white shadow-lg border border-blue-50 flex items-center justify-center"
-                style={{ top, left, width: ICON_BADGE, height: ICON_BADGE }}>
-                <Icon className="text-blue-600" size={22} />
+                className="absolute w-16 h-16 rounded-2xl bg-white shadow-lg border border-blue-50 flex items-center justify-center"
+                style={{ top, left, transform: "translate(-50%, -50%)" }}>
+                <Icon className="text-blue-600" size={28} />
               </div>
             ))}
           </div>
