@@ -2440,25 +2440,27 @@ def _run_collectors(session_id: int, tools: list[str]):
             except Exception:
                 pass
 
-        if not results:
-            return
-
-        db = SessionLocal()
-        try:
-            for item in results:
-                item_id_str = item.get("item_id")
-                if not item_id_str:
-                    continue
-                checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
-                if not checklist:
-                    continue
-                _upsert_collected(db, session_id, checklist.check_id, item)
-            db.commit()
-        except Exception as exc:
-            db.rollback()
-            logger.error("[collector] DB write failed: %s", exc)
-        finally:
-            db.close()
+        # DEMO_DELAY_MS>0 경로는 _persist_one_result 로 이미 단건 저장돼 results 가 비어
+        # 있다. 과거엔 여기서 `if not results: return` 했으나, 그러면 아래 채점
+        # (_trigger_scoring)을 건너뛰어 status 가 영구히 "진행 중"에 멈추는 버그였다.
+        # → 배치 저장만 조건부로 하고, 함수는 항상 채점까지 진행한다.
+        if results:
+            db = SessionLocal()
+            try:
+                for item in results:
+                    item_id_str = item.get("item_id")
+                    if not item_id_str:
+                        continue
+                    checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
+                    if not checklist:
+                        continue
+                    _upsert_collected(db, session_id, checklist.check_id, item)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                logger.error("[collector] DB write failed: %s", exc)
+            finally:
+                db.close()
 
     # live 모드 collector 가 끝나면 즉시 채점 트리거 (demo 모드와 동일한 흐름).
     # 이전: 사용자가 InProgress 에서 "완료" 누를 때 /finalize 가 호출되었으나, 다중 매핑으로
