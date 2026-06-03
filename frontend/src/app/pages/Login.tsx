@@ -157,7 +157,8 @@ export function Login() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex">
       {/* 좌측 절반 — '진단 시스템' 비주얼 중앙 정렬 (텍스트 없이 그래픽만) */}
       <div className="hidden lg:flex w-1/2 items-center justify-center p-8">
-        <div className="relative w-full max-w-[620px] aspect-square">
+        <div className="w-full max-w-[620px] flex flex-col items-center" style={{ transform: "translate(40px, -20px)" }}>
+          <div className="relative w-full aspect-square">
           {/* 스캔 펄스 링 */}
           <div className="absolute rounded-full border border-blue-300/50 animate-ping" style={{ inset: "17%", animationDuration: "3s" }} />
           <div className="absolute rounded-full bg-blue-200/25 blur-md" style={{ inset: "27%" }} />
@@ -198,6 +199,11 @@ export function Login() {
               </div>
             ))}
           </div>
+          <p className="mt-3 text-center leading-relaxed">
+            <span className="block text-lg font-semibold text-gray-700">제로트러스트 성숙도, 설치 없이 진단</span>
+            <span className="block text-sm text-gray-400 mt-1">6대 보안 영역을 무침해 원격으로 정량 평가합니다</span>
+          </p>
+        </div>
         </div>
 
         {/* 우측 절반 — 로그인 카드 중앙 정렬 */}
