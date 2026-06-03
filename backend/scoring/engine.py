@@ -34,6 +34,19 @@ def score_single_item(collected: CollectedResult) -> dict:
             result, weight = "미충족", 0.0
         return {"result": result, "score": maturity_score * weight, "recommendation": ""}
 
+    # collector 가 직접 매긴 verdict 를 우선 신뢰 (raw_json._verdict).
+    # CollectedData 에 result 컬럼이 없어 과거엔 metric_value/threshold 로 verdict 를
+    # 재유도했는데, collector 의 count 기반 부분충족(예: 신호 3개 중 1개=부분충족, 비율
+    # 0.33)이 아래 70% 밴드 밑이라 '미충족(0점)' 으로 강등돼 점수가 부당하게 깎였다.
+    # → collector verdict 가 있으면 그 가중치를 그대로 적용 (없는 구 데이터는 재유도).
+    stored_verdict = raw.get("_verdict") if isinstance(raw, dict) else None
+    _AUTO_VERDICT_WEIGHT = {"충족": 1.0, "부분충족": 0.5, "미충족": 0.0}
+    if stored_verdict in _AUTO_VERDICT_WEIGHT:
+        weight = _AUTO_VERDICT_WEIGHT[stored_verdict]
+        return {"result": stored_verdict, "score": maturity_score * weight, "recommendation": ""}
+    if stored_verdict == "평가불가":
+        return {"result": "평가불가", "score": 0.0, "recommendation": "수집 결과 평가불가"}
+
     if threshold == 0:
         # "낮을수록 좋음" 역방향 판정 (미패치 취약점 수, 평문 알림 수 등)
         if metric_value == 0:

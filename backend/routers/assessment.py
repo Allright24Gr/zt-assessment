@@ -1247,12 +1247,19 @@ def _upsert_collected(db: Session, session_id: int, check_id: int, item: dict):
         CollectedData.session_id == session_id,
         CollectedData.check_id == check_id,
     ).first()
+    # collector 가 매긴 verdict(충족/부분충족/미충족/평가불가)를 raw_json 에 보존한다.
+    # CollectedData 에 result 컬럼이 없어 채점이 verdict 를 재유도하면서 count 기반
+    # 부분충족이 미충족으로 강등되는 손실이 있었다 → score_single_item 이 _verdict 를 신뢰.
+    raw = item.get("raw_json")
+    verdict = item.get("result")
+    if verdict:
+        raw = {**raw, "_verdict": verdict} if isinstance(raw, dict) else {"_verdict": verdict}
     fields = dict(
         tool=item.get("tool") or "unknown",
         metric_key=item.get("metric_key") or "",
         metric_value=item.get("metric_value"),
         threshold=item.get("threshold"),
-        raw_json=item.get("raw_json"),
+        raw_json=raw,
         error=item.get("error"),
     )
     if existing:
@@ -2440,25 +2447,27 @@ def _run_collectors(session_id: int, tools: list[str]):
             except Exception:
                 pass
 
-        if not results:
-            return
-
-        db = SessionLocal()
-        try:
-            for item in results:
-                item_id_str = item.get("item_id")
-                if not item_id_str:
-                    continue
-                checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
-                if not checklist:
-                    continue
-                _upsert_collected(db, session_id, checklist.check_id, item)
-            db.commit()
-        except Exception as exc:
-            db.rollback()
-            logger.error("[collector] DB write failed: %s", exc)
-        finally:
-            db.close()
+        # DEMO_DELAY_MS>0 경로는 _persist_one_result 로 이미 단건 저장돼 results 가 비어
+        # 있다. 과거엔 여기서 `if not results: return` 했으나, 그러면 아래 채점
+        # (_trigger_scoring)을 건너뛰어 status 가 영구히 "진행 중"에 멈추는 버그였다.
+        # → 배치 저장만 조건부로 하고, 함수는 항상 채점까지 진행한다.
+        if results:
+            db = SessionLocal()
+            try:
+                for item in results:
+                    item_id_str = item.get("item_id")
+                    if not item_id_str:
+                        continue
+                    checklist = db.query(Checklist).filter(Checklist.item_id == item_id_str).first()
+                    if not checklist:
+                        continue
+                    _upsert_collected(db, session_id, checklist.check_id, item)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                logger.error("[collector] DB write failed: %s", exc)
+            finally:
+                db.close()
 
     # live 모드 collector 가 끝나면 즉시 채점 트리거 (demo 모드와 동일한 흐름).
     # 이전: 사용자가 InProgress 에서 "완료" 누를 때 /finalize 가 호출되었으나, 다중 매핑으로
