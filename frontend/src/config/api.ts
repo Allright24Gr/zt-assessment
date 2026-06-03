@@ -513,9 +513,9 @@ export async function downloadSessionManualTemplate(sessionId: number | string):
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
-export function finalizeAssessment(sessionId: number | string) {
+export function finalizeAssessment(sessionId: number | string, force = false) {
   return apiFetch<{ status: string; session_id: number }>(
-    `/api/assessment/finalize/${sessionId}`,
+    `/api/assessment/finalize/${sessionId}${force ? "?force=true" : ""}`,
     { method: "POST" },
   );
 }

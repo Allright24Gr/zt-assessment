@@ -11,6 +11,7 @@ import {
 import { PILLARS } from "../data/constants";
 import {
   getAssessmentStatus,
+  finalizeAssessment,
   type AssessmentStatusResponse,
 } from "../../config/api";
 import { pillarMatchesKey } from "../lib/pillar";
@@ -207,6 +208,8 @@ export function InProgress() {
   const [mountedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
   const collectionDone = status?.collection_done ?? false;
+  // 채점(scoring) 완료 = status "완료". 진행률 100%·다음 단계는 이 기준으로만 허용.
+  const scoringDone = status?.status === "완료";
 
   // 250ms 진행률 tick — 한 번만 setInterval 등록하고, 정지 조건은 ref 로 점검.
   // 의존성 배열에 now 를 두면 매 tick 마다 interval 이 재생성되어 자원 낭비.
@@ -241,9 +244,10 @@ export function InProgress() {
 
   const smoothCap = Math.min(99, Math.floor((elapsedMs / estimatedTotalMs) * 100));
   // 실제로 backend가 완료(realProgress===100 && collection_done)이고 시연시간도 다 지나야 100
-  const progress = collectionDone && elapsedMs >= SMOOTH_TOTAL_MS
+  // 채점(status=완료)이 끝나야만 100%. 수집만 끝나고 채점 전이면 최대 99%에서 대기.
+  const progress = scoringDone && elapsedMs >= SMOOTH_TOTAL_MS
     ? 100
-    : Math.min(realProgress, smoothCap);
+    : Math.min(realProgress, smoothCap, 99);
 
   // 예상 남은 시간 (mm:ss) — 동적 추정 totalMs 기준
   const remainingMs = progress >= 100
@@ -320,11 +324,19 @@ export function InProgress() {
   // 백엔드 폴링 (즉시 + 3초 간격)
   useEffect(() => {
     if (!sid) return;
+    let finalizeTried = false;
     const check = () => {
       getAssessmentStatus(sid)
         .then((s) => {
           setStatus(s);
-          if (s.collection_done && pollRef.current) {
+          // 수집은 끝났는데 채점(완료)이 아직이면 finalize 를 강제 호출해 채점을 보장한다.
+          // (라이브 수집이 중간에 끊겨 자동 채점이 안 돈 경우 '진행 중'에 영구히 멈추는 것 방지)
+          if (s.collection_done && s.status !== "완료" && !finalizeTried) {
+            finalizeTried = true;
+            finalizeAssessment(sid, true).catch(() => {});
+          }
+          // 채점(status=완료)까지 폴링을 유지한다. 수집만 끝났다고 멈추지 않는다.
+          if (s.status === "완료" && pollRef.current) {
             clearInterval(pollRef.current);
             pollRef.current = null;
           }
@@ -669,8 +681,19 @@ export function InProgress() {
         </div>
       </div>
 
-      {/* 자동 진단 완료 → 다음 단계(AssessmentNext)로. finalize·수동 양식은 거기서 처리. */}
-      {collectionDone && progress >= 100 && (
+      {/* 수집은 끝났으나 채점 전 — 채점 끝날 때까지 다음 단계로 못 넘어감 */}
+      {collectionDone && !scoringDone && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
+          <div className="w-9 h-9 mx-auto mb-3 rounded-full border-2 border-blue-200 border-t-blue-500 animate-spin" />
+          <p className="font-semibold text-gray-700">채점 중…</p>
+          <p className="text-sm text-gray-500 mt-1">
+            수집이 끝나 결과를 채점하고 있습니다. 완료되면 다음 단계 버튼이 나타납니다.
+          </p>
+        </div>
+      )}
+
+      {/* 채점(scoring)까지 완료된 경우에만 다음 단계(AssessmentNext)로 이동 허용 */}
+      {scoringDone && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-6 text-center">
           <CheckCircle size={40} className="mx-auto text-green-500 mb-3" />
           <p className="font-semibold text-gray-700">자동 진단 완료</p>
