@@ -1247,12 +1247,19 @@ def _upsert_collected(db: Session, session_id: int, check_id: int, item: dict):
         CollectedData.session_id == session_id,
         CollectedData.check_id == check_id,
     ).first()
+    # collector 가 매긴 verdict(충족/부분충족/미충족/평가불가)를 raw_json 에 보존한다.
+    # CollectedData 에 result 컬럼이 없어 채점이 verdict 를 재유도하면서 count 기반
+    # 부분충족이 미충족으로 강등되는 손실이 있었다 → score_single_item 이 _verdict 를 신뢰.
+    raw = item.get("raw_json")
+    verdict = item.get("result")
+    if verdict:
+        raw = {**raw, "_verdict": verdict} if isinstance(raw, dict) else {"_verdict": verdict}
     fields = dict(
         tool=item.get("tool") or "unknown",
         metric_key=item.get("metric_key") or "",
         metric_value=item.get("metric_value"),
         threshold=item.get("threshold"),
-        raw_json=item.get("raw_json"),
+        raw_json=raw,
         error=item.get("error"),
     )
     if existing:
