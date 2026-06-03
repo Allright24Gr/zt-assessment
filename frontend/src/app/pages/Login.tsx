@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { useNotifications } from "../context/NotificationContext";
-import { Shield, AlertCircle, X, Mail, KeyRound } from "lucide-react";
+import { Shield, AlertCircle, X, Mail, KeyRound, Check } from "lucide-react";
 import { requestPasswordReset, ApiError } from "../../config/api";
 
 type RecoveryMode = null | "id" | "password";
@@ -121,15 +121,67 @@ export function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
-      <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
-            <Shield className="text-blue-600" size={32} />
+    <div className="min-h-screen flex">
+      {/* 좌측 — 브랜드/소개 패널 (lg 이상에서 표시) */}
+      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 text-white flex-col justify-between p-12">
+        <div className="absolute -top-24 -right-24 w-96 h-96 bg-blue-400/20 rounded-full blur-3xl" />
+        <div className="absolute -bottom-20 -left-16 w-80 h-80 bg-indigo-400/20 rounded-full blur-3xl" />
+
+        <div className="relative flex items-center gap-3">
+          <div className="w-11 h-11 bg-white/15 rounded-xl flex items-center justify-center backdrop-blur-sm">
+            <Shield size={24} />
           </div>
-          <h1 className="text-3xl font-semibold text-gray-900 mb-2">Readyz-T</h1>
-          <p className="text-gray-600">Zero Trust 성숙도 진단 시스템</p>
+          <div>
+            <p className="text-lg font-semibold leading-tight">Readyz-T</p>
+            <p className="text-xs text-blue-200">Zero Trust 성숙도 진단 플랫폼</p>
+          </div>
         </div>
+
+        <div className="relative">
+          <h2 className="text-3xl font-bold leading-snug mb-3">
+            제로트러스트 성숙도를<br />설치 없이, 정량적으로
+          </h2>
+          <p className="text-blue-100/90 text-sm mb-8 max-w-md leading-relaxed">
+            고객 시스템에 무침해(원격 호출)로 6대 보안 영역의 성숙도를 자동·반자동 진단합니다.
+          </p>
+          <ul className="space-y-3 text-sm">
+            {[
+              "가이드라인 2.0 기반 6 Pillar × 4단계, 310개 항목",
+              "무침해 원격 진단 — agent/sidecar 설치 0",
+              "자동 8개 도구 265항목 + 수동 진단 폴백",
+              "평가 결과·감사 로그 무결성 + 증적 암호화",
+            ].map((t) => (
+              <li key={t} className="flex items-start gap-2.5">
+                <Check size={18} className="text-blue-300 mt-0.5 shrink-0" />
+                <span className="text-blue-50/95">{t}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="relative">
+          <div className="flex gap-8 mb-6">
+            {[["310", "진단 항목"], ["6", "보안 영역"], ["8", "연동 도구"]].map(([n, l]) => (
+              <div key={l}>
+                <p className="text-2xl font-bold">{n}</p>
+                <p className="text-xs text-blue-200">{l}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-blue-200/70">세종대학교 정보보호학과 캡스톤 2026</p>
+        </div>
+      </div>
+
+      {/* 우측 — 로그인 폼 */}
+      <div className="flex-1 flex items-center justify-center bg-white px-6 py-12">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
+              <Shield className="text-blue-600" size={32} />
+            </div>
+            <h1 className="text-3xl font-semibold text-gray-900 mb-2">Readyz-T</h1>
+            <p className="text-gray-600">Zero Trust 성숙도 진단 시스템</p>
+          </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
@@ -196,6 +248,7 @@ export function Login() {
               회원가입
             </Link>
           </p>
+        </div>
         </div>
       </div>
 
