@@ -541,6 +541,36 @@ def _analyze_auto_max_level(session_id: int, db: Session) -> dict[str, int]:
     return auto_max
 
 
+def _auto_judged_cells(session_id: int, db: Session) -> set[tuple[str, int]]:
+    """자동 진단이 *실제로 판정* 한 (prefix, maturity_num) 셀 집합.
+
+    "미수집 항목만" 정책: 자동이 이미 결과를 낸 셀(충족·부분충족·미충족)은 수동 양식에서
+    제외하고, 자동이 손대지 못한 빈칸만 남긴다. 단 result="평가불가" 는 *판정 못 함*
+    이므로 미수집으로 간주 → 집합에서 제외되어 수동 양식에 남는다.
+
+    반환: {("1.1.1", 1), ("1.2.1", 3), ...}
+      · 키 첫째: 카테고리 prefix (3-segment)
+      · 키 둘째: maturity 숫자 (1=기존 … 4=최적화)
+    """
+    rows = (
+        db.query(DiagnosisResult, Checklist)
+        .join(Checklist, DiagnosisResult.check_id == Checklist.check_id)
+        .filter(DiagnosisResult.session_id == session_id)
+        .all()
+    )
+    judged: set[tuple[str, int]] = set()
+    for dr, cl in rows:
+        if cl.diagnosis_type != "자동":
+            continue
+        if dr.result not in ("충족", "부분충족", "미충족"):
+            continue  # 평가불가 / None → 미수집 취급 (양식에 남김)
+        prefix = _category_prefix(cl.item_id or "")
+        mat_num = _maturity_num_from_item_id(cl.item_id or "")
+        if prefix and mat_num:
+            judged.add((prefix, mat_num))
+    return judged
+
+
 def _auto_result_distribution(session_id: int, db: Session) -> dict[str, dict]:
     """카테고리 prefix 별 자동 결과 분포 + 한국어 카테고리 이름 산출 (요약 시트용).
 
@@ -628,12 +658,13 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     # 카테고리별 자동 충족된 최고 단계 ≥ 행 단계인 행은 양식에서 제외한다.
     # ex) 1.1.1 카테고리에서 "향상(3)" 까지 자동 충족 → 1.1.1 의 기존/초기/향상 행 모두 제외.
     auto_max = _analyze_auto_max_level(session.session_id, db)
+    auto_judged = _auto_judged_cells(session.session_id, db)
     auto_dist = _auto_result_distribution(session.session_id, db)
 
-    # ── 양식 R2 안내문에 보수적 평가 안내 추가 ────────────────────────────────
+    # ── 양식 R2 안내문에 "미수집 항목만" 안내 추가 ──────────────────────────────
     notice_cell = ws_diag.cell(2, 1)
     base_notice = str(notice_cell.value or "")
-    extra_notice = " ※ 자동 진단에서 충족된 항목은 보수적 평가 원칙에 따라 양식에서 자동 제외되었습니다 (해당 카테고리 자동 결과 요약 시트 참고)."
+    extra_notice = " ※ 자동 진단이 이미 판정한 항목(충족·부분충족·미충족)은 양식에서 자동 제외되었고, 자동으로 평가하지 못한(평가불가·미수집) 항목만 남겼습니다 (자동 결과 요약 시트 참고)."
     if extra_notice not in base_notice:
         notice_cell.value = base_notice + extra_notice
 
@@ -658,8 +689,11 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
             logger.warning("[manual] web evidence collection failed: %s", exc)
             evidence = {"error": str(exc)}
 
-    # ── 자동 충족된 행 제거 (보수적 단계 평가) ────────────────────────────────
+    # ── 자동 판정된 행 제거 ("미수집 항목만" + 보수적 단계 평가) ────────────────
     # 역순 순회로 행 번호 안 꼬이게 처리. 데이터 행 (M### 시작) 만 검사 대상.
+    # 제거 조건:
+    #   (a) 보수적 평가 — 같은 카테고리에서 자동 충족된 최고 단계 ≥ 이 행 단계
+    #   (b) 미수집 정책 — 자동이 이 셀(prefix, 단계)을 직접 판정(충족/부분충족/미충족)
     removed_rows_info: list[tuple[str, str]] = []  # (prefix, maturity) — 로그/디버그용
     for r in range(ws_diag.max_row, 3, -1):
         mid = ws_diag.cell(r, 1).value
@@ -675,7 +709,7 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         if not prefix or not mat_num:
             continue
         category_max = auto_max.get(prefix, 0)
-        if category_max >= mat_num:
+        if category_max >= mat_num or (prefix, mat_num) in auto_judged:
             ws_diag.delete_rows(r, 1)
             removed_rows_info.append((prefix, maturity))
 
@@ -712,7 +746,7 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
     if not has_any_data:
         info_row = 4
         ic = ws_diag.cell(info_row, 1)
-        ic.value = "✓ 모든 자동 진단이 충족되어 수동 보완 항목이 없습니다. (자동 결과 요약 시트 참고)"
+        ic.value = "✓ 자동 진단이 모든 항목을 판정하여 수동 보완이 필요한 빈칸이 없습니다. (자동 결과 요약 시트 참고)"
         ic.font = Font(name="Arial", size=11, bold=True, color="FF0F766E")
         ic.fill = PatternFill("solid", fgColor="FFE7F5F2")
         ic.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -776,9 +810,13 @@ def _build_session_template_xlsx(session: DiagnosisSession, db: Session) -> byte
         key = (item_no_prefix, cl.maturity or "")
         if key in existing_keys:
             continue
-        # 자동에서 같은 카테고리의 상위(또는 동등) 단계가 충족되어 있으면 폴백도 생략.
+        # 미수집 정책 — 자동이 이미 판정한 셀이거나(충족/부분충족/미충족),
+        # 같은 카테고리 상위 단계가 자동 충족이면(보수적 평가) 폴백도 생략.
         mat_num = MATURITY_NUM.get(cl.maturity or "", 0)
-        if mat_num and auto_max.get(item_no_prefix, 0) >= mat_num:
+        if mat_num and (
+            auto_max.get(item_no_prefix, 0) >= mat_num
+            or (item_no_prefix, mat_num) in auto_judged
+        ):
             removed_rows_info.append((item_no_prefix, cl.maturity or ""))
             continue
         new_items.append((cl, item_no_prefix))
@@ -1073,7 +1111,7 @@ def _augment_instructions_sheet(wb: openpyxl.Workbook) -> None:
     if "instructions" not in wb.sheetnames:
         return
     ws_i = wb["instructions"]
-    marker = "자동 진단에서 충족된 항목은 보수적 평가 원칙"
+    marker = "자동 진단이 이미 판정한 항목"
     for r in range(1, ws_i.max_row + 1):
         for c in range(1, 5):
             v = ws_i.cell(r, c).value
@@ -1083,8 +1121,9 @@ def _augment_instructions_sheet(wb: openpyxl.Workbook) -> None:
     c1 = ws_i.cell(append_at, 1, "자동 처리")
     c1.font = Font(name="Arial", size=10, bold=True, color="FF0F766E")
     c2 = ws_i.cell(append_at, 2,
-        "자동 진단에서 충족된 항목은 보수적 평가 원칙(상위 충족 → 하위 자동 충족)에 따라 "
-        "양식에서 자동 제외되었습니다. 어떤 자동 결과로 어떤 단계가 빠졌는지는 "
+        "자동 진단이 이미 판정한 항목(충족·부분충족·미충족)과 보수적 평가(상위 충족 → 하위 "
+        "자동 충족) 대상은 양식에서 자동 제외되었습니다. 이 양식에는 자동으로 평가하지 못한 "
+        "항목(평가불가·미수집)만 남아 있습니다. 어떤 자동 결과로 어떤 단계가 빠졌는지는 "
         "'자동 결과 요약' 시트에서 확인할 수 있습니다."
     )
     c2.alignment = Alignment(wrap_text=True, vertical="top")
