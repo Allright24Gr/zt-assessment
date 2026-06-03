@@ -283,6 +283,23 @@ def collect_deployment_protection(item_id: str, maturity: str) -> CollectedResul
     return _result(item_id, maturity, MK, float(count), TH, verdict, detail)
 
 
+def collect_app_inventory(item_id: str, maturity: str) -> CollectedResult:
+    """5.4.2.1_1: 애플리케이션 인벤토리 — Vercel 배포 프로젝트(앱) 목록 ≥ 1 → 충족.
+
+    수동→자동 재분류: 배포된 프로젝트 목록 자체가 살아있는 앱 인벤토리.
+    """
+    MK, TH = "app_inventory_count", 1.0
+    data, err = _api_get("/v9/projects", params={"limit": 100})
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    projects = (data or {}).get("projects") or []
+    count = float(len(projects))
+    verdict = "충족" if count >= TH else "미충족"
+    return _result(item_id, maturity, MK, count, TH, verdict,
+                   {"project_count": len(projects),
+                    "names": [p.get("name") for p in projects][:20]})
+
+
 def collect_remote_access_protection(item_id: str, maturity: str) -> CollectedResult:
     """5.3.1.1_2: 원격 접속 — 배포 환경 접근 보호(SSO/비밀번호/Trusted IP) 정책 ≥ 1 → 충족."""
     MK, TH = "remote_access_policies", 1.0

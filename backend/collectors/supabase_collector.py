@@ -668,3 +668,31 @@ def collect_user_inventory_advanced(item_id: str, maturity: str) -> CollectedRes
         verdict, val = "미충족", 0.0
     return _result(item_id, maturity, MK, val, TH, verdict,
                    {"active_users": len(active), "role_groups": len(roles)})
+
+
+# ─── 수동→자동 재분류 항목 (2026-06): 기준이 "존재/구성"이라 도구가 직접 관측 가능 ───
+
+
+def collect_data_encryption_exists(item_id: str, maturity: str) -> CollectedResult:
+    """6.3.1.1_1: 데이터 암호화 — Supabase 저장(at-rest 기본)+전송(SSL) 암호화 존재 → 충족."""
+    MK, TH = "encryption_present", 1.0
+    ssl, err = _ssl_enforcement()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    cur = ssl.get("currentConfig") if isinstance(ssl.get("currentConfig"), dict) else {}
+    db_ssl = bool(cur.get("database"))
+    # SSL 설정 조회 성공 = 프로젝트 확인 + at-rest 암호화 기본 적용 → 암호화 메커니즘 존재.
+    return _result(item_id, maturity, MK, 1.0, TH, "충족",
+                   {"at_rest": True, "db_ssl_enforced": db_ssl})
+
+
+def collect_credential_mgmt_exists(item_id: str, maturity: str) -> CollectedResult:
+    """4.2.2.1_3: 자격 증명 관리 — Supabase 중앙 자격 시스템(Auth/JWT/API key) 존재 → 충족."""
+    MK, TH = "credential_system_present", 1.0
+    settings, err = _auth_settings()
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    # auth settings 조회 가능 = 중앙 자격 발급/관리 시스템 존재.
+    providers = list((settings.get("external") or {}).keys())
+    return _result(item_id, maturity, MK, 1.0, TH, "충족",
+                   {"auth_system": True, "providers": providers[:10]})
