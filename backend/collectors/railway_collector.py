@@ -253,3 +253,81 @@ def collect_restart_policy(item_id: str, maturity: str) -> CollectedResult:
     verdict = "충족" if ratio >= 0.5 else "미충족"
     return _result(item_id, maturity, MK, val, TH, verdict,
                    {"instances": len(edges), "with_restart": configured})
+
+
+# ─── 수동→자동 재분류 항목 (2026-06): 기준이 "존재/구성"이라 도구가 직접 관측 가능 ───
+
+
+def collect_micro_segmentation(item_id: str, maturity: str) -> CollectedResult:
+    """3.1.2.1_2: 마이크로 세그멘테이션 — Railway 서비스(격리된 네트워크 단위) ≥ 1 존재 → 충족.
+
+    수동→자동 재분류: 각 Railway 서비스는 독립 컨테이너/내부망 단위 = 워크로드 세그먼트.
+    """
+    MK, TH = "isolated_service_count", 1.0
+    proj = _get_project_id()
+    if not proj:
+        return _unavailable(item_id, maturity, MK, TH, "project_id 미설정")
+    q = """
+    query ProjectServices($id: String!) {
+      project(id: $id) {
+        services { edges { node { id name } } }
+      }
+    }
+    """
+    data, err = _graphql(q, {"id": proj})
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    edges = (((data or {}).get("project") or {}).get("services") or {}).get("edges") or []
+    count = float(len(edges))
+    verdict = "충족" if count >= TH else "미충족"
+    return _result(item_id, maturity, MK, count, TH, verdict, {"service_count": len(edges)})
+
+
+def collect_network_redundancy(item_id: str, maturity: str) -> CollectedResult:
+    """3.5.1.2_1: 네트워크 회복성 — 서비스 인스턴스 복제(numReplicas) 구성 → 충족(≥2), 단일 → 부분충족."""
+    MK, TH = "replica_count", 2.0
+    svc = _get_service_id()
+    if not svc:
+        return _unavailable(item_id, maturity, MK, TH, "service_id 미설정")
+    q = """
+    query ServiceReplicas($id: String!) {
+      service(id: $id) {
+        serviceInstances { edges { node { numReplicas } } }
+      }
+    }
+    """
+    data, err = _graphql(q, {"id": svc})
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    edges = (((data or {}).get("service") or {}).get("serviceInstances") or {}).get("edges") or []
+    if not edges:
+        return _result(item_id, maturity, MK, 0.0, TH, "미충족", {"instances": 0})
+    replicas = [(e.get("node") or {}).get("numReplicas") or 1 for e in edges]
+    max_rep = float(max(replicas)) if replicas else 1.0
+    verdict = "충족" if max_rep >= TH else "부분충족" if max_rep >= 1 else "미충족"
+    return _result(item_id, maturity, MK, max_rep, TH, verdict,
+                   {"instances": len(edges), "max_replicas": int(max_rep)})
+
+
+def collect_network_region(item_id: str, maturity: str) -> CollectedResult:
+    """3.5.1.2_2: 네트워크 회복성 — 서비스 배포 리전 구성됨 → 충족."""
+    MK, TH = "region_configured", 1.0
+    svc = _get_service_id()
+    if not svc:
+        return _unavailable(item_id, maturity, MK, TH, "service_id 미설정")
+    q = """
+    query ServiceRegion($id: String!) {
+      service(id: $id) {
+        serviceInstances { edges { node { region } } }
+      }
+    }
+    """
+    data, err = _graphql(q, {"id": svc})
+    if err:
+        return _unavailable(item_id, maturity, MK, TH, err)
+    edges = (((data or {}).get("service") or {}).get("serviceInstances") or {}).get("edges") or []
+    regions = sorted({(e.get("node") or {}).get("region") for e in edges
+                      if (e.get("node") or {}).get("region")})
+    count = float(len(regions))
+    verdict = "충족" if count >= TH else "미충족"
+    return _result(item_id, maturity, MK, count, TH, verdict, {"regions": regions})
