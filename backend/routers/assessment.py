@@ -798,6 +798,7 @@ def get_assessment_status(
 @router.post("/finalize/{session_id}")
 def finalize_assessment(
     session_id: int,
+    force: bool = False,   # True 면 수집 미완료 가드를 우회해 강제 채점(멈춘 세션 복구용)
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -817,7 +818,7 @@ def finalize_assessment(
     # CollectedData 의 (session_id, check_id) 가 UNIQUE 이므로 다중 매핑은 덮어쓰기 발생 →
     # mapping entry 합으로 expected 를 계산하면 영구히 collected < expected 가 되어 409 무한.
     tools = sorted(_selected_tools_set(session))
-    if tools:
+    if tools and not force:
         unique_iids: set[str] = set()
         for t in tools:
             try:
