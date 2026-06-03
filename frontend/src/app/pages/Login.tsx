@@ -157,7 +157,7 @@ export function Login() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex">
       {/* 좌측 절반 — '진단 시스템' 비주얼 중앙 정렬 (텍스트 없이 그래픽만) */}
       <div className="hidden lg:flex w-1/2 items-center justify-center p-8">
-        <div className="w-full max-w-[620px] flex flex-col items-center" style={{ transform: "translate(40px, -20px)" }}>
+        <div className="w-full max-w-[620px] flex flex-col items-center" style={{ transform: "translate(96px, -20px)" }}>
           <div className="relative w-full aspect-square">
           {/* 스캔 펄스 링 */}
           <div className="absolute rounded-full border border-blue-300/50 animate-ping" style={{ inset: "17%", animationDuration: "3s" }} />
@@ -206,9 +206,9 @@ export function Login() {
         </div>
         </div>
 
-        {/* 우측 절반 — 로그인 카드 중앙 정렬 */}
+        {/* 우측 절반 — 로그인 카드 중앙 정렬 (좌측 비주얼과 간격 좁히려 약간 좌측으로) */}
         <div className="flex-1 flex items-center justify-center p-6">
-          <div className="w-full max-w-md">
+          <div className="w-full max-w-md" style={{ transform: "translateX(-56px)" }}>
           <div className="bg-white rounded-2xl shadow-xl p-8">
             <div className="text-center mb-8">
               <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
