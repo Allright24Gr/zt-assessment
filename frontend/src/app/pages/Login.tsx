@@ -18,14 +18,26 @@ function radarPoints(ratio: number | number[]): string {
   }).join(" ");
 }
 const RADAR_CURRENT = [0.78, 0.7, 0.62, 0.72, 0.68, 0.6];
+// 좌측 비주얼 박스 크기 + 아이콘 배지 좌표(박스 중심 기준 자동 계산 → 크기 바꿔도 정렬 유지)
+const VIS_SIZE = 460;
+const ICON_RING = 160;
+const ICON_BADGE = 48;
+function floatPos(deg: number) {
+  const a = (deg * Math.PI) / 180;
+  const c = VIS_SIZE / 2;
+  return {
+    left: c + ICON_RING * Math.cos(a) - ICON_BADGE / 2,
+    top: c + ICON_RING * Math.sin(a) - ICON_BADGE / 2,
+  };
+}
 // 레이더 6 꼭짓점 둘레에 떠있는 보안 도메인 아이콘 (라벨 없음)
 const FLOAT_ICONS = [
-  { Icon: Fingerprint, top: 2, left: 168 },
-  { Icon: Laptop, top: 84, left: 311 },
-  { Icon: Network, top: 250, left: 311 },
-  { Icon: Server, top: 333, left: 168 },
-  { Icon: Boxes, top: 250, left: 25 },
-  { Icon: Database, top: 84, left: 25 },
+  { Icon: Fingerprint, ...floatPos(-90) },
+  { Icon: Laptop, ...floatPos(-30) },
+  { Icon: Network, ...floatPos(30) },
+  { Icon: Server, ...floatPos(90) },
+  { Icon: Boxes, ...floatPos(150) },
+  { Icon: Database, ...floatPos(210) },
 ];
 
 type RecoveryMode = null | "id" | "password";
@@ -144,17 +156,16 @@ export function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center p-6">
-      <div className="w-full max-w-5xl flex items-center justify-center lg:justify-between gap-12">
-        {/* 좌측 — '진단 시스템' 비주얼 (텍스트 없이 그래픽만): 성숙도 레이더 + 보안 아이콘 + 스캔 펄스 */}
-        <div className="hidden lg:flex flex-1 items-center justify-center">
-          <div className="relative" style={{ width: 400, height: 400 }}>
-            {/* 스캔 펄스 링 */}
-            <div className="absolute rounded-full border border-blue-300/50 animate-ping" style={{ inset: 70, animationDuration: "3s" }} />
-            <div className="absolute rounded-full bg-blue-200/25 blur-md" style={{ inset: 110 }} />
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex">
+      {/* 좌측 절반 — '진단 시스템' 비주얼 중앙 정렬 (텍스트 없이 그래픽만) */}
+      <div className="hidden lg:flex w-1/2 items-center justify-center p-6">
+        <div className="relative" style={{ width: VIS_SIZE, height: VIS_SIZE }}>
+          {/* 스캔 펄스 링 */}
+          <div className="absolute rounded-full border border-blue-300/50 animate-ping" style={{ inset: "17%", animationDuration: "3s" }} />
+          <div className="absolute rounded-full bg-blue-200/25 blur-md" style={{ inset: "27%" }} />
 
             {/* 성숙도 레이더 차트 */}
-            <svg viewBox="0 0 300 300" className="absolute drop-shadow-sm" style={{ inset: 30, width: 340, height: 340 }}>
+            <svg viewBox="0 0 300 300" className="absolute drop-shadow-sm" style={{ left: "14%", top: "14%", width: "72%", height: "72%" }}>
               {[1, 0.66, 0.33].map((g) => (
                 <polygon key={g} points={radarPoints(g)} fill="none" stroke="#bfdbfe" strokeWidth="1" />
               ))}
@@ -183,16 +194,17 @@ export function Login() {
             {/* 떠있는 보안 도메인 아이콘 (라벨 없음) */}
             {FLOAT_ICONS.map(({ Icon, top, left }, i) => (
               <div key={i}
-                className="absolute w-12 h-12 rounded-2xl bg-white shadow-lg border border-blue-50 flex items-center justify-center"
-                style={{ top, left }}>
+                className="absolute rounded-2xl bg-white shadow-lg border border-blue-50 flex items-center justify-center"
+                style={{ top, left, width: ICON_BADGE, height: ICON_BADGE }}>
                 <Icon className="text-blue-600" size={22} />
               </div>
             ))}
           </div>
         </div>
 
-        {/* 우측 — 로그인 카드 (배경 위에 떠있는 형태 유지) */}
-        <div className="w-full max-w-md">
+        {/* 우측 절반 — 로그인 카드 중앙 정렬 */}
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="w-full max-w-md">
           <div className="bg-white rounded-2xl shadow-xl p-8">
             <div className="text-center mb-8">
               <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
