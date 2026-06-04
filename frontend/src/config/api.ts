@@ -39,8 +39,11 @@ export const API_ENDPOINTS = {
   MANUAL_SUBMIT: "/api/manual/submit",
   MANUAL_UPLOAD: "/api/manual/upload",
   MANUAL_UPLOAD_EVIDENCE: "/api/manual/upload-evidence",
-  CHECKLIST: "/api/checklist",
-  IMPROVEMENT: "/api/improvement",
+  // 끝 슬래시 필수 — FastAPI 라우트가 /api/<x>/ 라 슬래시 없으면 307 redirect.
+  // 교차 출처(:8080→:8000) fetch + 커스텀 헤더(X-Login-Id)면 일부 브라우저가 preflight 후
+  // redirect 를 막아 호출이 throw → 결과 화면이 '백엔드 연결 실패' 로 오인됨.
+  CHECKLIST: "/api/checklist/",
+  IMPROVEMENT: "/api/improvement/",
   REPORT_GENERATE: "/api/report/generate",
   AUTH_REGISTER: "/api/auth/register",
   AUTH_LOGIN: "/api/auth/login",
