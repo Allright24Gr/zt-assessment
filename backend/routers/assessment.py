@@ -504,12 +504,28 @@ def run_assessment(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Organization upsert + 메타데이터 갱신
-    org = db.query(Organization).filter(Organization.name == req.org_name).first()
-    if not org:
-        org = Organization(name=req.org_name)
-        db.add(org)
-        db.flush()
+    # Organization 결정.
+    # - 비-admin: 입력 org_name 과 무관하게 **항상 본인 소속 조직**으로 귀속한다.
+    #   비-admin 은 애초에 타 조직 진단 권한이 없으므로(이전엔 불일치 시 403), 폼에 다른
+    #   기관명을 적었더라도 403 으로 막는 대신 본인 조직으로 진행 — 데모 마찰 제거 + 안전.
+    #   (사용자가 '백엔드 연결 실패'로 오인하던 403 의 근본 원인 제거)
+    # - admin: 입력한 org_name 으로 조직 upsert (예시/대상 조직 생성 허용).
+    if current_user.role == "admin":
+        org = db.query(Organization).filter(Organization.name == req.org_name).first()
+        if not org:
+            org = Organization(name=req.org_name)
+            db.add(org)
+            db.flush()
+    else:
+        org = db.query(Organization).filter(
+            Organization.org_id == current_user.org_id
+        ).first()
+        if not org:  # 방어적 — 정상 흐름에선 모든 user 가 소속 조직을 가짐
+            org = Organization(name=req.org_name or f"{current_user.login_id}_개인")
+            db.add(org)
+            db.flush()
+
+    # 메타데이터 갱신 (대상 조직에 반영)
     if req.org_type:   org.industry = req.org_type
     if req.infra_type: org.cloud_type = req.infra_type
     if req.employees is not None:
@@ -519,14 +535,7 @@ def run_assessment(
             "중소기업"
         )
 
-    # 진단 실행 주체는 X-Login-Id 로 식별된 current_user.
-    # 과거에는 body.email 로 User upsert를 했지만 이제는 본인 또는 admin 만 실행 가능.
-    # body.manager/email 은 표시용 메타데이터로만 사용 (User 행 변경 없음).
-    if current_user.role != "admin" and current_user.org_id != org.org_id:
-        raise HTTPException(
-            status_code=403,
-            detail="현재 사용자 소속 조직 외의 조직으로 진단을 실행할 수 없습니다.",
-        )
+    # 진단 실행 주체는 인증된 current_user. body.manager/email 은 표시용 메타데이터.
     user = current_user
     # admin이 다른 조직에 대해 진단을 트리거할 때만 org 변경 허용.
     if current_user.role == "admin" and user.org_id != org.org_id:
