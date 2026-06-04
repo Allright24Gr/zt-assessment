@@ -242,6 +242,15 @@ export async function apiFetch<T>(
     if (newTokens) {
       return apiFetch<T>(endpoint, { ...options, _retry: true });
     }
+    // refresh 실패 = access/refresh 모두 만료·무효(예: 서버 시크릿 변경, TTL 초과).
+    // 백엔드는 잘못된 Bearer 에 401 후 X-Login-Id 폴백을 안 하므로(설계),
+    // 스테일 토큰을 폐기하고 X-Login-Id 만으로 1회 재시도해 자동 복구한다.
+    // (이게 없으면 만료 토큰이 남은 브라우저가 모든 보호 호출에서 401 → 화면이
+    //  mock 으로 떨어지고 '백엔드 연결 실패' 가 떴다)
+    if (_getLoginIdFromStorage()) {
+      _setTokensInStorage(null);
+      return apiFetch<T>(endpoint, { ...options, _retry: true });
+    }
   }
 
   const payload = await parseResponse(response);
