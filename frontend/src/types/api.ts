@@ -8,6 +8,7 @@ export interface PillarScore {
   pillar: string;
   score: number;
   level: MaturityLevel | string;
+  unmeasurable?: boolean;
   pass_cnt: number;
   fail_cnt: number;
   na_cnt: number;
@@ -73,6 +74,7 @@ export interface AssessmentSession {
   extra?: Record<string, unknown>;
   checklist_details?: ChecklistItemResult[];
   is_demo?: boolean;
+  scan_mode?: "demo" | "live" | string;
 }
 
 export interface ScanTargets {

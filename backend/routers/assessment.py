@@ -44,6 +44,34 @@ router = APIRouter()
 # seed_demo가 만드는 데모 조직의 정확한 이름. 결과/이력 응답에 is_demo 플래그로 노출.
 DEMO_ORG_NAME = "데모_조직"
 
+_MATURITY_LEVELS = {"기존", "초기", "향상", "최적화", "평가불가"}
+
+
+def _pillar_level_of(m) -> str:
+    """MaturityScore 행에 저장된 level 을 신뢰 (커버리지 가드로 제외된 pillar 는
+    '평가불가'/score=0). score 에서 재유도하면 '평가불가'→'기존' 으로 역전되므로 금지."""
+    lv = getattr(m, "level", None)
+    if lv in _MATURITY_LEVELS:
+        return lv
+    return determine_maturity_level(getattr(m, "score", 0.0) or 0.0)
+
+
+def _session_scan_mode(extra) -> str:
+    """세션 extra 에서 scan_mode('demo'|'live') 추출. 미지정/구데이터는 ''."""
+    if isinstance(extra, dict):
+        m = str(extra.get("scan_mode") or "").strip().lower()
+        if m in ("demo", "live"):
+            return m
+    return ""
+
+
+def _is_demo_session(org, extra) -> bool:
+    """데모 세션 판정 — 데모 조직이거나 scan_mode=='demo'. (이전엔 조직명에만 의존해
+    user1 데모(세종대) 세션이 실스캔과 구분되지 않던 문제 정정)"""
+    if org is not None and getattr(org, "name", None) == DEMO_ORG_NAME:
+        return True
+    return _session_scan_mode(extra) == "demo"
+
 # 학생 프로젝트 — 라이선스 비용 없이 실제 검증 가능한 4개 오픈소스만 사용.
 # IdP=Keycloak / SIEM=Wazuh / 외부 스캔=Nmap, Trivy.
 ALL_TOOLS = (
@@ -929,10 +957,12 @@ def get_result(
     pillar_scores = []
     for m in maturity_rows:
         t = targets.get(m.pillar)
+        lv = _pillar_level_of(m)
         pillar_scores.append({
             "pillar": m.pillar,
             "score":  round(m.score, 4),
-            "level":  determine_maturity_level(m.score),
+            "level":  lv,
+            "unmeasurable": lv == "평가불가",
             "pass_cnt": m.pass_cnt,
             "fail_cnt": m.fail_cnt,
             "na_cnt":   m.na_cnt,
@@ -1076,11 +1106,15 @@ def get_result(
             "score":   session.total_score,
             "errors":  _build_session_errors(db, session_id),
             "extra":   _mask_creds(session.extra or {}),
-            "is_demo": bool(org and org.name == DEMO_ORG_NAME),
+            "is_demo": _is_demo_session(org, session.extra),
+            "scan_mode": _session_scan_mode(session.extra),
             # MAR-017 소요시간/SLA
             **_session_duration(db, session),
         },
         "pillar_scores":     pillar_scores,
+        # 프론트가 '측정 불가(회색 카드)' 를 판정할 수 있도록 pillar 별 평가불가 건수 노출.
+        # (이게 누락돼 평가불가 pillar 가 '기존'으로 잘못 표시되던 문제 정정)
+        "pillar_unevaluable": {m.pillar: (m.na_cnt or 0) for m in maturity_rows},
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
         # SFR-EVAL-004 목표 대비
@@ -1215,7 +1249,8 @@ def get_history(
             "status":  s.status,
             "score":   s.total_score,
             "errors":  _build_session_errors(db, s.session_id) if s.status == "완료" else [],
-            "is_demo": bool(org_obj and org_obj.name == DEMO_ORG_NAME),
+            "is_demo": _is_demo_session(org_obj, s.extra),
+            "scan_mode": _session_scan_mode(s.extra),
             "duration_seconds": (
                 round((s.completed_at - s.started_at).total_seconds(), 1)
                 if s.started_at and s.completed_at else None
@@ -2647,17 +2682,18 @@ def _build_result_payload(db: Session, session: DiagnosisSession) -> dict:
     maturity_rows = db.query(MaturityScore).filter(
         MaturityScore.session_id == session_id
     ).all()
-    pillar_scores = [
-        {
+    pillar_scores = []
+    for m in maturity_rows:
+        lv = _pillar_level_of(m)
+        pillar_scores.append({
             "pillar":   m.pillar,
             "score":    round(m.score, 4),
-            "level":    determine_maturity_level(m.score),
+            "level":    lv,
+            "unmeasurable": lv == "평가불가",
             "pass_cnt": m.pass_cnt,
             "fail_cnt": m.fail_cnt,
             "na_cnt":   m.na_cnt,
-        }
-        for m in maturity_rows
-    ]
+        })
 
     results = (
         db.query(DiagnosisResult, Checklist)
@@ -2700,9 +2736,11 @@ def _build_result_payload(db: Session, session: DiagnosisSession) -> dict:
             "score":   session.total_score,
             "errors":  _build_session_errors(db, session_id),
             "extra":   _mask_creds(session.extra or {}),
-            "is_demo": bool(org and org.name == DEMO_ORG_NAME),
+            "is_demo": _is_demo_session(org, session.extra),
+            "scan_mode": _session_scan_mode(session.extra),
         },
         "pillar_scores":     pillar_scores,
+        "pillar_unevaluable": {m.pillar: (m.na_cnt or 0) for m in maturity_rows},
         "overall_score":     session.total_score or 0.0,
         "overall_level":     session.level or determine_maturity_level(session.total_score or 0.0),
         "checklist_results": checklist_results,

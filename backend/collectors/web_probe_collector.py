@@ -407,6 +407,9 @@ def collect_dns_dmarc_policy() -> CollectedResult:
                     {"shared_platform": dom})
     dns = _cached_dns(dom)
     dmarc = (dns.get("dmarc") or {})
+    if dmarc.get("query_error"):
+        return _err(item_id, maturity, MK, TH,
+                    f"DNS(DMARC) 조회 실패 — 측정 불가: {dmarc['query_error']}", dns)
     verdict = dmarc.get("verdict", "fail")
     if verdict == "pass":
         value, result = 1.0, "충족"
@@ -435,6 +438,9 @@ def collect_dns_spf_coverage() -> CollectedResult:
                     {"shared_platform": dom})
     dns = _cached_dns(dom)
     spf_obj = (dns.get("spf") or {})
+    if spf_obj.get("query_error"):
+        return _err(item_id, maturity, MK, TH,
+                    f"DNS(SPF) 조회 실패 — 측정 불가: {spf_obj['query_error']}", dns)
     verdict = spf_obj.get("verdict", "fail")
     spf_val = spf_obj.get("value", "")
     if verdict == "pass" and " -all" in spf_val:
@@ -464,6 +470,9 @@ def collect_dns_dmarc_reporting() -> CollectedResult:
                     {"shared_platform": dom})
     dns = _cached_dns(dom)
     dmarc = (dns.get("dmarc") or {})
+    if dmarc.get("query_error"):
+        return _err(item_id, maturity, MK, TH,
+                    f"DNS(DMARC 리포팅) 조회 실패 — 측정 불가: {dmarc['query_error']}", dns)
     dmarc_val = dmarc.get("value", "")
     has_rua = "rua=" in dmarc_val.lower()
     if has_rua:

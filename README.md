@@ -65,11 +65,13 @@
 ### 🔍 진단 엔진
 
 - **6 Pillar × 4단계 = 310개 체크리스트** 자동 평가
-- **자동 수집 도구 8종 (265 자동 항목)** — 사용자 환경(Step 0 프로파일링)에 따라 선택
-  - 🔐 **Keycloak** (65) · **Supabase** (14) — IdP / 인증 / MFA / 권한 관리
+- **자동 수집 도구 8종 (246 자동 항목)** — 사용자 환경(Step 0 프로파일링)에 따라 선택
+  - 🔐 **Keycloak** (65) · **Supabase** (26) — IdP / 인증 / MFA / 권한 관리
   - 🛡️ **Wazuh** (122) — SIEM / HIDS / 침입 탐지
   - 🌐 **Nmap** (14) · **Trivy** (15) · **web_probe** (24) — 외부 포트·TLS·이미지·SBOM·OIDC/DNS/CT log 스캔
-  - 🚀 **Vercel** (6) · **Railway** (5) — SaaS 배포 플랫폼 보안 설정 점검
+  - 🚀 **Vercel** (10) · **Railway** (8) — SaaS 배포 플랫폼 보안 설정 점검
+  - 📐 도구 분류: **4 오픈소스**(Keycloak/Wazuh/Nmap/Trivy) + **도구무관 외부 probe**(web_probe) + **SaaS 관리 API**(Supabase/Vercel/Railway). "라이선스 0" 원칙 유지 — web_probe 는 공개 probe, SaaS 3종은 고객 자신의 API 토큰
+  - 🔗 도구별 매핑 합 284 (37개 항목이 복수 도구에 매핑) → **unique 246 항목**, xlsx 자동 246항목과 1:1 정합(누락 0 / 잘못 0 / 충돌 0)
 - **도구 무관 평가** — 가이드라인은 통제 요건 기준. 미지원 영역은 **수동 진단으로 자동 폴백**
 - **보너스 자동 점검** — HTTP 보안 헤더, DNS (SPF/DMARC/CAA), TLS 인증서, `security.txt`, GitHub repo 보안 파일
 - **수동 진단 폴백** — 환경에 맞춰 자동 미지원 항목을 Excel 양식으로 다운로드·작성·업로드
@@ -380,9 +382,9 @@ zt-assessment/
 │   │   ├── admin.py             체크리스트 관리·감사조회·메트릭·동적설정·백업
 │   │   ├── settings.py          조직 목표 성숙도·체크리스트 커스터마이징
 │   │   └── validators.py        target·URL·자격 입력 검증(메타문자 차단)
-│   ├── collectors/              자동 수집기 10종 (265 자동 항목)
+│   ├── collectors/              자동 수집기 10종 (246 자동 항목)
 │   │   ├── keycloak(65)·wazuh(122)·nmap(14)·trivy(15)
-│   │   ├── web_probe(24)·supabase(14)·vercel(6)·railway(5)
+│   │   ├── web_probe(24)·supabase(26)·vercel(10)·railway(8)
 │   │   └── http_headers·web_evidence (보안헤더·DNS·TLS·GitHub repo)
 │   ├── services/                crypto·integrity·cache·config_store·metrics·
 │   │                            email_sender·ocsf_transformer·standards_mapping 등
@@ -506,7 +508,7 @@ docker exec zt-assessment-zt-backend-1 python /app/scripts/seed_improvement.py
 ### 검증
 
 ```bash
-# xlsx ↔ 매핑 정합성 (자동 진단 212 항목 1:1)
+# xlsx ↔ 매핑 정합성 (자동 진단 246 항목 1:1)
 docker exec zt-assessment-zt-backend-1 python /app/scripts/validate_checklist_mapping.py
 ```
 
@@ -559,7 +561,7 @@ git merge semi-final --ff-only
    ```
 4. **세션 자격 비밀번호 절대 DB·로그·응답에 노출 금지**
 5. **모든 입력은 `validators.py` 통과** — shell metachar 차단
-6. **보호 엔드포인트는 `X-Login-Id` 의존성 + 세션·조직 권한 검증**
+6. **보호 엔드포인트는 JWT(Bearer) 인증 + 세션·조직 권한 검증** (`X-Login-Id` 레거시 폴백 공존)
 
 ### 자체 검증
 
@@ -597,7 +599,8 @@ docker exec zt-assessment-zt-backend-1 python /app/scripts/validate_checklist_ma
 
 ### 권한
 
-- 모든 보호 엔드포인트 `X-Login-Id` 헤더 검증
+- **JWT 인증 기본** — 로그인 시 Bearer access(8h) + refresh(30d) 발급, 보호 엔드포인트는 토큰 검증
+- **레거시 폴백** — JWT 없으면 `X-Login-Id` 헤더로 대체 인증 공존 (비밀번호 검증 없는 잔존 위험 → 운영 전 제거 권장)
 - frontend apiFetch 자동 첨부 (register/login 제외)
 - 세션 접근 — 본인 / 자기 조직 / admin
 - `/history` — 일반 user 는 자기 조직 강제 필터

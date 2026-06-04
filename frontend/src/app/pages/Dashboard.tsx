@@ -64,6 +64,8 @@ export function Dashboard() {
   const [seedPwBannerDismissed, setSeedPwBannerDismissed] = useState(false);
 
   const [pillarScores, setPillarScores] = useState(DEFAULT_PILLAR_SCORES);
+  // backend가 보낸 pillar별 level — '평가불가'면 측정 불가로 표시(점수 재유도 금지).
+  const [pillarLevels, setPillarLevels] = useState<(string | null)[]>([]);
   const [avgScore, setAvgScore] = useState(
     Number((DEFAULT_PILLAR_SCORES.reduce((a, b) => a + b, 0) / DEFAULT_PILLAR_SCORES.length).toFixed(2))
   );
@@ -90,6 +92,11 @@ export function Dashboard() {
               return match ? match.score : DEFAULT_PILLAR_SCORES[i];
             });
             setPillarScores(scores);
+            // backend level(권위값) 보관 — '평가불가' 보존.
+            setPillarLevels(PILLARS.map((p) => {
+              const match = summary.pillar_scores.find((ps) => pillarMatchesKey(ps.pillar, p.key));
+              return match ? (match.level ?? null) : null;
+            }));
             setAvgScore(summary.overall_score);
           })
           .catch((err) => console.warn("[dashboard] score summary:", err));
@@ -404,12 +411,29 @@ export function Dashboard() {
             const score = pillarScores[i];
             const colors = getScoreColor(score);
             const pct = (score / 4) * 100;
+            // backend level 이 '평가불가'면 측정 불가 — 점수/등급 대신 회색 '측정 불가' 표시.
+            const isUnmeasurable = pillarLevels[i] === "평가불가";
+            if (isUnmeasurable) {
+              return (
+                <div key={p.key}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm text-gray-500">{p.label}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">측정 불가</span>
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-2">
+                    <div className="bg-gray-300 h-2 rounded-full" style={{ width: "100%" }} />
+                  </div>
+                </div>
+              );
+            }
+            // backend level 을 신뢰. 없을 때만 점수로 폴백.
+            const lvl = pillarLevels[i] ?? getMaturityLevel(score);
             return (
               <div key={p.key}>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm text-gray-700">{p.label}</span>
                   <div className="flex items-center gap-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${colors.badge}`}>{maturityLabel(getMaturityLevel(score))}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${colors.badge}`}>{maturityLabel(lvl)}</span>
                     <span className={`text-sm font-semibold ${colors.text}`}>{score.toFixed(2)}</span>
                   </div>
                 </div>
