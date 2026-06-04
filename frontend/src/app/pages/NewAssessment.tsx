@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { Building2, Upload, CheckCircle2, FileText, X, Info, Target, AlertTriangle, Shield, KeyRound, Activity, FlaskConical, Fingerprint, BookOpenCheck, Tag, Database as DatabaseIcon, Users as UsersIcon, GitCommit } from "lucide-react";
 import { toast } from "sonner";
 import { PILLARS } from "../data/constants";
-import { runAssessment } from "../../config/api";
+import { runAssessment, ApiError } from "../../config/api";
 import { useAuth } from "../context/AuthContext";
 import type {
   ScanTargets, KeycloakCreds, WazuhCreds,
@@ -408,7 +408,17 @@ export function NewAssessment() {
       }))
       .catch((err) => {
         console.warn("[new-assessment] runAssessment failed:", err);
-        toast.error("진단 시작 실패: 백엔드 연결 상태를 확인해주세요.");
+        // 실제 원인을 그대로 노출 — 권한/입력 오류를 '백엔드 연결'로 오인시키지 않는다.
+        if (err instanceof ApiError) {
+          const msg =
+            err.status === 403 ? "진단 권한이 없습니다. 본인 소속 조직으로만 진단할 수 있습니다." :
+            err.status === 401 ? "로그인이 만료되었습니다. 다시 로그인 후 시도해주세요." :
+            err.status === 400 ? `입력값 오류: ${err.message}` :
+            `진단 시작 실패 (HTTP ${err.status}): ${err.message}`;
+          toast.error(msg);
+        } else {
+          toast.error("진단 시작 실패: 백엔드에 연결할 수 없습니다. 서버 상태를 확인해주세요.");
+        }
       });
   };
 
