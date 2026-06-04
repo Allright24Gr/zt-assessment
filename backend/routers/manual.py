@@ -123,6 +123,23 @@ class ManualSubmitRequest(BaseModel):
     answers: List[ManualAnswer]
 
 
+def _rescore_after_manual(session_id: int, db: Session) -> None:
+    """수동 결과 반영 후 MaturityScore 재계산.
+
+    수동 업로드/제출은 CollectedData·DiagnosisResult 를 직접 채우지만, 이전엔 채점을
+    다시 돌리지 않아 MaturityScore(종합 카드·커버리지 가드가 읽는 값)가 자동 진단 시점에
+    멈춰 있었다. 그 결과 '세부 항목은 진단 완료인데 종합은 측정 불가' 로 보이는 불일치가
+    발생했다(수동으로 커버리지가 30%를 넘겨도 종합엔 반영 안 됨).
+    채점 실패가 업로드 응답 자체를 깨지 않도록 격리 — 실패 시 finalize 로 재시도 가능."""
+    try:
+        from routers.assessment import _trigger_scoring
+        _trigger_scoring(session_id, db)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "[manual] 재채점 실패 (session=%s) — finalize 로 재시도 필요", session_id, exc_info=True
+        )
+
+
 @router.post("/upload")
 async def manual_upload(
     session_id: int = Form(...),
@@ -270,6 +287,9 @@ async def manual_upload(
 
     db.commit()
 
+    # 수동 결과를 종합 점수에 즉시 반영 (자동+수동 합산으로 재채점).
+    _rescore_after_manual(session_id, db)
+
     # 업로드 결과 상세 (UI 가 토스트나 결과 요약 패널에 그대로 보여줄 수 있게).
     # processed_check_ids 기준으로 pillar/maturity/result 분포 산출.
     detail_rows = (
@@ -409,6 +429,9 @@ def manual_submit(
         saved += 1
 
     db.commit()
+
+    # 수동 결과를 종합 점수에 즉시 반영 (자동+수동 합산으로 재채점).
+    _rescore_after_manual(req.session_id, db)
 
     return {
         "status": "ok",
