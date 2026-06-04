@@ -344,9 +344,14 @@ export function History() {
                       <td className="py-3 px-4 font-medium">
                         <span className="inline-flex items-center gap-1.5">
                           {session.org}
-                          {session.is_demo && (
+                          {(session.is_demo || session.scan_mode === "demo") && (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
                               데모
+                            </span>
+                          )}
+                          {session.scan_mode === "live" && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              실 스캔
                             </span>
                           )}
                         </span>

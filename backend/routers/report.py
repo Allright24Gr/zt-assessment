@@ -75,6 +75,19 @@ def _first_step(steps) -> str:
 
 # ── 공통 데이터 빌더 ────────────────────────────────────────────────────────
 
+_MATURITY_LEVELS = {"기존", "초기", "향상", "최적화", "평가불가"}
+
+
+def _pillar_level(m) -> str:
+    """MaturityScore 행에 저장된 level 을 신뢰한다 (커버리지 가드로 제외된 pillar 는
+    level='평가불가'/score=0 으로 저장됨). score 에서 재유도하면 '평가불가' 가 '기존'
+    으로 의미가 역전되므로 절대 금지. 유효 enum 이 아닌 구 데이터만 점수로 폴백."""
+    lv = getattr(m, "level", None)
+    if lv in _MATURITY_LEVELS:
+        return lv
+    return determine_maturity_level(getattr(m, "score", 0.0) or 0.0)
+
+
 def _build_data(session_id: int, db: Session) -> dict:
     session = db.query(DiagnosisSession).filter(
         DiagnosisSession.session_id == session_id
@@ -88,17 +101,18 @@ def _build_data(session_id: int, db: Session) -> dict:
     maturity_rows = db.query(MaturityScore).filter(
         MaturityScore.session_id == session_id
     ).all()
-    pillar_scores = [
-        {
+    pillar_scores = []
+    for m in maturity_rows:
+        lv = _pillar_level(m)
+        pillar_scores.append({
             "pillar": m.pillar,
             "score": round(m.score or 0.0, 3),
-            "level": determine_maturity_level(m.score or 0.0),
+            "level": lv,
+            "unmeasurable": lv == "평가불가",
             "pass_cnt": m.pass_cnt or 0,
             "fail_cnt": m.fail_cnt or 0,
             "na_cnt": m.na_cnt or 0,
-        }
-        for m in maturity_rows
-    ]
+        })
 
     results = (
         db.query(DiagnosisResult, Checklist)
@@ -1079,8 +1093,10 @@ def _make_pdf(data: dict) -> bytes:
         BODY))
     story.append(Spacer(1, 0.2 * cm))
 
-    # 총평 자동 생성
-    sorted_pillars_asc = sorted(ps, key=lambda x: x["score"])
+    # 총평 자동 생성 — 평가불가(측정 불가) pillar 는 '취약 영역' 선정에서 제외한다.
+    # (score=0 이지만 '미흡'이 아니라 '측정 안 됨'. 포함하면 취약 필러로 오선정됨)
+    evaluable_ps = [p for p in ps if p.get("level") != "평가불가" and not p.get("unmeasurable")]
+    sorted_pillars_asc = sorted(evaluable_ps, key=lambda x: x["score"])
     weak3 = sorted_pillars_asc[:3]
     weak_names = " · ".join(_ko_pillar_short(p["pillar"]) for p in weak3[:2]) or "(데이터 없음)"
     auto_summary = (
@@ -1420,7 +1436,11 @@ def _make_pdf(data: dict) -> bytes:
     story.append(Spacer(1, 0.2 * cm))
 
     target = 3.0
-    sorted_gap = sorted(ps, key=lambda x: x["score"])
+    # 평가불가 pillar 는 갭 분석에서도 제외 (측정값이 없어 갭 산정 불가).
+    sorted_gap = sorted(
+        [p for p in ps if p.get("level") != "평가불가" and not p.get("unmeasurable")],
+        key=lambda x: x["score"],
+    )
     gap_rows = [["우선", "필러", "현재", "목표", "갭"]]
     for i, p in enumerate(sorted_gap, start=1):
         gap_rows.append([

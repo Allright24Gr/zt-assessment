@@ -401,6 +401,9 @@ export function Reporting() {
   const [improvements, setImprovements] = useState<Improvement[]>(mockImprovements);
   // B-3: pillar별 평가불가 카운트 (pillar key 영문 기준)
   const [pillarUnevaluable, setPillarUnevaluable] = useState<Record<string, number>>({});
+  // backend가 보낸 pillar별 성숙도 level(권위값). '평가불가'면 측정 불가로 표시한다.
+  // (score=0 에서 재유도하면 '평가불가'가 '기존'으로 뒤바뀌므로 backend level 을 신뢰)
+  const [pillarLevels, setPillarLevels] = useState<Record<string, string>>({});
   // B-3: backend가 보내는 신뢰도 (없으면 checklist에서 직접 계산)
   const [backendConfidence, setBackendConfidence] = useState<number | null>(null);
   const [backendEvaluableCount, setBackendEvaluableCount] = useState<number | null>(null);
@@ -446,6 +449,14 @@ export function Reporting() {
           return match ? match.score : 0;
         });
         setCurrentScores(scores);
+
+        // backend가 보낸 pillar별 level(권위값)을 보관 — '평가불가' 보존용.
+        const levelMap: Record<string, string> = {};
+        data.pillar_scores.forEach((ps) => {
+          const key = PILLAR_NAME_TO_KEY[ps.pillar] ?? ps.pillar;
+          if (ps.level) levelMap[key] = ps.level;
+        });
+        setPillarLevels(levelMap);
 
         setChecklistDetails(data.checklist_results.map(adaptChecklistResult));
 
@@ -587,15 +598,19 @@ export function Reporting() {
 
   const pillarScores = PILLARS.map((p, i) => {
     const unevalCount = pillarUnevaluable[p.key] ?? 0;
-    // backend가 보낸 pillar_unevaluable에 해당 pillar가 있고 currentScores가
-    // 0이면 (평가가능 항목 없음 = 측정 불가)로 간주
-    const isUnmeasurable = unevalCount > 0 && currentScores[i] === 0;
+    const backendLevel = pillarLevels[p.key];
+    // 측정 불가 판정: backend가 '평가불가'로 내려보낸 pillar 가 1차 기준(권위값).
+    // (커버리지 가드로 제외된 pillar 는 충족/미충족이 있어도 '평가불가'다 — na 건수만
+    //  보던 이전 방식은 충족만 있고 평가불가 0인 경우를 놓쳐 '기존'으로 오표시했다)
+    const isUnmeasurable =
+      backendLevel === "평가불가" || (unevalCount > 0 && currentScores[i] === 0);
     return {
       key: p.key,
       name: p.label,
       score: currentScores[i],
       target: TARGET_SCORES[i],
-      level: isUnmeasurable ? "평가불가" : getMaturityLevel(currentScores[i]),
+      // backend level 을 신뢰. 없을 때만 점수로 폴백 (구 응답 호환).
+      level: isUnmeasurable ? "평가불가" : (backendLevel ?? getMaturityLevel(currentScores[i])),
       gap: parseFloat((currentScores[i] - TARGET_SCORES[i]).toFixed(2)),
       unevaluable: unevalCount,
       unmeasurable: isUnmeasurable,
@@ -1434,7 +1449,7 @@ export function Reporting() {
                   <div
                     key={pillar.key}
                     className="bg-gray-50 rounded-xl border border-dashed border-gray-300 p-5"
-                    title="해당 필러는 평가불가 항목만 있어 점수를 측정할 수 없습니다."
+                    title="측정 가능한 항목이 부족하여(기준 미달) 점수를 산정하지 않았습니다. 자격 입력·수동 보완 시 측정됩니다."
                   >
                     <div className="flex items-center justify-between mb-3">
                       <h3 className="text-sm font-semibold text-gray-500">{pillar.name}</h3>
@@ -1447,8 +1462,8 @@ export function Reporting() {
                       <span className="text-gray-300 text-sm">/ 4.0</span>
                     </div>
                     <div className="rounded-lg bg-white border border-gray-200 p-2.5 text-xs text-gray-600">
-                      <p className="font-medium mb-0.5">평가불가 {pillar.unevaluable}건</p>
-                      <p className="text-gray-500">관련 도구 자격을 입력하면 측정이 가능합니다.</p>
+                      <p className="font-medium mb-0.5">측정 가능 항목 부족 (평가불가 {pillar.unevaluable}건)</p>
+                      <p className="text-gray-500">자격 입력·수동 보완 시 측정이 가능합니다.</p>
                     </div>
                   </div>
                 );
@@ -1635,10 +1650,15 @@ export function Reporting() {
                       // 대표 단계 산출 — 평가 결과가 의미하는 상태를 헤더에 정확히 표기.
                       // 충족이 하나라도 있으면 최고 충족 단계, 평가불가만 있으면 '평가불가',
                       // 미충족만 있으면 '미충족', 부분충족만 있으면 '부분충족(최저 단계)'.
-                      const passedLevels = sortedLevels.filter((l) => l.result === "충족");
-                      const partialLevels = sortedLevels.filter((l) => l.result === "부분충족");
-                      const allNA = sortedLevels.length > 0 && sortedLevels.every((l) => l.result === "평가불가");
-                      const allFail = sortedLevels.length > 0 && sortedLevels.every((l) => l.result === "미충족");
+                      // adaptChecklistResult 가 result 를 '충족/미흡/해당없음'으로 강등하므로,
+                      // 원본 판정(rawResult)으로 비교해야 부분충족/미충족/평가불가가 매칭된다.
+                      // (이전엔 강등된 result 로 비교해 평가불가-only 카테고리가 '미충족'으로 오표기됨)
+                      const _rr = (l: typeof sortedLevels[number]) =>
+                        (l as ChecklistDetail & { rawResult?: string }).rawResult ?? l.result;
+                      const passedLevels = sortedLevels.filter((l) => _rr(l) === "충족");
+                      const partialLevels = sortedLevels.filter((l) => _rr(l) === "부분충족");
+                      const allNA = sortedLevels.length > 0 && sortedLevels.every((l) => _rr(l) === "평가불가");
+                      const allFail = sortedLevels.length > 0 && sortedLevels.every((l) => _rr(l) === "미충족");
                       let repLabel: string;
                       let repBadgeCls: string;
                       if (allNA) {
@@ -1659,7 +1679,7 @@ export function Reporting() {
                         repBadgeCls = "bg-red-100 text-red-700 border border-red-200";
                       }
                       const passCount = passedLevels.length;
-                      const naCount = sortedLevels.filter((l) => l.result === "평가불가").length;
+                      const naCount = sortedLevels.filter((l) => _rr(l) === "평가불가").length;
                       // 카테고리 안 4단계의 도구 set — 수동 있으면 포함, "자동" 메타 없이 도구 이름만.
                       const categoryTools = Array.from(new Set(
                         sortedLevels.map((l) => toolLabel(l.tool)).filter(Boolean)

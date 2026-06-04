@@ -34,8 +34,13 @@ _GITHUB_REPO_RE = re.compile(r"^(?:https?://github\.com/)?([\w.-]+)/([\w.-]+?)(?
 
 # ─── 1. DNS 보안 레코드 (Cloudflare DoH) ─────────────────────────────────────
 
-def _doh_query(name: str, rtype: str, timeout: float = _TIMEOUT) -> list[str]:
-    """Cloudflare 1.1.1.1 DNS-over-HTTPS 조회. 실패 시 빈 리스트."""
+def _doh_query(name: str, rtype: str, timeout: float = _TIMEOUT) -> tuple[list[str], Optional[str]]:
+    """Cloudflare 1.1.1.1 DNS-over-HTTPS 조회. 반환 (records, error).
+
+    error 가 None → 조회 성공. 이때 빈 리스트는 '레코드 없음'(정상 측정 결과)이다.
+    error 가 set  → 측정 자체 실패(네트워크/타임아웃/비200). 이 경우 빈 리스트를
+    '레코드 없음(미충족)'으로 오해하면 안 되고 '평가불가'로 처리해야 한다.
+    (이전엔 실패와 부재를 모두 빈 리스트로 삼켜 DNS 측정 실패가 '미충족'으로 오분류됐다)"""
     try:
         resp = httpx.get(
             "https://cloudflare-dns.com/dns-query",
@@ -44,11 +49,11 @@ def _doh_query(name: str, rtype: str, timeout: float = _TIMEOUT) -> list[str]:
             timeout=timeout,
         )
         if resp.status_code != 200:
-            return []
+            return [], f"DoH HTTP {resp.status_code}"
         data = resp.json()
-        return [a.get("data", "").strip('"') for a in (data.get("Answer") or [])]
-    except Exception:
-        return []
+        return [a.get("data", "").strip('"') for a in (data.get("Answer") or [])], None
+    except Exception as e:
+        return [], f"DoH 조회 실패: {type(e).__name__}"
 
 
 def assess_dns_security(domain: str) -> dict:
@@ -60,9 +65,12 @@ def assess_dns_security(domain: str) -> dict:
     issues: list[str] = []
 
     # SPF — root domain TXT 중 "v=spf1" 시작 행
-    txt = _doh_query(domain, "TXT")
+    txt, spf_err = _doh_query(domain, "TXT")
     spf = next((t for t in txt if t.lower().startswith("v=spf1")), "")
-    if spf:
+    if spf_err:
+        spf_verdict = "error"
+        issues.append(f"SPF 조회 실패(DNS 측정 불가): {spf_err}")
+    elif spf:
         if " -all" in spf or " ~all" in spf:
             spf_verdict = "pass"
         else:
@@ -73,9 +81,12 @@ def assess_dns_security(domain: str) -> dict:
         issues.append("SPF 레코드 없음 — 메일 위조 방지 안 됨")
 
     # DMARC — _dmarc.<domain> TXT
-    dmarc_txt = _doh_query(f"_dmarc.{domain}", "TXT")
+    dmarc_txt, dmarc_err = _doh_query(f"_dmarc.{domain}", "TXT")
     dmarc = next((t for t in dmarc_txt if t.lower().startswith("v=dmarc1")), "")
-    if dmarc:
+    if dmarc_err:
+        dmarc_verdict = "error"
+        issues.append(f"DMARC 조회 실패(DNS 측정 불가): {dmarc_err}")
+    elif dmarc:
         if "p=reject" in dmarc.lower():
             dmarc_verdict = "pass"
         elif "p=quarantine" in dmarc.lower():
@@ -90,20 +101,22 @@ def assess_dns_security(domain: str) -> dict:
     # DKIM 힌트 — selector 가 도메인마다 달라 직접 찾기 어려움. 흔한 selector 추정.
     dkim_hint = ""
     for sel in ("google", "default", "k1", "mail", "selector1"):
-        dq = _doh_query(f"{sel}._domainkey.{domain}", "TXT")
+        dq, _ = _doh_query(f"{sel}._domainkey.{domain}", "TXT")
         if dq:
             dkim_hint = f"{sel}._domainkey 발견: {dq[0][:60]}..."
             break
 
     # CAA — 인증서 발급 권한 제한
-    caa = _doh_query(domain, "CAA")
-    if caa:
+    caa, caa_err = _doh_query(domain, "CAA")
+    if caa_err:
+        caa_verdict = "error"
+    elif caa:
         caa_verdict = "pass"
     else:
         caa_verdict = "warn"
         issues.append("CAA 레코드 없음 — 누구나 이 도메인 인증서 발급 가능")
 
-    weight = {"pass": 1.0, "warn": 0.5, "fail": 0.0}
+    weight = {"pass": 1.0, "warn": 0.5, "fail": 0.0, "error": 0.0}
     score = round(
         (weight[spf_verdict] + weight[dmarc_verdict] +
          (1.0 if dkim_hint else 0.0) + weight[caa_verdict]) / 4.0,
@@ -112,12 +125,14 @@ def assess_dns_security(domain: str) -> dict:
 
     return {
         "domain":      domain,
-        "spf":         {"value": spf,   "verdict": spf_verdict},
-        "dmarc":       {"value": dmarc, "verdict": dmarc_verdict},
+        "spf":         {"value": spf,   "verdict": spf_verdict,   "query_error": spf_err},
+        "dmarc":       {"value": dmarc, "verdict": dmarc_verdict, "query_error": dmarc_err},
         "dkim_hint":   dkim_hint or "(흔한 selector에서 미발견 — 도메인별 selector 별도 확인 필요)",
-        "caa":         {"records": caa, "verdict": caa_verdict},
+        "caa":         {"records": caa, "verdict": caa_verdict, "query_error": caa_err},
         "issues":      issues,
         "score":       score,
+        # 스코어링 collector 가 '측정 실패→평가불가' 를 판정할 수 있는 통합 신호.
+        "dns_query_error": spf_err or dmarc_err,
     }
 
 
