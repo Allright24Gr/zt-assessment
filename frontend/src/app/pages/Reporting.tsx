@@ -494,8 +494,10 @@ export function Reporting() {
     getImprovement(sessionId)
       .then((data) => setImprovements(data.items.map(adaptImprovement)))
       .catch((err) => {
-        console.warn("[reporting] improvement fetch failed:", err);
-        setUsedFallback(true);
+        // 개선 가이드는 보조 데이터 — 실패해도 결과(점수/체크리스트)는 정상 표시 중이므로
+        // '백엔드 연결 실패 — 예시 데이터' 배너(usedFallback)를 띄우지 않는다.
+        // (이게 result 성공에도 배너가 계속 뜨던 원인. 개선 목록만 mock 유지)
+        console.warn("[reporting] improvement fetch failed (개선 가이드만 mock 유지):", err);
       });
   }, [sessionId]);
 
