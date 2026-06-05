@@ -943,7 +943,7 @@ def _make_pdf(data: dict) -> bytes:
         card_w, card_h, "진단 모드", scan_mode_label,
         big_color="#0f172a",
         badge_text=None, badge_palette=None,
-        sub_line1=tool_matrix, sub_line2="", font=F,
+        sub_line1="", sub_line2="", font=F,   # 도구 목록은 박스 밖(아래)으로 분리
     )
 
     cards_row = Table(
@@ -960,7 +960,17 @@ def _make_pdf(data: dict) -> bytes:
         ]),
     )
     story.append(cards_row)
-    story.append(Spacer(1, 1.1 * cm))
+
+    # 진단 도구 — 세 박스 '밖'에, 박스와 아래 메타 표 사이 가운데 한 줄로 배치
+    # (전체 문서 가운데 정렬 = CONTENT_W 기준 alignment=1).
+    story.append(Spacer(1, 0.55 * cm))
+    story.append(Paragraph(
+        f'<font size="9" color="#475569">진단 도구</font>'
+        f'<font size="9" color="#94a3b8">&nbsp;&nbsp;|&nbsp;&nbsp;</font>'
+        f'<font size="9" color="#334155">{tool_matrix}</font>',
+        sty("cover_tools", fontSize=9, leading=13, alignment=1),
+    ))
+    story.append(Spacer(1, 0.55 * cm))
 
     # 메타 표 6행 (헤더 행 없음, 좌측 라벨 + 우측 값)
     meta_rows = [
